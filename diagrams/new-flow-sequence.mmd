@@ -1,0 +1,32 @@
+sequenceDiagram
+    participant App as Source App
+    participant OS as macOS Network Stack
+    participant Filter as Filter Provider
+    participant Proxy as Transparent Proxy
+    participant Upstream as Target/Proxy
+
+    App->>OS: open socket
+    OS->>Filter: handleNewFlow(metadata)
+    Filter->>Filter: immutable rule lookup
+    alt firewall block
+        Filter-->>OS: drop verdict
+        OS-->>App: connection failure
+    else allow
+        Filter-->>OS: allow + stats frequency
+        opt selective proxy enabled and candidate flow
+            OS->>Proxy: handleNewFlow(flow)
+            Proxy->>Proxy: route lookup + recursion guard
+            alt direct
+                Proxy-->>OS: false
+                OS->>Upstream: normal connection
+            else proxy
+                Proxy-->>OS: true
+                Proxy->>Upstream: NWConnection + handshake
+                Proxy->>App: open provider flow
+                App<<->>Proxy: bounded relay
+                Proxy<<->>Upstream: bounded relay
+            end
+        end
+        OS-->>Filter: statistics reports
+        Filter->>Filter: cumulative-to-delta + bucket aggregate
+    end

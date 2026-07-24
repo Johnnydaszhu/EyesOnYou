@@ -1,0 +1,70 @@
+import SwiftUI
+import AppKit
+
+@main
+struct FlowLensApp: App {
+    @StateObject private var appModel = AppModel()
+    @ObservedObject private var l10n = LocalizationStore.shared
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
+    var body: some Scene {
+        WindowGroup("FlowLens") {
+            MainDashboardView()
+                .environmentObject(appModel)
+                .environmentObject(l10n)
+                .frame(minWidth: 1100, minHeight: 720)
+                .onAppear {
+                    // Ensure menu bar is bound to this model instance.
+                    appDelegate.bind(model: appModel)
+                }
+        }
+        .defaultSize(width: 1280, height: 820)
+        .commands {
+            CommandGroup(replacing: .newItem) {}
+            CommandMenu("FlowLens") {
+                Button(l10n.t("menu.openDashboard")) {
+                    appModel.openDashboard()
+                }
+                .keyboardShortcut("d", modifiers: [.command, .shift])
+                Button(l10n.t("menuBar.togglePanel")) {
+                    MenuBarController.shared.togglePopover()
+                }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
+            }
+        }
+
+        Settings {
+            SettingsView()
+                .environmentObject(appModel)
+                .environmentObject(l10n)
+        }
+    }
+}
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private weak var boundModel: AppModel?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Keep app in Dock + menu bar. Status item is created as soon as model binds.
+        NSApp.setActivationPolicy(.regular)
+    }
+
+    /// Called when SwiftUI has the real AppModel (StateObject).
+    func bind(model: AppModel) {
+        boundModel = model
+        MenuBarController.shared.install(model: model)
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            boundModel?.openDashboard()
+        }
+        return true
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        // Stay alive for menu-bar quick panel after closing the dashboard window.
+        false
+    }
+}

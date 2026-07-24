@@ -1,0 +1,55 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Xcode / SPM local state (may embed machine user names)
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+**/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcworkspace/xcuserdata/
+xcuserdata/
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Apple signing & Developer account private material — never commit
+*.mobileprovision
+*.provisionprofile
+*.p12
+*.p8
+*.cer
+*.certSigningRequest
+AuthKey_*.p8
+**/AuthKey_*.p8
+*.pem
+*.key
+!**/Package.resolved
+
+# Local-only signing / Team ID overrides (use these instead of editing tracked files)
+Local.xcconfig
+private.xcconfig
+**/Secrets.xcconfig
+**/*.xcconfig.local
+**/*.entitlements.local
+config/Local.xcconfig
+config/private.xcconfig
+DEVELOPMENT_TEAM.xcconfig
+
+# IDE / editor
+.idea/
+*.swp
+*.orig
+*~
+.vscode/
+.cursor/
+
+# Logs & crash
+*.log
+crashlogs/

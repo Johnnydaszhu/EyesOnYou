@@ -1,0 +1,1141 @@
+import Foundation
+import Combine
+import SwiftUI
+import AppKit
+import FlowLensCore
+import FlowLensRuleEngine
+import FlowLensIPC
+import FlowLensProxyCore
+
+@MainActor
+final class AppModel: ObservableObject {
+    /// Tab identity keys (display names come from LocalizationStore).
+    enum Tab: String, CaseIterable, Identifiable {
+        case overview
+        case apps
+        case rules
+        case proxy
+        case history
+        var id: String { rawValue }
+    }
+
+    /// Global proxy posture shown in the dashboard header.
+    /// - proxy: custom / selective proxy is active
+    /// - configured: profiles exist (or system proxy) but not actively proxying via custom path
+    /// - direct: traffic is direct
+    /// - none: no proxy configuration and proxy subsystem off
+    enum GlobalProxyStatus: String, Equatable {
+        case proxy
+        case configured
+        case direct
+        case none
+
+        var localizationKey: String { "status.proxyMode.\(rawValue)" }
+
+        var systemImage: String {
+            switch self {
+            case .proxy: return "arrow.triangle.branch"
+            case .configured: return "gearshape.2"
+            case .direct: return "arrow.left.arrow.right"
+            case .none: return "slash.circle"
+            }
+        }
+    }
+
+    @Published var selectedTab: Tab = .overview
+    @Published var filterEnabled: Bool = true
+    @Published var proxyEnabled: Bool = true
+    @Published var alertsEnabled: Bool = true
+    @Published var isRunning: Bool = true
+
+    @Published var rateDownBps: Double = 0
+    @Published var rateUpBps: Double = 0
+    /// Live rates split by path (direct vs any proxy). iStat-style header/menu bar.
+    @Published var directDownBps: Double = 0
+    @Published var directUpBps: Double = 0
+    @Published var proxyDownBps: Double = 0
+    @Published var proxyUpBps: Double = 0
+    /// Share of total bandwidth on each path (0...1), sums to ~1 when traffic exists.
+    @Published var directShare: Double = 1
+    @Published var proxyShare: Double = 0
+    @Published var topApps: [AppTrafficSnapshot] = []
+    @Published var liveConnections: [LiveConnection] = []
+    /// Unified ranking rows for Overview bento (traffic + disk + group + status).
+    @Published var rankingRows: [AppRankingRow] = []
+    /// DaisyDisk-style sunburst root (apps → optional sites).
+    @Published var sunburstRoot: SunburstNode = .empty
+    /// Shared hover id between sunburst and ranking table (`AppRankingRow.id` / node.id).
+    @Published var hoverNodeID: String? = nil
+    /// Drill-down path of node ids; empty = top-level apps.
+    @Published var sunburstPath: [String] = []
+    @Published var routeMix: RouteMix = RouteMix()
+    @Published var blockedToday: UInt64 = 0
+    @Published var allowedConnections: UInt64 = 0
+    @Published var sparklineDown: [Double] = []
+    @Published var sparklineUp: [Double] = []
+    /// Path total (down+up) history for compact dual sparkline.
+    @Published var sparklineDirect: [Double] = []
+    @Published var sparklineProxy: [Double] = []
+
+    /// Overview totals time range (presets + custom).
+    @Published var overviewPeriod: OverviewPeriod = .week {
+        didSet { refreshPublishedState() }
+    }
+    /// Inclusive start for `.custom` (wall clock).
+    @Published var customRangeStart: Date = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date() {
+        didSet {
+            if overviewPeriod == .custom { refreshPublishedState() }
+        }
+    }
+    /// Inclusive end for `.custom`.
+    @Published var customRangeEnd: Date = Date() {
+        didSet {
+            if overviewPeriod == .custom { refreshPublishedState() }
+        }
+    }
+    /// Resolved range used by totals / ranking (for UI caption).
+    @Published private(set) var periodRangeStart: Date = Date()
+    @Published private(set) var periodRangeEnd: Date = Date()
+    /// Network totals for the selected overview period.
+    @Published var periodNetworkUp: UInt64 = 0
+    @Published var periodNetworkDown: UInt64 = 0
+    /// Disk I/O totals for the selected overview period (demo facade until IOKit path).
+    @Published var periodDiskRead: UInt64 = 0
+    @Published var periodDiskWrite: UInt64 = 0
+
+    @Published var rules: [NetworkPolicyRule] = []
+    @Published var groups: [AppGroup] = []
+    @Published var proxyProfiles: [ProxyProfile] = []
+    @Published var historyRange: HistoryRange = .day
+    @Published var historyRows: [AppTrafficSnapshot] = []
+
+    // MARK: Favorites & global search
+
+    /// Favorited app storage keys (`AppIdentityKey.storageKey`); pinned to ranking top.
+    @Published private(set) var favoriteKeys: Set<String> = []
+    @Published var searchQuery: String = "" {
+        didSet { recomputeSearchResults() }
+    }
+    @Published var isSearchPresented: Bool = false
+    @Published private(set) var searchResults: [SearchHit] = []
+
+    let aggregator = TelemetryAggregator()
+    let policyStore = PolicyStore()
+    private var tickTimer: Timer?
+    private var demoClock: TimeInterval = 0
+    private let demoMode: Bool
+    private static let favoritesDefaultsKey = "flowlens.favoriteAppKeys"
+
+    /// History range identity (titles come from LocalizationStore).
+    enum HistoryRange: String, CaseIterable, Identifiable {
+        case hour
+        case day
+        case week
+        case month
+        var id: String { rawValue }
+
+        var interval: TimeInterval {
+            switch self {
+            case .hour: return 3600
+            case .day: return 86_400
+            case .week: return 604_800
+            case .month: return 2_592_000
+            }
+        }
+    }
+
+    /// Overview totals time range presets + custom interval.
+    enum OverviewPeriod: String, CaseIterable, Identifiable {
+        case hour
+        case today
+        case day
+        case week
+        case month
+        /// Rolling last 30 days (distinct from calendar month).
+        case last30Days
+        case year
+        case custom
+        var id: String { rawValue }
+
+        /// Relative lookback for non-calendar presets (`.today` / `.custom` / calendar ranges ignore this).
+        var interval: TimeInterval {
+            switch self {
+            case .hour: return 3_600
+            case .today: return 86_400 // upper bound; real start is startOfDay
+            case .day: return 86_400
+            case .week: return 604_800
+            case .month: return 2_592_000
+            case .last30Days: return 2_592_000
+            case .year: return 31_536_000
+            case .custom: return 604_800
+            }
+        }
+
+        /// Scale factor for demo disk I/O relative to a week baseline.
+        var diskScale: Double {
+            switch self {
+            case .hour: return 1.0 / 168.0
+            case .today, .day: return 1.0 / 7.0
+            case .week: return 1
+            case .month, .last30Days: return 4.3
+            case .year: return 52
+            case .custom: return 1
+            }
+        }
+
+        /// Demo network multiplier vs live 24h window.
+        var networkScale: UInt64 {
+            switch self {
+            case .hour: return 1
+            case .today, .day: return 1
+            case .week: return 1
+            case .month, .last30Days: return 4
+            case .year: return 48
+            case .custom: return 1
+            }
+        }
+
+        static var presets: [OverviewPeriod] {
+            [.hour, .today, .day, .week, .month, .last30Days, .year, .custom]
+        }
+
+        /// Compact picker for menu bar popover: 今天 / 本周 / 本月 / 近 30 天.
+        static var menuQuickPeriods: [OverviewPeriod] {
+            [.today, .week, .month, .last30Days]
+        }
+    }
+
+    /// Menu bar status item density / layout (settings + popover quick cycle).
+    enum MenuBarDisplayStyle: String, CaseIterable, Identifiable {
+        case dualPath
+        case compactRates
+        case iconOnly
+        var id: String { rawValue }
+        var localizationKey: String { "menu.style.\(rawValue)" }
+    }
+
+    private static let menuBarStyleKey = "flowlens.menuBarDisplayStyle"
+
+    @Published var menuBarDisplayStyle: MenuBarDisplayStyle = .dualPath {
+        didSet {
+            UserDefaults.standard.set(menuBarDisplayStyle.rawValue, forKey: Self.menuBarStyleKey)
+        }
+    }
+
+    /// Soft update banner on the main window (nil / false → show nothing in the top bar).
+    @Published var appUpdateAvailable: Bool = false
+    @Published var appUpdateVersion: String? = nil
+
+    /// Absolute `[start, end)` for the active overview period.
+    func overviewDateRange(now: Date = Date()) -> (start: Date, end: Date) {
+        let calendar = Calendar.current
+        switch overviewPeriod {
+        case .today:
+            let start = calendar.startOfDay(for: now)
+            return (start, now)
+        case .week:
+            if let interval = calendar.dateInterval(of: .weekOfYear, for: now) {
+                return (interval.start, now)
+            }
+            return (now.addingTimeInterval(-604_800), now)
+        case .month:
+            let comps = calendar.dateComponents([.year, .month], from: now)
+            let start = calendar.date(from: comps) ?? calendar.startOfDay(for: now)
+            return (start, now)
+        case .last30Days:
+            return (now.addingTimeInterval(-2_592_000), now)
+        case .custom:
+            let a = min(customRangeStart, customRangeEnd)
+            let b = max(customRangeStart, customRangeEnd)
+            // End of selected end-day so the full day is included.
+            let endExclusive = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: b)) ?? b
+            return (calendar.startOfDay(for: a), min(endExclusive, now.addingTimeInterval(1)))
+        default:
+            return (now.addingTimeInterval(-overviewPeriod.interval), now)
+        }
+    }
+
+    func cycleMenuBarDisplayStyle() {
+        let all = MenuBarDisplayStyle.allCases
+        guard let idx = all.firstIndex(of: menuBarDisplayStyle) else {
+            menuBarDisplayStyle = .dualPath
+            return
+        }
+        menuBarDisplayStyle = all[(idx + 1) % all.count]
+    }
+
+    /// One row in the fused Overview ranking table.
+    struct AppRankingRow: Identifiable, Equatable {
+        /// Unique row id (app storage key at root; `app|dest` when drilled).
+        let id: String
+        let snapshot: AppTrafficSnapshot
+        let diskRead: UInt64
+        let diskWrite: UInt64
+        let groupName: String?
+        /// Share of network total (0...1) for pie chart.
+        let share: Double
+
+        init(
+            id: String? = nil,
+            snapshot: AppTrafficSnapshot,
+            diskRead: UInt64,
+            diskWrite: UInt64,
+            groupName: String?,
+            share: Double
+        ) {
+            self.id = id ?? snapshot.id
+            self.snapshot = snapshot
+            self.diskRead = diskRead
+            self.diskWrite = diskWrite
+            self.groupName = groupName
+            self.share = share
+        }
+    }
+
+    /// Hierarchical node for DaisyDisk-style sunburst.
+    struct SunburstNode: Identifiable, Equatable {
+        let id: String
+        let title: String
+        let value: UInt64
+        /// Stable hue seed 0..<1
+        let hue: Double
+        var children: [SunburstNode]
+
+        static let empty = SunburstNode(id: "root", title: "Root", value: 0, hue: 0.55, children: [])
+
+        var hasChildren: Bool { !children.isEmpty }
+
+        func node(path: [String]) -> SunburstNode {
+            var current = self
+            for step in path {
+                guard let next = current.children.first(where: { $0.id == step }) else { break }
+                current = next
+            }
+            return current
+        }
+    }
+
+    func setHoverNode(_ id: String?) {
+        if hoverNodeID != id { hoverNodeID = id }
+    }
+
+    func drillInto(nodeID: String) {
+        // Only drill if that node exists under current view and has children.
+        let current = sunburstRoot.node(path: sunburstPath)
+        guard let child = current.children.first(where: { $0.id == nodeID }), child.hasChildren else {
+            return
+        }
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
+            sunburstPath.append(nodeID)
+            hoverNodeID = nil
+        }
+    }
+
+    func sunburstGoBack() {
+        guard !sunburstPath.isEmpty else { return }
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
+            _ = sunburstPath.popLast()
+            hoverNodeID = nil
+        }
+    }
+
+    func sunburstReset() {
+        guard !sunburstPath.isEmpty else { return }
+        withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
+            sunburstPath.removeAll()
+            hoverNodeID = nil
+        }
+    }
+
+    init(demoMode: Bool = true) {
+        self.demoMode = demoMode
+        if let raw = UserDefaults.standard.string(forKey: Self.menuBarStyleKey),
+           let style = MenuBarDisplayStyle(rawValue: raw) {
+            menuBarDisplayStyle = style
+        }
+        loadFavorites()
+        seedPolicies()
+        if demoMode {
+            seedDemoTraffic()
+        }
+        refreshPublishedState()
+        startTicker()
+    }
+
+    // MARK: - Favorites
+
+    func isFavorite(_ app: AppIdentityKey) -> Bool {
+        favoriteKeys.contains(app.storageKey)
+    }
+
+    func toggleFavorite(_ app: AppIdentityKey) {
+        let key = app.storageKey
+        if favoriteKeys.contains(key) {
+            favoriteKeys.remove(key)
+        } else {
+            favoriteKeys.insert(key)
+        }
+        persistFavorites()
+        // Re-sort ranking / top lists without full reseed.
+        applyFavoriteOrdering()
+        recomputeSearchResults()
+    }
+
+    private func loadFavorites() {
+        if let arr = UserDefaults.standard.array(forKey: Self.favoritesDefaultsKey) as? [String] {
+            favoriteKeys = Set(arr)
+        }
+    }
+
+    private func persistFavorites() {
+        UserDefaults.standard.set(Array(favoriteKeys).sorted(), forKey: Self.favoritesDefaultsKey)
+    }
+
+    private func applyFavoriteOrdering() {
+        rankingRows = Self.sortByFavorites(rankingRows, favorites: favoriteKeys)
+        topApps = rankingRows.map(\.snapshot)
+        historyRows = Self.sortSnapshotsByFavorites(historyRows, favorites: favoriteKeys)
+        sunburstRoot = Self.buildSunburst(from: rankingRows)
+    }
+
+    private static func sortByFavorites(_ rows: [AppRankingRow], favorites: Set<String>) -> [AppRankingRow] {
+        rows.sorted { a, b in
+            let af = favorites.contains(a.snapshot.app.storageKey)
+            let bf = favorites.contains(b.snapshot.app.storageKey)
+            if af != bf { return af && !bf }
+            return a.snapshot.totals.totalBytes > b.snapshot.totals.totalBytes
+        }
+    }
+
+    private static func sortSnapshotsByFavorites(
+        _ rows: [AppTrafficSnapshot],
+        favorites: Set<String>
+    ) -> [AppTrafficSnapshot] {
+        rows.sorted { a, b in
+            let af = favorites.contains(a.app.storageKey)
+            let bf = favorites.contains(b.app.storageKey)
+            if af != bf { return af && !bf }
+            return a.totals.totalBytes > b.totals.totalBytes
+        }
+    }
+
+    // MARK: - Global search
+
+    enum SearchHitKind: String, Equatable {
+        case app
+        case site
+        case rule
+        case group
+    }
+
+    struct SearchHit: Identifiable, Equatable {
+        let id: String
+        let kind: SearchHitKind
+        let title: String
+        let subtitle: String
+        let appKey: AppIdentityKey?
+        let destination: Tab
+    }
+
+    func clearSearch() {
+        searchQuery = ""
+        isSearchPresented = false
+        searchResults = []
+    }
+
+    func selectSearchHit(_ hit: SearchHit) {
+        // Main UI is overview-only; search always focuses ranking / sunburst there.
+        selectedTab = .overview
+        if let app = hit.appKey {
+            hoverNodeID = app.storageKey
+            // Drill into browser sites when selecting a site hit
+            if hit.kind == .site, let row = rankingRows.first(where: { $0.snapshot.app == app }) {
+                if row.snapshot.isBrowser {
+                    sunburstPath = [row.id]
+                }
+            }
+        }
+        isSearchPresented = false
+    }
+
+    private func recomputeSearchResults() {
+        let q = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard q.count >= 1 else {
+            searchResults = []
+            return
+        }
+        let needle = q.lowercased()
+        var hits: [SearchHit] = []
+
+        for row in rankingRows {
+            let snap = row.snapshot
+            let name = snap.displayName.lowercased()
+            let sid = snap.app.signingIdentifier.lowercased()
+            if name.contains(needle) || sid.contains(needle) {
+                hits.append(SearchHit(
+                    id: "app:\(snap.id)",
+                    kind: .app,
+                    title: snap.displayName,
+                    subtitle: snap.app.signingIdentifier
+                        + (isFavorite(snap.app) ? " ★" : ""),
+                    appKey: snap.app,
+                    destination: .overview
+                ))
+            }
+            for site in snap.sites {
+                if site.hostname.lowercased().contains(needle) {
+                    hits.append(SearchHit(
+                        id: "site:\(snap.id)|\(site.destinationKey)",
+                        kind: .site,
+                        title: site.hostname,
+                        subtitle: snap.displayName,
+                        appKey: snap.app,
+                        destination: .overview
+                    ))
+                }
+            }
+        }
+
+        for group in groups {
+            if group.name.lowercased().contains(needle) {
+                hits.append(SearchHit(
+                    id: "group:\(group.id.uuidString)",
+                    kind: .group,
+                    title: group.name,
+                    subtitle: "\(group.memberKeys.count) apps",
+                    appKey: nil,
+                    destination: .overview
+                ))
+            }
+        }
+
+        for rule in rules {
+            let note = (rule.note ?? "").lowercased()
+            let dest: String = {
+                switch rule.destination {
+                case .any: return "any"
+                case .hostnameExact(let h): return h.lowercased()
+                case .hostnameSuffix(let s): return s.lowercased()
+                case .ip(let a): return a.lowercased()
+                case .cidr(let n, _): return n.lowercased()
+                }
+            }()
+            if note.contains(needle) || dest.contains(needle) {
+                hits.append(SearchHit(
+                    id: "rule:\(rule.id.uuidString)",
+                    kind: .rule,
+                    title: rule.note ?? String(rule.id.uuidString.prefix(8)),
+                    subtitle: dest,
+                    appKey: nil,
+                    destination: .overview
+                ))
+            }
+        }
+
+        searchResults = Array(hits.prefix(24))
+    }
+
+    deinit {
+        tickTimer?.invalidate()
+    }
+
+    // MARK: - Public actions
+
+    func selectTab(_ tab: Tab) {
+        selectedTab = tab
+    }
+
+    /// Open the system Settings scene (language, filter/proxy toggles).
+    func openSettings() {
+        NSApp.activate(ignoringOtherApps: true)
+        // macOS 14+ uses showSettingsWindow:; 13 uses showPreferencesWindow:.
+        if NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
+            return
+        }
+        NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+    }
+
+    /// Split total live rates into direct vs proxy using current route mix shares.
+    private func recomputePathRates() {
+        // Proxy path = system proxy + custom proxy profiles.
+        var dFrac = max(0, routeMix.directPercent) / 100
+        var pFrac = max(0, routeMix.systemProxyPercent + routeMix.customProxyPercent) / 100
+        if !proxyEnabled {
+            dFrac = 1
+            pFrac = 0
+        }
+        let sum = dFrac + pFrac
+        if sum <= 0.000_1 {
+            dFrac = 1
+            pFrac = 0
+        } else {
+            dFrac /= sum
+            pFrac /= sum
+        }
+
+        // Slight path bias on up vs down so columns aren't identical twins.
+        let downDirectBias = demoMode ? (0.97 + sin(demoClock / 7) * 0.03) : 1.0
+        let upDirectBias = demoMode ? (1.03 + cos(demoClock / 9) * 0.03) : 1.0
+        let dDownShare = min(1, max(0, dFrac * downDirectBias))
+        let dUpShare = min(1, max(0, dFrac * upDirectBias))
+
+        directDownBps = rateDownBps * dDownShare
+        proxyDownBps = max(0, rateDownBps - directDownBps)
+        directUpBps = rateUpBps * dUpShare
+        proxyUpBps = max(0, rateUpBps - directUpBps)
+
+        let total = directDownBps + directUpBps + proxyDownBps + proxyUpBps
+        if total > 1 {
+            directShare = (directDownBps + directUpBps) / total
+            proxyShare = (proxyDownBps + proxyUpBps) / total
+        } else {
+            directShare = dFrac
+            proxyShare = pFrac
+        }
+
+        sparklineDirect.append(directDownBps + directUpBps)
+        sparklineProxy.append(proxyDownBps + proxyUpBps)
+        if sparklineDirect.count > 40 {
+            sparklineDirect.removeFirst(sparklineDirect.count - 40)
+            sparklineProxy.removeFirst(sparklineProxy.count - 40)
+        }
+    }
+
+    /// Header proxy status: 代理 / 配置 / 直连 / 无.
+    var globalProxyStatus: GlobalProxyStatus {
+        let hasEnabledProfile = proxyProfiles.contains(where: \.enabled)
+        let hasAnyProfile = !proxyProfiles.isEmpty
+
+        if !proxyEnabled {
+            // Master off: configured profiles still count as "配置", otherwise "无".
+            return (hasEnabledProfile || hasAnyProfile) ? .configured : .none
+        }
+
+        let hasCustomProxyRoute = rankingRows.contains {
+            if case .proxy = $0.snapshot.route { return true }
+            return false
+        }
+        let hasSystemProxyRoute = rankingRows.contains {
+            if case .systemProxy = $0.snapshot.route { return true }
+            return false
+        }
+
+        if routeMix.customProxyPercent > 0 || hasCustomProxyRoute {
+            return .proxy
+        }
+        if routeMix.systemProxyPercent > 0 || hasSystemProxyRoute {
+            return .configured
+        }
+        // Selective proxy on, but resolved routes are direct (or inherit→direct).
+        return .direct
+    }
+
+    func setFilterEnabled(_ enabled: Bool) {
+        filterEnabled = enabled
+        isRunning = enabled || proxyEnabled
+    }
+
+    func setProxyEnabled(_ enabled: Bool) {
+        proxyEnabled = enabled
+        isRunning = filterEnabled || enabled
+    }
+
+    func assignRoute(app: AppIdentityKey, route: RouteAction) {
+        policyStore.assignRoute(app: app, route: route)
+        rules = policyStore.allRules()
+        groups = policyStore.allGroups()
+        recomputeRouteLabels()
+    }
+
+    /// Toggle selective proxy for an app using the **resolved** route (rules + groups),
+    /// not the raw assignment (which may be `.inherit` while UI shows Proxy).
+    func toggleAppProxy(_ snapshot: AppTrafficSnapshot) {
+        let profileID = proxyProfiles.first?.id ?? UUID()
+        let resolved = resolveRoute(for: snapshot.app)
+        let next = ProxyToggleLogic.nextRoute(resolved: resolved, profileID: profileID)
+        assignRoute(app: snapshot.app, route: next)
+    }
+
+    func openDashboard() {
+        selectedTab = .overview
+        NSApp.activate(ignoringOtherApps: true)
+        if let window = NSApp.windows.first(where: { $0.title == "FlowLens" || $0.contentView != nil }) {
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    func refreshHistory() {
+        let range = overviewDateRange()
+        let rows = aggregator.topApps(from: range.start, to: range.end, limit: 50)
+        historyRows = Self.sortSnapshotsByFavorites(rows, favorites: favoriteKeys)
+        recomputeSearchResults()
+    }
+
+    // MARK: - Tick
+
+    private func startTicker() {
+        tickTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.onTick()
+            }
+        }
+    }
+
+    private func onTick() {
+        demoClock += 1
+        if demoMode {
+            injectDemoDelta()
+        }
+        refreshPublishedState()
+    }
+
+    private func refreshPublishedState() {
+        let now = Date()
+        let range = overviewDateRange(now: now)
+        let periodFrom = range.start
+        let periodTo = range.end
+        periodRangeStart = periodFrom
+        periodRangeEnd = periodTo
+        let dayFrom = now.addingTimeInterval(-86_400)
+        let rates = aggregator.liveRateBps()
+        // Blend live rates with demo floor so UI stays lively in demo mode
+        if demoMode {
+            rateDownBps = max(rates.down, 1_550_000 + sin(demoClock / 4) * 200_000)
+            rateUpBps = max(rates.up, 280_000 + cos(demoClock / 5) * 40_000)
+        } else {
+            rateDownBps = rates.down
+            rateUpBps = rates.up
+        }
+
+        sparklineDown.append(rateDownBps)
+        sparklineUp.append(rateUpBps)
+        if sparklineDown.count > 40 {
+            sparklineDown.removeFirst(sparklineDown.count - 40)
+            sparklineUp.removeFirst(sparklineUp.count - 40)
+        }
+
+        // Period network totals for active range
+        let periodTotals = aggregator.totals(for: nil, from: periodFrom, to: periodTo)
+        if demoMode {
+            // Scale seeded demo traffic so longer ranges look larger than the live window.
+            let live = aggregator.totals(for: nil, from: dayFrom, to: now)
+            var scale = overviewPeriod.networkScale
+            if overviewPeriod == .custom {
+                let hours = max(1, periodTo.timeIntervalSince(periodFrom) / 3600)
+                scale = UInt64(max(1, hours / 24))
+            }
+            periodNetworkUp = max(periodTotals.bytesUp, live.bytesUp) &* scale
+            periodNetworkDown = max(periodTotals.bytesDown, live.bytesDown) &* scale
+            // Disk I/O: demo facade (real path would use IOKit / endpoint stats later).
+            let weekRead: UInt64 = 42_000_000_000   // ~42 GB
+            let weekWrite: UInt64 = 18_500_000_000  // ~18.5 GB
+            var ds = overviewPeriod.diskScale
+            if overviewPeriod == .custom {
+                let days = max(0.05, periodTo.timeIntervalSince(periodFrom) / 86_400)
+                ds = days / 7.0
+            }
+            periodDiskRead = UInt64(Double(weekRead) * ds)
+            periodDiskWrite = UInt64(Double(weekWrite) * ds)
+        } else {
+            periodNetworkUp = periodTotals.bytesUp
+            periodNetworkDown = periodTotals.bytesDown
+            periodDiskRead = 0
+            periodDiskWrite = 0
+        }
+
+        var tops = aggregator.topApps(from: periodFrom, to: periodTo, limit: 10, includeSitesForBrowsers: true)
+        tops = tops.map { snap in
+            let route = resolveRoute(for: snap.app)
+            let name = AppIconCache.shared.displayName(
+                forSigningID: snap.app.signingIdentifier,
+                fallback: snap.displayName
+            )
+            return AppTrafficSnapshot(
+                app: snap.app,
+                displayName: name,
+                totals: snap.totals,
+                rateUpBps: snap.rateUpBps,
+                rateDownBps: snap.rateDownBps,
+                activeConnections: snap.activeConnections,
+                route: route,
+                firewallStatus: snap.firewallStatus,
+                isBrowser: snap.isBrowser,
+                sites: snap.sites
+            )
+        }
+        rules = policyStore.allRules()
+        groups = policyStore.allGroups()
+
+        liveConnections = aggregator.recentConnections(limit: 12).map { conn in
+            LiveConnection(
+                id: conn.id,
+                app: conn.app,
+                displayName: conn.displayName,
+                host: conn.host,
+                protocolLabel: conn.protocolLabel,
+                route: resolveRoute(for: conn.app),
+                firewall: conn.firewall,
+                timestamp: conn.timestamp,
+                bytesUp: conn.bytesUp,
+                bytesDown: conn.bytesDown
+            )
+        }
+
+        let dayTotals = aggregator.totals(for: nil, from: dayFrom, to: now)
+        blockedToday = dayTotals.flowsBlocked > 0 ? dayTotals.flowsBlocked : (demoMode ? 1_248 : 0)
+        allowedConnections = dayTotals.flowsOpened > 0 ? dayTotals.flowsOpened : (demoMode ? 12_853 : 0)
+
+        if proxyEnabled {
+            // Demo mix with light motion so shares feel live (real path: tally by resolved route).
+            let wobble = sin(demoClock / 11) * 4
+            let direct = max(5, min(90, 62 + wobble))
+            let system = max(5, min(40, 25 - wobble * 0.5))
+            let custom = max(0, 100 - direct - system)
+            routeMix = RouteMix(
+                directPercent: direct,
+                systemProxyPercent: system,
+                customProxyPercent: custom,
+                blockedCount: blockedToday,
+                activeRules: policyStore.compileSnapshot().activeRuleCount + groups.count
+            )
+        } else {
+            routeMix = RouteMix(
+                directPercent: 100,
+                systemProxyPercent: 0,
+                customProxyPercent: 0,
+                blockedCount: blockedToday,
+                activeRules: policyStore.compileSnapshot().activeRuleCount + groups.count
+            )
+        }
+        recomputePathRates()
+
+        // Build ranking rows with group + proportional demo disk share
+        let netTotal = max(1, tops.reduce(UInt64(0)) { $0 &+ $1.totals.totalBytes })
+        let diskR = periodDiskRead
+        let diskW = periodDiskWrite
+        let unsorted = tops.map { snap -> AppRankingRow in
+            let share = Double(snap.totals.totalBytes) / Double(netTotal)
+            let groupName = groups.first(where: { $0.memberKeys.contains(snap.app) })?.name
+            // Stable per-app disk bias so rows look distinct in demo mode.
+            let bias = demoDiskBias(for: snap.app)
+            return AppRankingRow(
+                snapshot: snap,
+                diskRead: UInt64(Double(diskR) * share * bias),
+                diskWrite: UInt64(Double(diskW) * share * (2.0 - bias)),
+                groupName: groupName,
+                share: share
+            )
+        }
+        rankingRows = Self.sortByFavorites(unsorted, favorites: favoriteKeys)
+        topApps = rankingRows.map(\.snapshot)
+
+        sunburstRoot = Self.buildSunburst(from: rankingRows)
+        // Drop path segments that no longer exist after data refresh.
+        var validPath: [String] = []
+        var cursor = sunburstRoot
+        for step in sunburstPath {
+            guard let next = cursor.children.first(where: { $0.id == step }) else { break }
+            validPath.append(step)
+            cursor = next
+        }
+        if validPath != sunburstPath {
+            sunburstPath = validPath
+        }
+
+        refreshHistory()
+    }
+
+    private static func buildSunburst(from rows: [AppRankingRow]) -> SunburstNode {
+        let paletteCount = 12.0
+        let children: [SunburstNode] = rows.enumerated().map { index, row in
+            let hue = (Double(index) / paletteCount).truncatingRemainder(dividingBy: 1.0)
+            let appID = row.snapshot.id
+            // Drill children: websites (Chrome), projects (VS Code), sessions (ChatGPT)…
+            let siteChildren: [SunburstNode]
+            if !row.snapshot.sites.isEmpty {
+                let siteTotal = max(1, row.snapshot.sites.reduce(UInt64(0)) { $0 &+ $1.totals.totalBytes })
+                siteChildren = row.snapshot.sites.enumerated().map { sIdx, site in
+                    let siteHue = (hue + 0.03 * Double(sIdx)).truncatingRemainder(dividingBy: 1.0)
+                    let siteValue = max(
+                        1,
+                        UInt64(Double(row.snapshot.totals.totalBytes) * Double(site.totals.totalBytes) / Double(siteTotal))
+                    )
+                    return SunburstNode(
+                        id: "\(appID)|\(site.destinationKey)",
+                        title: site.hostname,
+                        value: siteValue,
+                        hue: siteHue,
+                        children: []
+                    )
+                }
+            } else {
+                siteChildren = []
+            }
+            return SunburstNode(
+                id: appID,
+                title: row.snapshot.displayName,
+                value: max(1, row.snapshot.totals.totalBytes),
+                hue: hue,
+                children: siteChildren
+            )
+        }
+        let total = children.reduce(UInt64(0)) { $0 &+ $1.value }
+        return SunburstNode(id: "root", title: "Root", value: total, hue: 0.55, children: children)
+    }
+
+    /// Ranking rows for the current drill level (apps at root; sites/projects when drilled).
+    var visibleRankingRows: [AppRankingRow] {
+        guard let appID = sunburstPath.first,
+              let parent = rankingRows.first(where: { $0.id == appID }) else {
+            return rankingRows
+        }
+        let sites = parent.snapshot.sites
+        guard !sites.isEmpty else { return rankingRows }
+        let siteTotal = max(1, sites.reduce(UInt64(0)) { $0 &+ $1.totals.totalBytes })
+        return sites.map { site in
+            let share = Double(site.totals.totalBytes) / Double(siteTotal)
+            return AppRankingRow(
+                id: "\(parent.id)|\(site.destinationKey)",
+                snapshot: AppTrafficSnapshot(
+                    app: parent.snapshot.app,
+                    displayName: site.hostname,
+                    totals: site.totals,
+                    rateUpBps: 0,
+                    rateDownBps: 0,
+                    activeConnections: site.activeConnections,
+                    route: parent.snapshot.route,
+                    firewallStatus: parent.snapshot.firewallStatus,
+                    isBrowser: parent.snapshot.isBrowser,
+                    sites: []
+                ),
+                diskRead: UInt64(Double(parent.diskRead) * share),
+                diskWrite: UInt64(Double(parent.diskWrite) * share),
+                groupName: parent.groupName,
+                share: share
+            )
+        }
+    }
+
+    var drilledAppTitle: String? {
+        guard let id = sunburstPath.first else { return nil }
+        return rankingRows.first(where: { $0.id == id })?.snapshot.displayName
+    }
+
+    /// Deterministic 0.7...1.3 multiplier so demo disk columns vary by app.
+    private func demoDiskBias(for app: AppIdentityKey) -> Double {
+        let h = abs(app.signingIdentifier.hashValue % 100)
+        return 0.7 + Double(h) / 200.0
+    }
+
+    private func resolveRoute(for app: AppIdentityKey) -> RouteAction {
+        let snap = policyStore.compileSnapshot()
+        return snap.evaluateRoute(FlowDescriptor(app: app)).action
+    }
+
+    private func recomputeRouteLabels() {
+        refreshPublishedState()
+    }
+
+    // MARK: - Seed data
+
+    private func seedPolicies() {
+        let socksProfile = ProxyProfile(
+            name: "Office SOCKS5",
+            kind: .socks5,
+            host: "127.0.0.1",
+            port: 1080
+        )
+        proxyProfiles = [socksProfile]
+
+        let chrome = AppIdentityKey(teamIdentifier: "EQHXZ8M8AV", signingIdentifier: "com.google.Chrome")
+        let claude = AppIdentityKey(teamIdentifier: "TEAM2", signingIdentifier: "com.anthropic.claude")
+        let discord = AppIdentityKey(teamIdentifier: "53Q6R32WPB", signingIdentifier: "com.hnc.Discord")
+        let telegram = AppIdentityKey(teamIdentifier: "6N38VWS5BX", signingIdentifier: "ru.keepcoder.Telegram")
+        let slack = AppIdentityKey(teamIdentifier: "BQR82RBBHL", signingIdentifier: "com.tinyspeck.slackmacgap")
+
+        policyStore.assignRoute(app: claude, route: .proxy(profileID: socksProfile.id))
+        policyStore.assignRoute(app: telegram, route: .proxy(profileID: socksProfile.id))
+        policyStore.assignRoute(app: discord, route: .systemProxy)
+        policyStore.assignRoute(app: slack, route: .systemProxy)
+        policyStore.assignRoute(app: chrome, route: .direct)
+
+        let mediaGroup = AppGroup(
+            name: "Media",
+            memberKeys: [
+                AppIdentityKey(teamIdentifier: "2FNC3A47ZF", signingIdentifier: "com.spotify.client")
+            ],
+            defaultRoute: .direct
+        )
+        policyStore.upsert(group: mediaGroup)
+
+        let blockRule = NetworkPolicyRule(
+            priority: 100,
+            app: .any,
+            destination: .hostnameSuffix("metrics.example.com"),
+            firewall: .block,
+            route: .direct,
+            note: "Block analytics endpoint"
+        )
+        policyStore.upsert(rule: blockRule)
+
+        let allowAPI = NetworkPolicyRule(
+            priority: 50,
+            app: .exact(claude),
+            destination: .hostnameExact("api.anthropic.com"),
+            firewall: .allow,
+            route: .proxy(profileID: socksProfile.id),
+            note: "Claude via SOCKS5"
+        )
+        policyStore.upsert(rule: allowAPI)
+    }
+
+    private func seedDemoTraffic() {
+        // Drill-down demos:
+        // - Chrome/Safari → websites
+        // - VS Code → projects
+        // - ChatGPT / Claude → sessions
+        let chrome = AppIdentityKey(teamIdentifier: "EQHXZ8M8AV", signingIdentifier: "com.google.Chrome")
+        let safari = AppIdentityKey(teamIdentifier: "APPLE", signingIdentifier: "com.apple.Safari")
+        let vscode = AppIdentityKey(teamIdentifier: "UBF8T346G9", signingIdentifier: "com.microsoft.VSCode")
+        let chatgpt = AppIdentityKey(teamIdentifier: "2DC432GLL2", signingIdentifier: "com.openai.chat")
+        let claude = AppIdentityKey(teamIdentifier: "TEAM2", signingIdentifier: "com.anthropic.claude")
+
+        let chromeSites: [(String, UInt64, UInt64)] = [
+            ("www.google.com", 120_000_000, 1_200_000_000),
+            ("github.com", 80_000_000, 900_000_000),
+            ("www.youtube.com", 200_000_000, 980_000_000),
+            ("news.ycombinator.com", 42_000_000, 220_000_000),
+            ("stackoverflow.com", 50_000_000, 150_000_000),
+            ("docs.python.org", 28_000_000, 110_000_000),
+        ]
+        let safariSites: [(String, UInt64, UInt64)] = [
+            ("www.apple.com", 30_000_000, 180_000_000),
+            ("developer.apple.com", 25_000_000, 220_000_000),
+            ("icloud.com", 15_000_000, 90_000_000),
+        ]
+        // VS Code: different projects (synthetic destination keys)
+        let vscodeProjects: [(String, UInt64, UInt64)] = [
+            ("project:FlowLens", 90_000_000, 420_000_000),
+            ("project:dontbesilent-web", 55_000_000, 280_000_000),
+            ("project:design-system", 40_000_000, 190_000_000),
+            ("project:api-gateway", 35_000_000, 160_000_000),
+            ("project:infra-scripts", 18_000_000, 70_000_000),
+        ]
+        // ChatGPT: different chats / projects
+        let chatgptSessions: [(String, UInt64, UInt64)] = [
+            ("session:Swift concurrency rewrite", 40_000_000, 220_000_000),
+            ("session:App Store copy", 22_000_000, 95_000_000),
+            ("session:Travel planning", 12_000_000, 48_000_000),
+            ("session:Code review helpers", 30_000_000, 150_000_000),
+        ]
+        let claudeSessions: [(String, UInt64, UInt64)] = [
+            ("session:Architecture review", 50_000_000, 400_000_000),
+            ("session:Debug NEFilter", 35_000_000, 280_000_000),
+            ("session:Marketing outline", 20_000_000, 120_000_000),
+        ]
+
+        let other: [(String, String, String?, UInt64, UInt64, String)] = [
+            ("Xcode", "com.apple.dt.Xcode", "APPLE", 198_000_000, 1_120_000_000, "developer.apple.com"),
+            ("Discord", "com.hnc.Discord", "53Q6R32WPB", 156_000_000, 823_000_000, "gateway.discord.gg"),
+            ("Spotify", "com.spotify.client", "2FNC3A47ZF", 98_000_000, 512_000_000, "audio-fa.scdn.co"),
+            ("Slack", "com.tinyspeck.slackmacgap", "BQR82RBBHL", 64_000_000, 342_000_000, "wss-primary.slack.com"),
+            ("Telegram", "ru.keepcoder.Telegram", "6N38VWS5BX", 37_000_000, 221_000_000, "api.telegram.org"),
+            ("zoom.us", "us.zoom.xos", "BJ4HAAB9B3", 28_000_000, 178_000_000, "zoom.us"),
+        ]
+
+        let now = Date()
+        var offset = 0
+        for site in chromeSites {
+            seedSite(app: chrome, displayName: "Chrome", host: site.0, up: site.1, down: site.2, at: now, offset: offset)
+            offset += 1
+        }
+        for site in safariSites {
+            seedSite(app: safari, displayName: "Safari", host: site.0, up: site.1, down: site.2, at: now, offset: offset)
+            offset += 1
+        }
+        for p in vscodeProjects {
+            seedSite(app: vscode, displayName: "Visual Studio Code", host: p.0, up: p.1, down: p.2, at: now, offset: offset)
+            offset += 1
+        }
+        for s in chatgptSessions {
+            seedSite(app: chatgpt, displayName: "ChatGPT", host: s.0, up: s.1, down: s.2, at: now, offset: offset)
+            offset += 1
+        }
+        for s in claudeSessions {
+            seedSite(app: claude, displayName: "Claude", host: s.0, up: s.1, down: s.2, at: now, offset: offset)
+            offset += 1
+        }
+        for sample in other {
+            let app = AppIdentityKey(teamIdentifier: sample.2, signingIdentifier: sample.1)
+            seedSite(
+                app: app,
+                displayName: sample.0,
+                host: sample.5,
+                up: sample.3,
+                down: sample.4,
+                at: now,
+                offset: offset
+            )
+            offset += 1
+        }
+
+        let blockedApp = AppIdentityKey(teamIdentifier: "ANALYTICS", signingIdentifier: "com.example.Analytics")
+        let blockedFlow = FlowDescriptor(
+            app: blockedApp,
+            remoteHostname: "metrics.example.com",
+            remotePort: 443,
+            openedAt: now
+        )
+        aggregator.recordOpen(blockedFlow, displayName: "Analytics", route: .direct, firewall: .block)
+    }
+
+    private func seedSite(
+        app: AppIdentityKey,
+        displayName: String,
+        host: String,
+        up: UInt64,
+        down: UInt64,
+        at: Date,
+        offset: Int
+    ) {
+        let flow = FlowDescriptor(
+            app: app,
+            remoteHostname: host,
+            remotePort: 443,
+            openedAt: at.addingTimeInterval(Double(-offset) - 1)
+        )
+        let route = resolveRoute(for: app)
+        aggregator.recordOpen(flow, displayName: displayName, route: route)
+        aggregator.recordDelta(
+            flowID: flow.id,
+            app: app,
+            up: up,
+            down: down,
+            at: at.addingTimeInterval(Double(-offset)),
+            route: route,
+            destinationKey: DestinationKey.make(hostname: host, address: nil)
+        )
+    }
+
+    private func injectDemoDelta() {
+        guard let top = topApps.first ?? rankingRows.first?.snapshot else { return }
+        let flowID = UUID()
+        let flow = FlowDescriptor(
+            id: flowID,
+            app: top.app,
+            remoteHostname: "live.example.com",
+            remotePort: 443
+        )
+        // Only occasional new connection entries
+        if Int(demoClock) % 5 == 0 {
+            aggregator.recordOpen(flow, displayName: top.displayName, route: top.route)
+        }
+        aggregator.recordDelta(
+            flowID: flowID,
+            app: top.app,
+            up: UInt64.random(in: 8_000...40_000),
+            down: UInt64.random(in: 40_000...200_000),
+            route: top.route
+        )
+    }
+}

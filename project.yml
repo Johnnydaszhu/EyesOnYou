@@ -1,0 +1,97 @@
+name: FlowLens
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+packages:
+  FlowLens:
+    path: .
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""
+    ENABLE_HARDENED_RUNTIME: YES
+    DEAD_CODE_STRIPPING: YES
+    SWIFT_STRICT_CONCURRENCY: targeted
+
+targets:
+  FlowLens:
+    type: application
+    platform: macOS
+    sources:
+      - path: App/FlowLens
+        excludes:
+          - Info.plist
+          - "*.entitlements"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.FlowLens
+        PRODUCT_NAME: FlowLens
+        INFOPLIST_FILE: App/FlowLens/Info.plist
+        CODE_SIGN_ENTITLEMENTS: App/FlowLens/FlowLens.entitlements
+        LD_RUNPATH_SEARCH_PATHS: ["$(inherited)", "@executable_path/../Frameworks"]
+        GENERATE_INFOPLIST_FILE: NO
+        COMBINE_HIDPI_IMAGES: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_ALLOWED: YES
+        CODE_SIGNING_REQUIRED: NO
+    dependencies:
+      - package: FlowLens
+        product: FlowLensCore
+      - package: FlowLens
+        product: FlowLensRuleEngine
+      - package: FlowLens
+        product: FlowLensStorage
+      - package: FlowLens
+        product: FlowLensIPC
+      - package: FlowLens
+        product: FlowLensProxyCore
+      - target: FlowLensNetworkExtension
+        embed: true
+        codeSign: true
+        # Apple-required: App.app/Contents/Library/SystemExtensions/*.systemextension
+        # (wrapper = .app root; must include Contents/ so codesign stays sealed)
+        copy:
+          destination: wrapper
+          subpath: Contents/Library/SystemExtensions
+    scheme:
+      testTargets: []
+
+  FlowLensNetworkExtension:
+    type: system-extension
+    platform: macOS
+    sources:
+      - path: NetworkExtension
+        excludes:
+          - Info.plist
+          - "*.entitlements"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.FlowLens.NetworkExtension
+        PRODUCT_NAME: FlowLensNetworkExtension
+        INFOPLIST_FILE: NetworkExtension/Info.plist
+        CODE_SIGN_ENTITLEMENTS: NetworkExtension/FlowLensNetworkExtension.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_ALLOWED: YES
+        CODE_SIGNING_REQUIRED: NO
+        LD_RUNPATH_SEARCH_PATHS: ["$(inherited)", "@executable_path/../Frameworks"]
+    dependencies:
+      - package: FlowLens
+        product: FlowLensCore
+      - package: FlowLens
+        product: FlowLensRuleEngine
+      - package: FlowLens
+        product: FlowLensProxyCore
+      - package: FlowLens
+        product: FlowLensIPC
+      - sdk: NetworkExtension.framework
+      - sdk: SystemExtensions.framework

@@ -1,0 +1,17 @@
+flowchart LR
+    UI[FlowLens App] <-->|Signed XPC| S[FlowLens.systemextension]
+    UI --> R[(rules.sqlite + snapshot)]
+    UI -->|read-only| T[(telemetry.sqlite)]
+    subgraph S[One System Extension Bundle]
+        F[NEFilterDataProvider]
+        P[NETransparentProxyProvider optional]
+        C[Shared Core]
+        F <--> C
+        P <--> C
+    end
+    OS[macOS Network Stack] --> F
+    F -->|allow/drop| OS
+    OS --> P
+    P -->|false: OS direct| OS
+    P -->|true: bounded flow copy| U[Target / Upstream Proxy]
+    C -->|batched writes| T
