@@ -61,6 +61,16 @@ private struct LaidOutSlice: Identifiable {
     let end: Double
     let ring: Int // 0 = inner, 1 = outer
     let parentID: String?
+    /// Share of the *current* sunburst root (0...1).
+    let share: Double
+}
+
+private struct TopShareItem: Identifiable {
+    let id: String
+    let title: String
+    let value: UInt64
+    let share: Double
+    let hue: Double
 }
 
 // MARK: - Chart
@@ -68,6 +78,7 @@ private struct LaidOutSlice: Identifiable {
 struct SunburstChart: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var l10n: LocalizationStore
+    @Environment(\.colorScheme) private var colorScheme
 
     private let innerHole: CGFloat = 0.30
     private let ring0Inner: CGFloat = 0.34
@@ -75,16 +86,19 @@ struct SunburstChart: View {
     private let ring1Inner: CGFloat = 0.66
     private let ring1Outer: CGFloat = 0.94
     private let gapDegrees: Double = 0.6
+    private let topShareLimit = 5
 
     var body: some View {
         let current = model.sunburstRoot.node(path: model.sunburstPath)
         let slices = layoutSlices(root: current)
+        let topShares = topShareItems(from: current)
         let centerTitle = model.sunburstPath.isEmpty
             ? l10n.t("sunburst.apps")
             : current.title
         let centerValue = ByteFormat.string(for: current.value)
+        let hoverDetail = hoveredDetail(slices: slices, root: current)
 
-        VStack(spacing: 10) {
+        VStack(spacing: 8) {
             // Always-visible drill navigation
             HStack(spacing: 8) {
                 if !model.sunburstPath.isEmpty {
@@ -113,7 +127,7 @@ struct SunburstChart: View {
                             .foregroundStyle(FlowLensTheme.textSecondary)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 5)
-                            .background(Capsule().fill(Color.white.opacity(0.06)))
+                            .background(Capsule().fill(Color.primary.opacity(0.06)))
                     }
                     .buttonStyle(.plain)
                 } else {
@@ -124,7 +138,6 @@ struct SunburstChart: View {
                 Spacer(minLength: 4)
             }
 
-            // Breadcrumb: All › Chrome › …
             if !model.sunburstPath.isEmpty {
                 breadcrumb
             }
@@ -132,15 +145,12 @@ struct SunburstChart: View {
             GeometryReader { geo in
                 let size = min(geo.size.width, geo.size.height)
                 ZStack {
-                    // Soft outer glow ring
                     Circle()
-                        .stroke(Color.white.opacity(0.04), lineWidth: 1)
+                        .stroke(Color.primary.opacity(0.06), lineWidth: 1)
                         .frame(width: size * 0.96, height: size * 0.96)
 
                     ForEach(slices) { slice in
-                        let isHovered = model.hoverNodeID == slice.id
-                            || model.hoverNodeID == slice.parentID
-                            || (slice.parentID != nil && model.hoverNodeID == slice.id)
+                        let isHovered = isSliceHovered(slice)
                         let dimmed = model.hoverNodeID != nil && !isRelated(hover: model.hoverNodeID, slice: slice)
                         let ratios = ringRatios(ring: slice.ring)
 
@@ -151,7 +161,7 @@ struct SunburstChart: View {
                             outerRatio: ratios.outer
                         )
                         .fill(color(for: slice.node, ring: slice.ring, hovered: isHovered))
-                        .opacity(dimmed ? 0.28 : 1)
+                        .opacity(dimmed ? 0.22 : 1)
                         .overlay(
                             RingSlice(
                                 start: slice.start,
@@ -159,54 +169,88 @@ struct SunburstChart: View {
                                 innerRatio: ratios.inner,
                                 outerRatio: ratios.outer
                             )
-                            .stroke(Color.black.opacity(0.35), lineWidth: isHovered ? 1.5 : 0.6)
+                            .stroke(
+                                Color.primary.opacity(colorScheme == .light ? 0.12 : 0.35),
+                                lineWidth: isHovered ? 1.6 : 0.6
+                            )
                         )
-                        .shadow(color: isHovered ? color(for: slice.node, ring: slice.ring, hovered: true).opacity(0.45) : .clear,
-                                radius: isHovered ? 8 : 0)
-                        .scaleEffect(isHovered ? 1.02 : 1.0)
+                        .shadow(
+                            color: isHovered
+                                ? color(for: slice.node, ring: slice.ring, hovered: true).opacity(0.45)
+                                : .clear,
+                            radius: isHovered ? 8 : 0
+                        )
+                        .scaleEffect(isHovered ? 1.025 : 1.0)
                         .animation(.easeOut(duration: 0.15), value: model.hoverNodeID)
+
+                        // In-slice label for large enough arcs (inner ring).
+                        if slice.ring == 0, slice.share >= 0.08, (slice.end - slice.start) >= 18 {
+                            sliceCallout(slice: slice, size: size, emphasized: isHovered)
+                                .opacity(dimmed ? 0.15 : (isHovered ? 1 : 0.9))
+                        }
                     }
 
-                    // Center disc — liquid glass
+                    // Center disc
                     Circle()
                         .fill(.ultraThinMaterial)
-                        .overlay(Circle().fill(Color.white.opacity(0.06)))
+                        .overlay(Circle().fill(Color.primary.opacity(0.04)))
                         .frame(width: size * innerHole * 2, height: size * innerHole * 2)
                         .overlay(
                             Circle().strokeBorder(
                                 LinearGradient(
-                                    colors: [Color.white.opacity(0.35), Color.white.opacity(0.06)],
+                                    colors: [
+                                        Color.primary.opacity(colorScheme == .light ? 0.18 : 0.35),
+                                        Color.primary.opacity(0.06)
+                                    ],
                                     startPoint: .topLeading,
                                     endPoint: .bottomTrailing
                                 ),
                                 lineWidth: 1
                             )
                         )
-                        .shadow(color: .black.opacity(0.25), radius: 8, y: 2)
+                        .shadow(color: .black.opacity(colorScheme == .light ? 0.08 : 0.25), radius: 8, y: 2)
                         .overlay {
-                            VStack(spacing: 3) {
-                                Text(centerTitle)
-                                    .font(.system(size: 11, weight: .semibold))
-                                    .foregroundStyle(FlowLensTheme.textSecondary)
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.7)
-                                    .padding(.horizontal, 8)
-                                Text(centerValue)
-                                    .font(.system(size: 16, weight: .bold, design: .rounded))
-                                    .foregroundStyle(FlowLensTheme.textPrimary)
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.6)
-                                if let hover = hoveredLabel(slices: slices) {
-                                    Text(hover)
-                                        .font(.system(size: 10, weight: .medium))
-                                        .foregroundStyle(FlowLensTheme.accentBlue)
+                            VStack(spacing: 2) {
+                                if let hoverDetail {
+                                    Text(hoverDetail.title)
+                                        .font(.system(size: 10, weight: .semibold))
+                                        .foregroundStyle(FlowLensTheme.textSecondary)
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.65)
+                                        .padding(.horizontal, 6)
+                                    Text(hoverDetail.percentText)
+                                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                                        .foregroundStyle(FlowLensTheme.brandGreen)
                                         .lineLimit(1)
                                         .minimumScaleFactor(0.7)
-                                        .padding(.horizontal, 6)
-                                } else if !model.sunburstPath.isEmpty {
-                                    Text(l10n.t("sunburst.centerBack"))
-                                        .font(.system(size: 9, weight: .medium))
-                                        .foregroundStyle(FlowLensTheme.accentBlue.opacity(0.85))
+                                    Text(hoverDetail.bytesText)
+                                        .font(.system(size: 9, weight: .medium, design: .rounded))
+                                        .foregroundStyle(FlowLensTheme.textPrimary.opacity(0.85))
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.65)
+                                } else {
+                                    Text(centerTitle)
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundStyle(FlowLensTheme.textSecondary)
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.7)
+                                        .padding(.horizontal, 8)
+                                    Text(centerValue)
+                                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                                        .foregroundStyle(FlowLensTheme.textPrimary)
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.6)
+                                    if !model.sunburstPath.isEmpty {
+                                        Text(l10n.t("sunburst.centerBack"))
+                                            .font(.system(size: 9, weight: .medium))
+                                            .foregroundStyle(FlowLensTheme.accentBlue.opacity(0.85))
+                                    } else {
+                                        Text(l10n.t("sunburst.shareHint", topShares.count))
+                                            .font(.system(size: 9))
+                                            .foregroundStyle(FlowLensTheme.textSecondary.opacity(0.85))
+                                            .lineLimit(1)
+                                            .minimumScaleFactor(0.7)
+                                    }
                                 }
                             }
                         }
@@ -240,9 +284,175 @@ struct SunburstChart: View {
                 }
                 .frame(width: size, height: size)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onHover { inside in
+                    if !inside {
+                        model.setHoverNode(nil)
+                    }
+                }
             }
-            .frame(minHeight: 200)
+            .frame(minHeight: 160)
+            .layoutPriority(1)
+
+            topShareLegend(items: topShares)
         }
+        .id(l10n.revision)
+    }
+
+    // MARK: - Top share legend
+
+    private func topShareLegend(items: [TopShareItem]) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(l10n.t("sunburst.topShares"))
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(FlowLensTheme.textSecondary)
+                .textCase(.uppercase)
+
+            ForEach(items) { item in
+                let active = isLegendActive(item.id)
+                let dimmed = model.hoverNodeID != nil && !active
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Color(hue: item.hue, saturation: 0.7, brightness: active ? 0.95 : 0.78))
+                        .frame(width: 7, height: 7)
+                    Text(item.title)
+                        .font(.system(size: 10, weight: active ? .semibold : .medium))
+                        .foregroundStyle(FlowLensTheme.textPrimary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                    Spacer(minLength: 4)
+                    Text(percentString(item.share))
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundStyle(active ? FlowLensTheme.brandGreen : FlowLensTheme.textSecondary)
+                        .monospacedDigit()
+                }
+                .padding(.horizontal, 6)
+                .padding(.vertical, 3)
+                .background {
+                    if active {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(FlowLensTheme.brandGreen.opacity(0.10))
+                    }
+                }
+                .opacity(dimmed ? 0.35 : 1)
+                .contentShape(Rectangle())
+                .onHover { inside in
+                    if inside {
+                        model.setHoverNode(item.id)
+                    } else if model.hoverNodeID == item.id {
+                        model.setHoverNode(nil)
+                    }
+                }
+                .onTapGesture {
+                    model.drillInto(nodeID: item.id)
+                }
+                .animation(.easeOut(duration: 0.12), value: model.hoverNodeID)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func topShareItems(from root: AppModel.SunburstNode) -> [TopShareItem] {
+        let kids = root.children.sorted { $0.value > $1.value }
+        let total = max(1, root.value == 0 ? kids.reduce(UInt64(0)) { $0 &+ $1.value } : root.value)
+        return Array(kids.prefix(topShareLimit)).map { node in
+            TopShareItem(
+                id: node.id,
+                title: node.title,
+                value: node.value,
+                share: Double(node.value) / Double(total),
+                hue: node.hue
+            )
+        }
+    }
+
+    private func isLegendActive(_ id: String) -> Bool {
+        guard let hover = model.hoverNodeID else { return false }
+        if hover == id { return true }
+        if hover.hasPrefix(id + "|") { return true }
+        if hover.hasPrefix(id + "#") { return true }
+        return false
+    }
+
+    private func isSliceHovered(_ slice: LaidOutSlice) -> Bool {
+        guard let hover = model.hoverNodeID else { return false }
+        if hover == slice.id { return true }
+        if slice.parentID == hover { return true }
+        if hover.hasPrefix(slice.id + "|") { return true }
+        if let parent = slice.parentID, hover.hasPrefix(parent + "|"), slice.id == hover {
+            return true
+        }
+        return false
+    }
+
+    // MARK: - Slice callout
+
+    private func sliceCallout(slice: LaidOutSlice, size: CGFloat, emphasized: Bool) -> some View {
+        let mid = (slice.start + slice.end) / 2.0
+        let ratios = ringRatios(ring: slice.ring)
+        let radiusRatio = (ratios.inner + ratios.outer) / 2
+        let rad = Angle(degrees: mid).radians
+        let r = size / 2 * radiusRatio
+        let x = cos(rad) * r
+        let y = sin(rad) * r
+        return VStack(spacing: 0) {
+            Text(slice.node.title)
+                .font(.system(size: emphasized ? 9 : 8, weight: .semibold))
+                .lineLimit(1)
+            Text(percentString(slice.share))
+                .font(.system(size: 8, weight: .bold, design: .rounded))
+                .monospacedDigit()
+        }
+        .foregroundStyle(Color.white.opacity(0.92))
+        .shadow(color: .black.opacity(0.45), radius: 1.5, y: 0.5)
+        .frame(width: max(36, size * 0.18))
+        .offset(x: x, y: y)
+        .allowsHitTesting(false)
+    }
+
+    private struct HoverDetail {
+        let title: String
+        let percentText: String
+        let bytesText: String
+    }
+
+    private func hoveredDetail(slices: [LaidOutSlice], root: AppModel.SunburstNode) -> HoverDetail? {
+        guard let id = model.hoverNodeID else { return nil }
+        if let slice = slices.first(where: { $0.id == id }) {
+            return HoverDetail(
+                title: slice.node.title,
+                percentText: percentString(slice.share),
+                bytesText: ByteFormat.string(for: slice.node.value)
+            )
+        }
+        if let row = model.rankingRows.first(where: { $0.id == id }) {
+            let total = max(1, root.value)
+            let share = Double(row.snapshot.totals.totalBytes) / Double(total)
+            return HoverDetail(
+                title: row.snapshot.displayName,
+                percentText: percentString(share),
+                bytesText: ByteFormat.string(for: row.snapshot.totals.totalBytes)
+            )
+        }
+        // Outer child matched via parent prefix
+        if let slice = slices.first(where: { $0.id == id || id.hasPrefix($0.id) }) {
+            return HoverDetail(
+                title: slice.node.title,
+                percentText: percentString(slice.share),
+                bytesText: ByteFormat.string(for: slice.node.value)
+            )
+        }
+        return nil
+    }
+
+    private func percentString(_ share: Double) -> String {
+        let pct = share * 100
+        if pct >= 9.95 {
+            return String(format: "%.0f%%", pct)
+        }
+        if pct >= 1 {
+            return String(format: "%.1f%%", pct)
+        }
+        return String(format: "%.2f%%", pct)
     }
 
     private var breadcrumb: some View {
@@ -251,7 +461,7 @@ struct SunburstChart: View {
                 crumb(l10n.t("sunburst.root")) {
                     model.sunburstReset()
                 }
-                ForEach(Array(model.sunburstPath.enumerated()), id: \.offset) { index, step in
+                ForEach(Array(model.sunburstPath.enumerated()), id: \.offset) { index, _ in
                     Image(systemName: "chevron.right")
                         .font(.system(size: 8, weight: .bold))
                         .foregroundStyle(FlowLensTheme.textSecondary)
@@ -294,12 +504,11 @@ struct SunburstChart: View {
         var result: [LaidOutSlice] = []
         var angle = -90.0
 
-        // DaisyDisk-like: leave a small open arc on the right for air
         let usable = 340.0
-        let openGap = 20.0
 
         for app in apps {
-            let sweep = max(1.2, Double(app.value) / Double(total) * usable - gapDegrees)
+            let share = Double(app.value) / Double(total)
+            let sweep = max(1.2, share * usable - gapDegrees)
             let start = angle
             let end = angle + sweep
             result.append(LaidOutSlice(
@@ -308,17 +517,17 @@ struct SunburstChart: View {
                 start: start,
                 end: end,
                 ring: 0,
-                parentID: nil
+                parentID: nil,
+                share: share
             ))
 
-            // Outer ring: websites / projects / sessions under each app.
-            // When already drilled, `app` nodes are leaf segments — still draw outer stubs lightly.
             if app.hasChildren {
                 let sites = app.children.sorted { $0.value > $1.value }
                 let siteTotal = max(1, sites.reduce(UInt64(0)) { $0 &+ $1.value })
                 var sa = start
                 for site in sites {
-                    let ss = max(0.4, Double(site.value) / Double(siteTotal) * sweep - 0.15)
+                    let siteShareOfApp = Double(site.value) / Double(siteTotal)
+                    let ss = max(0.4, siteShareOfApp * sweep - 0.15)
                     let se = min(end, sa + ss)
                     result.append(LaidOutSlice(
                         id: site.id,
@@ -326,25 +535,25 @@ struct SunburstChart: View {
                         start: sa,
                         end: se,
                         ring: 1,
-                        parentID: app.id
+                        parentID: app.id,
+                        share: share * siteShareOfApp
                     ))
                     sa = se
                 }
             } else if model.sunburstPath.isEmpty {
-                // Root-level apps without children: thin outer rim only (no fake stubs for drill noise)
                 result.append(LaidOutSlice(
                     id: "\(app.id)#rim",
                     node: app,
                     start: start,
                     end: end,
                     ring: 1,
-                    parentID: app.id
+                    parentID: app.id,
+                    share: share
                 ))
             }
 
             angle = end + gapDegrees
         }
-        _ = openGap
         return result
     }
 
@@ -365,29 +574,15 @@ struct SunburstChart: View {
         guard let hover else { return true }
         if slice.id == hover { return true }
         if slice.parentID == hover { return true }
-        // Hovering a site highlights parent app slice
         if hover.hasPrefix(slice.id + "|") { return true }
         if let parent = slice.parentID, hover.hasPrefix(parent + "|") || hover == parent {
             return true
         }
-        // stub ids
         if slice.id.hasPrefix(hover + "#") { return true }
         if hover.contains("|"), let parent = slice.parentID, hover.hasPrefix(parent) {
             return slice.ring == 1 && (slice.id == hover || slice.parentID == parent)
         }
         return false
-    }
-
-    private func hoveredLabel(slices: [LaidOutSlice]) -> String? {
-        guard let id = model.hoverNodeID else { return nil }
-        if let slice = slices.first(where: { $0.id == id }) {
-            return "\(slice.node.title) · \(ByteFormat.string(for: slice.node.value))"
-        }
-        // parent from ranking
-        if let row = model.rankingRows.first(where: { $0.id == id }) {
-            return "\(row.snapshot.displayName) · \(ByteFormat.string(for: row.snapshot.totals.totalBytes))"
-        }
-        return nil
     }
 
     // MARK: - Hit testing
@@ -399,10 +594,7 @@ struct SunburstChart: View {
         let half = min(size.width, size.height) / 2
         guard half > 0 else { return nil }
         let r = hypot(dx, dy) / half
-        // atan2: 0 = east; convert so -90° is top (our layout start)
         var deg = Double(atan2(dy, dx)) * 180 / .pi
-        // Our slices use SwiftUI angles where 0 is east, -90 is north — same as atan2
-        // Normalize to [-90, 270) matching layout starting at -90
         if deg < -90 { deg += 360 }
         return (deg, r)
     }
@@ -417,7 +609,14 @@ struct SunburstChart: View {
         } else if polar.ratio >= ring1Inner && polar.ratio <= ring1Outer {
             ring = 1
         } else {
-            ring = nil
+            // Prefer nearest ring when pointer is in gaps between rings.
+            if polar.ratio > ring0Outer && polar.ratio < ring1Inner {
+                ring = polar.ratio < (ring0Outer + ring1Inner) / 2 ? 0 : 1
+            } else if polar.ratio > ring1Outer && polar.ratio <= 1.02 {
+                ring = 1
+            } else {
+                ring = nil
+            }
         }
         guard let ring else { return nil }
 
@@ -429,15 +628,12 @@ struct SunburstChart: View {
     }
 
     private func angleInRange(_ angle: Double, start: Double, end: Double) -> Bool {
-        // All angles in layout are in [-90, ~270]
-        return angle >= start && angle <= end
+        angle >= start && angle <= end
     }
 
     private func handlePointer(at point: CGPoint, in size: CGSize, slices: [LaidOutSlice]) {
         if let hit = hitSlice(at: point, size: size, slices: slices) {
-            // Prefer app id for list sync when hitting outer ring
             if hit.ring == 1, let parent = hit.parentID {
-                // If it's a real site (contains |), hover site; stubs hover parent
                 if hit.id.contains("|") {
                     model.setHoverNode(hit.id)
                 } else {
@@ -467,7 +663,6 @@ struct SunburstChart: View {
         if hit.ring == 0 {
             model.drillInto(nodeID: hit.id)
         } else if hit.ring == 1, let parent = hit.parentID {
-            // Outer site click: drill into parent if not already, or just highlight
             if model.sunburstPath.last != parent,
                current.children.first(where: { $0.id == parent })?.hasChildren == true {
                 model.drillInto(nodeID: parent)

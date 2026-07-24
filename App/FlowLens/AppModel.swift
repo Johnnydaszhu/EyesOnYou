@@ -76,6 +76,10 @@ final class AppModel: ObservableObject {
     /// Path total (down+up) history for compact dual sparkline.
     @Published var sparklineDirect: [Double] = []
     @Published var sparklineProxy: [Double] = []
+    /// Route-mix share history (percent 0...100) for proxy routing area chart.
+    @Published var sparklineRouteDirect: [Double] = []
+    @Published var sparklineRouteSystem: [Double] = []
+    @Published var sparklineRouteCustom: [Double] = []
     /// Period trend series for totals card mini charts (upload / download).
     @Published var periodTrendDown: [Double] = []
     @Published var periodTrendUp: [Double] = []
@@ -235,12 +239,54 @@ final class AppModel: ObservableObject {
         var localizationKey: String { "menu.style.\(rawValue)" }
     }
 
+    /// Window / UI appearance: follow system, force light, or force dark.
+    enum AppearanceMode: String, CaseIterable, Identifiable {
+        case system
+        case light
+        case dark
+        var id: String { rawValue }
+        var localizationKey: String { "appearance.\(rawValue)" }
+
+        var systemImage: String {
+            switch self {
+            case .system: return "circle.lefthalf.filled"
+            case .light: return "sun.max.fill"
+            case .dark: return "moon.fill"
+            }
+        }
+
+        /// `nil` = follow macOS appearance.
+        var preferredColorScheme: ColorScheme? {
+            switch self {
+            case .system: return nil
+            case .light: return .light
+            case .dark: return .dark
+            }
+        }
+
+        var nsAppearance: NSAppearance? {
+            switch self {
+            case .system: return nil
+            case .light: return NSAppearance(named: .aqua)
+            case .dark: return NSAppearance(named: .darkAqua)
+            }
+        }
+    }
+
     private static let menuBarStyleKey = "flowlens.menuBarDisplayStyle"
     private static let rankingColumnSpacingKey = "flowlens.rankingColumnSpacing"
+    private static let appearanceModeKey = "flowlens.appearanceMode"
 
     @Published var menuBarDisplayStyle: MenuBarDisplayStyle = .dualPath {
         didSet {
             UserDefaults.standard.set(menuBarDisplayStyle.rawValue, forKey: Self.menuBarStyleKey)
+        }
+    }
+
+    @Published var appearanceMode: AppearanceMode = .system {
+        didSet {
+            UserDefaults.standard.set(appearanceMode.rawValue, forKey: Self.appearanceModeKey)
+            Self.applyAppearance(appearanceMode)
         }
     }
 
@@ -257,7 +303,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    static let rankingColumnSpacingRange: ClosedRange<Double> = 2...14
+    static let rankingColumnSpacingRange: ClosedRange<Double> = 2...24
     static let rankingColumnSpacingDefault: Double = 4
 
     static func clampRankingColumnSpacing(_ value: Double) -> Double {
@@ -267,6 +313,17 @@ final class AppModel: ObservableObject {
     /// Soft update banner on the main window (nil / false → show nothing in the top bar).
     @Published var appUpdateAvailable: Bool = false
     @Published var appUpdateVersion: String? = nil
+    @Published var appUpdateHTMLURL: URL? = nil
+    @Published var appUpdateAssetURL: URL? = nil
+    @Published var appUpdateAssetName: String? = nil
+    @Published var appVersion: String = AppUpdateService.currentAppVersion()
+    @Published var isCheckingForUpdates: Bool = false
+    @Published var isDownloadingUpdate: Bool = false
+    @Published var updateCheckMessage: String? = nil
+    private var lastUpdateCheckAt: Date? = nil
+    /// Debounce for accidental duplicate auto checks in the same session.
+    private static let updateCheckDebounce: TimeInterval = 60
+    private static let lastUpdateCheckKey = "flowlens.lastUpdateCheckAt"
 
     /// Absolute `[start, end)` for the active overview period.
     func overviewDateRange(now: Date = Date()) -> (start: Date, end: Date) {
@@ -402,6 +459,11 @@ final class AppModel: ObservableObject {
         } else {
             rankingColumnSpacing = Self.rankingColumnSpacingDefault
         }
+        if let raw = UserDefaults.standard.string(forKey: Self.appearanceModeKey),
+           let mode = AppearanceMode(rawValue: raw) {
+            appearanceMode = mode
+        }
+        Self.applyAppearance(appearanceMode)
         loadFavorites()
         loadArchivedAndBlocked()
         seedPolicies()
@@ -410,6 +472,119 @@ final class AppModel: ObservableObject {
         }
         refreshPublishedState()
         startTicker()
+        scheduleInitialUpdateCheck()
+    }
+
+    // MARK: - App updates (GitHub Releases)
+
+    private func scheduleInitialUpdateCheck() {
+        if let ts = UserDefaults.standard.object(forKey: Self.lastUpdateCheckKey) as? TimeInterval {
+            lastUpdateCheckAt = Date(timeIntervalSince1970: ts)
+        }
+        // Defer network until after first UI paint.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            self.checkForUpdates(manual: false)
+        }
+    }
+
+    /// Check GitHub for a newer release. Manual checks always hit the network.
+    func checkForUpdates(manual: Bool) {
+        if isCheckingForUpdates || isDownloadingUpdate { return }
+        if !manual, let last = lastUpdateCheckAt,
+           Date().timeIntervalSince(last) < Self.updateCheckDebounce {
+            return
+        }
+
+        isCheckingForUpdates = true
+        if manual {
+            updateCheckMessage = nil
+        }
+
+        let local = appVersion
+        AppUpdateService.fetchLatestRelease { result in
+            self.isCheckingForUpdates = false
+            self.lastUpdateCheckAt = Date()
+            UserDefaults.standard.set(
+                Date().timeIntervalSince1970,
+                forKey: Self.lastUpdateCheckKey
+            )
+
+            switch result {
+            case .success(let release):
+                let newer = AppUpdateService.isNewer(release.version, than: local)
+                self.appUpdateAvailable = newer
+                self.appUpdateVersion = release.version
+                self.appUpdateHTMLURL = release.htmlURL
+                self.appUpdateAssetURL = release.assetURL
+                self.appUpdateAssetName = release.assetName
+                if manual {
+                    self.updateCheckMessage = newer ? nil : "upToDate"
+                }
+            case .failure(let error):
+                if manual {
+                    if let check = error as? AppUpdateService.CheckError, check == .noRelease {
+                        self.appUpdateAvailable = false
+                        self.updateCheckMessage = "noRelease"
+                    } else {
+                        self.updateCheckMessage = "failed"
+                    }
+                }
+            }
+        }
+    }
+
+    /// Download release asset when present; otherwise open the GitHub release page.
+    func installOrOpenUpdate() {
+        if isDownloadingUpdate { return }
+        if let asset = appUpdateAssetURL {
+            isDownloadingUpdate = true
+            updateCheckMessage = "downloading"
+            AppUpdateService.downloadAsset(
+                from: asset,
+                suggestedName: appUpdateAssetName
+            ) { result in
+                self.isDownloadingUpdate = false
+                switch result {
+                case .success(let fileURL):
+                    self.updateCheckMessage = "downloaded"
+                    AppUpdateService.revealInFinder(fileURL)
+                    AppUpdateService.openURL(fileURL)
+                case .failure:
+                    self.updateCheckMessage = "failed"
+                    if let page = self.appUpdateHTMLURL {
+                        AppUpdateService.openURL(page)
+                    } else {
+                        AppUpdateService.openURL(AppUpdateService.releasesPageURL)
+                    }
+                }
+            }
+            return
+        }
+        if let page = appUpdateHTMLURL {
+            AppUpdateService.openURL(page)
+        } else {
+            AppUpdateService.openURL(AppUpdateService.releasesPageURL)
+        }
+    }
+
+    func openReleasesPage() {
+        if let page = appUpdateHTMLURL {
+            AppUpdateService.openURL(page)
+        } else {
+            AppUpdateService.openURL(AppUpdateService.releasesPageURL)
+        }
+    }
+
+    /// Push appearance to AppKit so NSVisualEffectView / window chrome match SwiftUI.
+    static func applyAppearance(_ mode: AppearanceMode) {
+        NSApp.appearance = mode.nsAppearance
+        for window in NSApp.windows {
+            window.appearance = mode.nsAppearance
+        }
+    }
+
+    func setAppearanceMode(_ mode: AppearanceMode) {
+        appearanceMode = mode
     }
 
     func resetRankingColumnSpacing() {
@@ -697,6 +872,9 @@ final class AppModel: ObservableObject {
         }
         sparklineDown = []
         sparklineUp = []
+        sparklineRouteDirect = []
+        sparklineRouteSystem = []
+        sparklineRouteCustom = []
         refreshPublishedState()
     }
 
@@ -705,6 +883,9 @@ final class AppModel: ObservableObject {
         selectedApp = nil
         sparklineDown = []
         sparklineUp = []
+        sparklineRouteDirect = []
+        sparklineRouteSystem = []
+        sparklineRouteCustom = []
         refreshPublishedState()
     }
 
@@ -878,14 +1059,9 @@ final class AppModel: ObservableObject {
         selectedTab = tab
     }
 
-    /// Open the system Settings scene (language, filter/proxy toggles).
+    /// Open the dedicated Settings window (language, appearance, protection, updates).
     func openSettings() {
-        NSApp.activate(ignoringOtherApps: true)
-        // macOS 14+ uses showSettingsWindow:; 13 uses showPreferencesWindow:.
-        if NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) {
-            return
-        }
-        NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+        SettingsWindowController.shared.show(model: self)
     }
 
     /// Split total live rates into direct vs proxy using current route mix shares.
@@ -931,6 +1107,15 @@ final class AppModel: ObservableObject {
         if sparklineDirect.count > 40 {
             sparklineDirect.removeFirst(sparklineDirect.count - 40)
             sparklineProxy.removeFirst(sparklineProxy.count - 40)
+        }
+
+        sparklineRouteDirect.append(routeMix.directPercent)
+        sparklineRouteSystem.append(routeMix.systemProxyPercent)
+        sparklineRouteCustom.append(routeMix.customProxyPercent)
+        if sparklineRouteDirect.count > 40 {
+            sparklineRouteDirect.removeFirst(sparklineRouteDirect.count - 40)
+            sparklineRouteSystem.removeFirst(sparklineRouteSystem.count - 40)
+            sparklineRouteCustom.removeFirst(sparklineRouteCustom.count - 40)
         }
     }
 
@@ -978,6 +1163,67 @@ final class AppModel: ObservableObject {
         rules = policyStore.allRules()
         groups = policyStore.allGroups()
         recomputeRouteLabels()
+    }
+
+    // MARK: - Groups
+
+    func group(containing app: AppIdentityKey) -> AppGroup? {
+        groups.first(where: { $0.memberKeys.contains(app) })
+    }
+
+    @discardableResult
+    func createGroup(
+        name: String,
+        defaultRoute: RouteAction = .inherit,
+        defaultFirewall: FirewallAction = .inherit
+    ) -> AppGroup? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let group = AppGroup(
+            name: trimmed,
+            defaultRoute: defaultRoute,
+            defaultFirewall: defaultFirewall
+        )
+        policyStore.upsert(group: group)
+        refreshPublishedState()
+        return group
+    }
+
+    func renameGroup(id: UUID, name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard var group = groups.first(where: { $0.id == id }) else { return }
+        group.name = trimmed
+        policyStore.upsert(group: group)
+        refreshPublishedState()
+    }
+
+    func updateGroupDefaults(
+        id: UUID,
+        defaultRoute: RouteAction? = nil,
+        defaultFirewall: FirewallAction? = nil
+    ) {
+        guard var group = groups.first(where: { $0.id == id }) else { return }
+        if let defaultRoute { group.defaultRoute = defaultRoute }
+        if let defaultFirewall { group.defaultFirewall = defaultFirewall }
+        policyStore.upsert(group: group)
+        refreshPublishedState()
+    }
+
+    func deleteGroup(id: UUID) {
+        policyStore.removeGroup(id: id)
+        refreshPublishedState()
+    }
+
+    /// Move app into `groupID`, or `nil` to leave ungrouped. Membership is exclusive.
+    func setAppGroup(_ app: AppIdentityKey, groupID: UUID?) {
+        policyStore.moveApp(app, toGroup: groupID)
+        refreshPublishedState()
+    }
+
+    func reorderGroups(orderedIDs: [UUID]) {
+        policyStore.reorderGroups(orderedIDs: orderedIDs)
+        refreshPublishedState()
     }
 
     /// Toggle selective proxy for an app using the **resolved** route (rules + groups),
@@ -1196,67 +1442,21 @@ final class AppModel: ObservableObject {
         blockedToday = dayTotals.flowsBlocked > 0 ? dayTotals.flowsBlocked : (demoMode && selectedIdentity == nil ? 1_248 : dayTotals.flowsBlocked)
         allowedConnections = dayTotals.flowsOpened > 0 ? dayTotals.flowsOpened : (demoMode && selectedIdentity == nil ? 12_853 : dayTotals.flowsOpened)
 
-        if let selectedIdentity,
-           let snap = tops.first(where: { $0.app == selectedIdentity }) {
-            // Proxy routing card reflects the selected app's resolved route.
-            let resolved = snap.route
-            switch resolved {
-            case .direct, .inherit:
-                routeMix = RouteMix(
-                    directPercent: 100,
-                    systemProxyPercent: 0,
-                    customProxyPercent: 0,
-                    blockedCount: blockedToday,
-                    activeRules: policyStore.compileSnapshot().activeRuleCount + groups.count
-                )
-            case .systemProxy:
-                routeMix = RouteMix(
-                    directPercent: 0,
-                    systemProxyPercent: 100,
-                    customProxyPercent: 0,
-                    blockedCount: blockedToday,
-                    activeRules: policyStore.compileSnapshot().activeRuleCount + groups.count
-                )
-            case .proxy(_):
-                routeMix = RouteMix(
-                    directPercent: 0,
-                    systemProxyPercent: 0,
-                    customProxyPercent: 100,
-                    blockedCount: blockedToday,
-                    activeRules: policyStore.compileSnapshot().activeRuleCount + groups.count
-                )
-            }
-            if !proxyEnabled {
-                routeMix = RouteMix(
-                    directPercent: 100,
-                    systemProxyPercent: 0,
-                    customProxyPercent: 0,
-                    blockedCount: blockedToday,
-                    activeRules: routeMix.activeRules
-                )
-            }
-        } else if proxyEnabled {
-            // Demo mix with light motion so shares feel live (real path: tally by resolved route).
-            let wobble = sin(demoClock / 11) * 4
-            let direct = max(5, min(90, 62 + wobble))
-            let system = max(5, min(40, 25 - wobble * 0.5))
-            let custom = max(0, 100 - direct - system)
-            routeMix = RouteMix(
-                directPercent: direct,
-                systemProxyPercent: system,
-                customProxyPercent: custom,
-                blockedCount: blockedToday,
-                activeRules: policyStore.compileSnapshot().activeRuleCount + groups.count
-            )
-        } else {
-            routeMix = RouteMix(
-                directPercent: 100,
-                systemProxyPercent: 0,
-                customProxyPercent: 0,
-                blockedCount: blockedToday,
-                activeRules: policyStore.compileSnapshot().activeRuleCount + groups.count
-            )
-        }
+        let activeRuleCount = policyStore.compileSnapshot().activeRuleCount + groups.count
+        let periodRouteShare = aggregator.routeByteShare(
+            for: selectedIdentity,
+            from: periodFrom,
+            to: periodTo
+        )
+        routeMix = Self.makeRouteMix(
+            share: periodRouteShare,
+            selectedRoute: selectedIdentity.flatMap { id in tops.first(where: { $0.app == id })?.route },
+            proxyEnabled: proxyEnabled,
+            blockedFallback: blockedToday,
+            activeRules: activeRuleCount,
+            demoMode: demoMode,
+            demoClock: demoClock
+        )
         recomputePathRates()
 
         // Build ranking rows with group + proportional demo disk share.
@@ -1437,6 +1637,95 @@ final class AppModel: ObservableObject {
     private func demoDiskBias(for app: AppIdentityKey) -> Double {
         let h = abs(app.signingIdentifier.hashValue % 100)
         return 0.7 + Double(h) / 200.0
+    }
+
+    /// Build proxy-routing card mix from period-scoped byte shares (time range + optional app).
+    private static func makeRouteMix(
+        share: (direct: UInt64, systemProxy: UInt64, customProxy: UInt64, blockedFlows: UInt64),
+        selectedRoute: RouteAction?,
+        proxyEnabled: Bool,
+        blockedFallback: UInt64,
+        activeRules: Int,
+        demoMode: Bool,
+        demoClock: TimeInterval
+    ) -> RouteMix {
+        let blocked = share.blockedFlows > 0 ? share.blockedFlows : blockedFallback
+
+        if !proxyEnabled {
+            return RouteMix(
+                directPercent: 100,
+                systemProxyPercent: 0,
+                customProxyPercent: 0,
+                blockedCount: blocked,
+                activeRules: activeRules
+            )
+        }
+
+        let total = share.direct &+ share.systemProxy &+ share.customProxy
+        if total > 0 {
+            let d = Double(share.direct) / Double(total) * 100
+            let s = Double(share.systemProxy) / Double(total) * 100
+            let c = max(0, 100 - d - s)
+            return RouteMix(
+                directPercent: d,
+                systemProxyPercent: s,
+                customProxyPercent: c,
+                blockedCount: blocked,
+                activeRules: activeRules
+            )
+        }
+
+        // No bytes in range: if an app is selected, show its resolved route; else demo blend.
+        if let selectedRoute {
+            switch selectedRoute {
+            case .direct, .inherit:
+                return RouteMix(
+                    directPercent: 100,
+                    systemProxyPercent: 0,
+                    customProxyPercent: 0,
+                    blockedCount: blocked,
+                    activeRules: activeRules
+                )
+            case .systemProxy:
+                return RouteMix(
+                    directPercent: 0,
+                    systemProxyPercent: 100,
+                    customProxyPercent: 0,
+                    blockedCount: blocked,
+                    activeRules: activeRules
+                )
+            case .proxy(_):
+                return RouteMix(
+                    directPercent: 0,
+                    systemProxyPercent: 0,
+                    customProxyPercent: 100,
+                    blockedCount: blocked,
+                    activeRules: activeRules
+                )
+            }
+        }
+
+        if demoMode {
+            let wobble = sin(demoClock / 11) * 4
+            let direct = max(5, min(90, 62 + wobble))
+            let system = max(5, min(40, 25 - wobble * 0.5))
+            let custom = max(0, 100 - direct - system)
+            return RouteMix(
+                directPercent: direct,
+                systemProxyPercent: system,
+                customProxyPercent: custom,
+                blockedCount: blocked,
+                activeRules: activeRules
+            )
+        }
+
+        return RouteMix(
+            directPercent: 100,
+            systemProxyPercent: 0,
+            customProxyPercent: 0,
+            blockedCount: blocked,
+            activeRules: activeRules
+        )
     }
 
     private func resolveFirewall(for app: AppIdentityKey) -> FirewallAction {

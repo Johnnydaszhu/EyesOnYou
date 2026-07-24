@@ -17,27 +17,46 @@ struct MainDashboardView: View {
                         .liquidGlassBar()
                 }
 
+                topTrailingChrome
+
                 GlobalTimeRangeBar()
                     .padding(.horizontal, 16)
-                    .padding(.top, model.appUpdateAvailable ? 8 : 12)
+                    .padding(.top, 4)
                     .padding(.bottom, 2)
 
                 content
-                    .padding(16)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    .padding(.bottom, 4)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 footer
-                    .liquidGlassBar()
             }
         }
-        // Follow system appearance — design refs cover both dark charcoal and cream light.
+        .preferredColorScheme(model.appearanceMode.preferredColorScheme)
         .id(l10n.revision)
         .onAppear {
+            AppModel.applyAppearance(model.appearanceMode)
             if let delegate = NSApp.delegate as? AppDelegate {
                 delegate.bind(model: model)
             } else {
                 MenuBarController.shared.install(model: model)
             }
         }
+        .onChange(of: model.appearanceMode) { mode in
+            AppModel.applyAppearance(mode)
+        }
+    }
+
+    /// Top-right appearance control (Auto / Light / Dark).
+    private var topTrailingChrome: some View {
+        HStack(spacing: 8) {
+            Spacer(minLength: 0)
+            AppearanceModePicker()
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, model.appUpdateAvailable ? 6 : 10)
+        .padding(.bottom, 2)
     }
 
     // MARK: - Update banner (only top chrome)
@@ -58,8 +77,13 @@ struct MainDashboardView: View {
                 }
             }
             Spacer(minLength: 8)
+            if model.isDownloadingUpdate {
+                ProgressView()
+                    .controlSize(.small)
+                    .padding(.trailing, 6)
+            }
             Button(l10n.t("update.action")) {
-                // Placeholder: wire to real updater later.
+                model.installOrOpenUpdate()
             }
             .buttonStyle(.plain)
             .font(.system(size: 11, weight: .semibold))
@@ -67,6 +91,7 @@ struct MainDashboardView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 5)
             .background(Capsule().fill(FlowLensTheme.accentBlue.opacity(0.95)))
+            .disabled(model.isDownloadingUpdate)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
@@ -79,10 +104,8 @@ struct MainDashboardView: View {
     }
 
     private var footer: some View {
-        HStack {
-            Text(l10n.t("footer.tagline"))
-                .font(.system(size: 11))
-                .foregroundStyle(FlowLensTheme.textSecondary)
+        HStack(spacing: 10) {
+            footerVersionControl
             Spacer()
             HStack(spacing: 6) {
                 Image(systemName: "wifi")
@@ -104,8 +127,64 @@ struct MainDashboardView: View {
             .help(l10n.t("settings.title"))
             .padding(.leading, 4)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 16)
+        .padding(.top, 6)
+        .padding(.bottom, 10)
+        // No separate bar fill — sits on the same window backdrop as content.
+    }
+
+    private var footerVersionControl: some View {
+        HStack(spacing: 8) {
+            Button {
+                model.checkForUpdates(manual: true)
+            } label: {
+                HStack(spacing: 5) {
+                    if model.isCheckingForUpdates {
+                        ProgressView()
+                            .controlSize(.mini)
+                    } else {
+                        Image(systemName: model.appUpdateAvailable ? "arrow.down.circle.fill" : "info.circle")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    Text("v\(model.appVersion)")
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                }
+                .foregroundStyle(
+                    model.appUpdateAvailable
+                        ? FlowLensTheme.accentBlue
+                        : FlowLensTheme.textSecondary
+                )
+            }
+            .buttonStyle(.plain)
+            .help(l10n.t("update.check.help"))
+            .disabled(model.isCheckingForUpdates || model.isDownloadingUpdate)
+
+            if model.appUpdateAvailable {
+                Button {
+                    model.installOrOpenUpdate()
+                } label: {
+                    Text(
+                        model.isDownloadingUpdate
+                            ? l10n.t("update.downloading")
+                            : l10n.t("update.action")
+                    )
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.black.opacity(0.85))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(FlowLensTheme.accentBlue.opacity(0.95)))
+                }
+                .buttonStyle(.plain)
+                .disabled(model.isDownloadingUpdate)
+                .help(l10n.t("update.action.help"))
+            } else if let key = model.updateCheckMessage {
+                Text(l10n.t("update.status.\(key)"))
+                    .font(.system(size: 10))
+                    .foregroundStyle(FlowLensTheme.textSecondary)
+                    .lineLimit(1)
+            }
+        }
     }
 }
 

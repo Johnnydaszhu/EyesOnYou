@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		01DAD3DA1D4557B051C0EBC7 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8946E972E09FE090D788BCDF /* Theme.swift */; };
+		04D522CD80D28F7182723035 /* AppUpdateService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D041D25474A15A2556ED7F1A /* AppUpdateService.swift */; };
 		140B71ACC843D571471A56F9 /* FlowLensIPC in Frameworks */ = {isa = PBXBuildFile; productRef = 69DE85117CE127FD1A960784 /* FlowLensIPC */; };
 		1A1E83DAE9FB838D21F8F1C0 /* BentoLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53F509D9A0DE09E83EAB983C /* BentoLayout.swift */; };
 		1DC0604E0A3453FEF2C4DE02 /* FilterManagerController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AAAA164256DA252061B3789F /* FilterManagerController.swift */; };
@@ -31,6 +32,8 @@
 		A7E97D56CDD892CB5557261C /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 146EFF018627D3F3BD8A0C26 /* AppModel.swift */; };
 		A9B1F6E4202C38D588DCD62E /* FlowLensApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51E1ACC4174B593AD9C44834 /* FlowLensApp.swift */; };
 		AC6884BFFA7261BCA4F09BFB /* FlowLensRuleEngine in Frameworks */ = {isa = PBXBuildFile; productRef = A7866B2262AA4BBE331F364F /* FlowLensRuleEngine */; };
+		B2290043EE046C6332ABB04C /* GroupManagerViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D26CABF59A7DFD281A08270D /* GroupManagerViews.swift */; };
+		B53AE225496F25CB84116035 /* SettingsWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2AC4613B3A376037EAFDF83E /* SettingsWindowController.swift */; };
 		CE97132A8B07454BC5CD6F55 /* SunburstChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = E13DBC5D97BC5D41D601A280 /* SunburstChart.swift */; };
 		D39C52E3B9438F598E65DAA4 /* SystemExtensions.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A799AB3F40310BAE6B95BD31 /* SystemExtensions.framework */; };
 		DFCD835E798A231F921C5CF6 /* FlowLensNetworkExtension.systemextension in Embed Dependencies */ = {isa = PBXBuildFile; fileRef = 5508FCFB19EBC3967C78477A /* FlowLensNetworkExtension.systemextension */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -67,6 +70,7 @@
 /* Begin PBXFileReference section */
 		146EFF018627D3F3BD8A0C26 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		21AAD310A39CB63DBEA8CF3F /* GlobalSearchBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalSearchBar.swift; sourceTree = "<group>"; };
+		2AC4613B3A376037EAFDF83E /* SettingsWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowController.swift; sourceTree = "<group>"; };
 		2D9D5F4A1545524F7AC9EC9D /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		448DF02635E6AA29171B4DD5 /* AppsRulesProxyHistoryViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppsRulesProxyHistoryViews.swift; sourceTree = "<group>"; };
 		474AC95039BCD487568E6853 /* L10n.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = L10n.swift; sourceTree = "<group>"; };
@@ -85,6 +89,8 @@
 		AAAA164256DA252061B3789F /* FilterManagerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilterManagerController.swift; sourceTree = "<group>"; };
 		CC95010AE5E84719F927EA2A /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
 		CD4055A5258C6C36594BE1F9 /* FlowFilterDataProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlowFilterDataProvider.swift; sourceTree = "<group>"; };
+		D041D25474A15A2556ED7F1A /* AppUpdateService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateService.swift; sourceTree = "<group>"; };
+		D26CABF59A7DFD281A08270D /* GroupManagerViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroupManagerViews.swift; sourceTree = "<group>"; };
 		DEE15FACDA4C412D6A805F5C /* OverviewTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverviewTabView.swift; sourceTree = "<group>"; };
 		E13DBC5D97BC5D41D601A280 /* SunburstChart.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SunburstChart.swift; sourceTree = "<group>"; };
 		E6FCB5E5DA0117FF110D10E6 /* ExtensionRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionRuntime.swift; sourceTree = "<group>"; };
@@ -155,15 +161,18 @@
 				7571A7FC78B3E293625B7B7A /* AppIconView.swift */,
 				146EFF018627D3F3BD8A0C26 /* AppModel.swift */,
 				448DF02635E6AA29171B4DD5 /* AppsRulesProxyHistoryViews.swift */,
+				D041D25474A15A2556ED7F1A /* AppUpdateService.swift */,
 				53F509D9A0DE09E83EAB983C /* BentoLayout.swift */,
 				AAAA164256DA252061B3789F /* FilterManagerController.swift */,
 				51E1ACC4174B593AD9C44834 /* FlowLensApp.swift */,
 				21AAD310A39CB63DBEA8CF3F /* GlobalSearchBar.swift */,
 				78F29A419CA7BDC32BF080BE /* GlobalTimeRangeBar.swift */,
+				D26CABF59A7DFD281A08270D /* GroupManagerViews.swift */,
 				EE249AA5368677FE75C9AD0D /* MainDashboardView.swift */,
 				77EA9F5347ECAF68596078C9 /* MenuBarController.swift */,
 				4A7643A2D9A4D4C2A24C9F26 /* MenuBarPopoverView.swift */,
 				DEE15FACDA4C412D6A805F5C /* OverviewTabView.swift */,
+				2AC4613B3A376037EAFDF83E /* SettingsWindowController.swift */,
 				E13DBC5D97BC5D41D601A280 /* SunburstChart.swift */,
 				8946E972E09FE090D788BCDF /* Theme.swift */,
 			);
@@ -316,17 +325,20 @@
 			files = (
 				FE4A0DA3D1C2AA5058D418C4 /* AppIconView.swift in Sources */,
 				A7E97D56CDD892CB5557261C /* AppModel.swift in Sources */,
+				04D522CD80D28F7182723035 /* AppUpdateService.swift in Sources */,
 				5595977DEE58B8C102525A67 /* AppsRulesProxyHistoryViews.swift in Sources */,
 				1A1E83DAE9FB838D21F8F1C0 /* BentoLayout.swift in Sources */,
 				1DC0604E0A3453FEF2C4DE02 /* FilterManagerController.swift in Sources */,
 				A9B1F6E4202C38D588DCD62E /* FlowLensApp.swift in Sources */,
 				A4693C6447480FD0BC2D6D8E /* GlobalSearchBar.swift in Sources */,
 				932F84424E361614CCE70219 /* GlobalTimeRangeBar.swift in Sources */,
+				B2290043EE046C6332ABB04C /* GroupManagerViews.swift in Sources */,
 				609C4716164409314F69DFD9 /* L10n.swift in Sources */,
 				673E98873B94340FF8088B81 /* MainDashboardView.swift in Sources */,
 				7E7B4AC4257F8011CDA10616 /* MenuBarController.swift in Sources */,
 				56A8DB45D225F4326CF038EB /* MenuBarPopoverView.swift in Sources */,
 				9370863D79F891890BA575DA /* OverviewTabView.swift in Sources */,
+				B53AE225496F25CB84116035 /* SettingsWindowController.swift in Sources */,
 				CE97132A8B07454BC5CD6F55 /* SunburstChart.swift in Sources */,
 				01DAD3DA1D4557B051C0EBC7 /* Theme.swift in Sources */,
 			);

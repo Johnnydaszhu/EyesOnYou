@@ -13,14 +13,22 @@ struct FlowLensApp: App {
                 .environmentObject(appModel)
                 .environmentObject(l10n)
                 .frame(minWidth: 1100, minHeight: 720)
+                .preferredColorScheme(appModel.appearanceMode.preferredColorScheme)
                 .onAppear {
                     // Ensure menu bar is bound to this model instance.
+                    AppModel.applyAppearance(appModel.appearanceMode)
                     appDelegate.bind(model: appModel)
                 }
         }
         .defaultSize(width: 1280, height: 820)
         .commands {
             CommandGroup(replacing: .newItem) {}
+            CommandGroup(replacing: .appSettings) {
+                Button(l10n.t("settings.title")) {
+                    appModel.openSettings()
+                }
+                .keyboardShortcut(",", modifiers: [.command])
+            }
             CommandMenu("FlowLens") {
                 Button(l10n.t("menu.openDashboard")) {
                     appModel.openDashboard()
@@ -31,12 +39,6 @@ struct FlowLensApp: App {
                 }
                 .keyboardShortcut("l", modifiers: [.command, .shift])
             }
-        }
-
-        Settings {
-            SettingsView()
-                .environmentObject(appModel)
-                .environmentObject(l10n)
         }
     }
 }

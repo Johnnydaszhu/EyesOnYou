@@ -269,7 +269,7 @@ struct CardBackground: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .padding(16)
+            .padding(14)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background {
                 LiquidGlassBackground(style: style)
@@ -386,5 +386,50 @@ struct RouteBadge: View {
                     )
             }
             .id(l10n.revision)
+    }
+}
+
+// MARK: - Appearance picker (Auto / Light / Dark)
+
+/// Compact top-trailing control: Auto · Light · Dark.
+struct AppearanceModePicker: View {
+    @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var l10n: LocalizationStore
+
+    var body: some View {
+        Menu {
+            ForEach(AppModel.AppearanceMode.allCases) { mode in
+                Button {
+                    model.setAppearanceMode(mode)
+                } label: {
+                    HStack {
+                        Label(l10n.t(mode.localizationKey), systemImage: mode.systemImage)
+                        if model.appearanceMode == mode {
+                            Spacer(minLength: 8)
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: model.appearanceMode.systemImage)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(FlowLensTheme.textSecondary)
+                .frame(width: 28, height: 28)
+                .background {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.primary.opacity(0.05))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(FlowLensTheme.cardBorder.opacity(0.8), lineWidth: 0.7)
+                        )
+                }
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .help(l10n.t("appearance.help"))
+        .accessibilityLabel(l10n.t("appearance.help"))
+        .id(l10n.revision)
     }
 }

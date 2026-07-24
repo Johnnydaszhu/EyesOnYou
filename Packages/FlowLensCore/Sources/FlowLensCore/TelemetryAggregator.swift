@@ -443,6 +443,47 @@ public final class TelemetryAggregator: @unchecked Sendable {
         return (upBins, downBins)
     }
 
+    /// Byte share by route kind over a wall-clock range (optionally scoped to one app).
+    public func routeByteShare(
+        for app: AppIdentityKey?,
+        from: Date,
+        to: Date
+    ) -> (direct: UInt64, systemProxy: UInt64, customProxy: UInt64, blockedFlows: UInt64) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let fromMs = Int64(from.timeIntervalSince1970 * 1000)
+        let toMs = Int64(to.timeIntervalSince1970 * 1000)
+        let spanSec = max(1, Int(to.timeIntervalSince1970 - from.timeIntervalSince1970))
+        let granularity = Self.chooseGranularity(spanSeconds: spanSec)
+
+        var direct: UInt64 = 0
+        var system: UInt64 = 0
+        var custom: UInt64 = 0
+        var blocked: UInt64 = 0
+
+        for (key, totals) in buckets {
+            guard key.granularity == granularity else { continue }
+            if let app, key.app != app { continue }
+            if key.bucketStartMs + Int64(granularity.seconds) * 1000 <= fromMs { continue }
+            if key.bucketStartMs >= toMs { continue }
+            let bytes = totals.totalBytes
+            blocked &+= totals.flowsBlocked
+            switch key.routeKind {
+            case .direct, .unknown:
+                direct &+= bytes
+            case .systemProxy:
+                system &+= bytes
+            case .customProxy:
+                custom &+= bytes
+            case .blocked:
+                // Blocked path still counts under share as non-routed; fold into direct for mix UI.
+                direct &+= bytes
+            }
+        }
+        return (direct, system, custom, blocked)
+    }
+
     public func recentConnections(limit: Int = 20) -> [LiveConnection] {
         lock.lock()
         defer { lock.unlock() }

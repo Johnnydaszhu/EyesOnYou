@@ -145,10 +145,10 @@ struct BentoMetrics: Equatable {
         min(max(container.height * 0.22, 160), 240)
     }
 
-    func sunburstWidth(in total: CGFloat) -> CGFloat {
-        if !isSideBySideDetail { return total }
-        let raw = total * sunburstWidthRatio
-        return min(max(raw, 240), min(400, total * 0.42))
+    /// Width of one equal column in the 3-up bento grid.
+    func columnWidth(in total: CGFloat, columns: Int = 3) -> CGFloat {
+        let cols = max(1, columns)
+        return floor((total - gap * CGFloat(cols - 1)) / CGFloat(cols))
     }
 }
 

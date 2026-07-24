@@ -8,6 +8,7 @@ import FlowLensProxyCore
 struct AppsTabView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var l10n: LocalizationStore
+    @State private var isGroupManagerPresented = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -44,10 +45,21 @@ struct AppsTabView: View {
             }
 
             if !model.groups.isEmpty {
-                Text(l10n.t("apps.groups"))
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(FlowLensTheme.textPrimary)
-                    .padding(.top, 8)
+                HStack {
+                    Text(l10n.t("apps.groups"))
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(FlowLensTheme.textPrimary)
+                    Spacer()
+                    Button {
+                        isGroupManagerPresented = true
+                    } label: {
+                        Label(l10n.t("groups.manage"), systemImage: "folder.badge.gearshape")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(FlowLensTheme.accentBlue)
+                }
+                .padding(.top, 8)
                 ForEach(model.groups) { group in
                     HStack {
                         Image(systemName: "folder.fill")
@@ -62,11 +74,36 @@ struct AppsTabView: View {
                     .foregroundStyle(FlowLensTheme.textPrimary)
                     .padding(10)
                     .background { LiquidGlassBackground(style: .inset, cornerRadius: 10) }
+                    .contextMenu {
+                        Button(l10n.t("groups.manage")) {
+                            isGroupManagerPresented = true
+                        }
+                        Button(role: .destructive) {
+                            model.deleteGroup(id: group.id)
+                        } label: {
+                            Label(l10n.t("groups.delete"), systemImage: "trash")
+                        }
+                    }
                 }
+            } else {
+                Button {
+                    isGroupManagerPresented = true
+                } label: {
+                    Label(l10n.t("groups.manage"), systemImage: "folder.badge.gearshape")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(FlowLensTheme.accentBlue)
+                .padding(.top, 8)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .id(l10n.revision)
+        .sheet(isPresented: $isGroupManagerPresented) {
+            GroupManagerSheet()
+                .environmentObject(model)
+                .environmentObject(l10n)
+        }
     }
 
     @ViewBuilder
@@ -367,110 +404,3 @@ struct HistoryTabView: View {
     }
 }
 
-// MARK: - Settings
-
-struct SettingsView: View {
-    @EnvironmentObject private var model: AppModel
-    @EnvironmentObject private var l10n: LocalizationStore
-
-    var body: some View {
-        Form {
-            Section {
-                Picker(l10n.t("lang.picker"), selection: Binding(
-                    get: { l10n.preference },
-                    set: { l10n.setPreference($0) }
-                )) {
-                    ForEach(AppLanguage.allCases) { lang in
-                        Text(l10n.t(lang.settingsLabelKey)).tag(lang)
-                    }
-                }
-                Text(l10n.t("lang.hint"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(String(format: l10n.t("lang.current"), displayNameForResolved))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            } header: {
-                Text(l10n.t("lang.section"))
-            }
-
-            Section {
-                Toggle(l10n.t("settings.filterEnabled"), isOn: Binding(
-                    get: { model.filterEnabled },
-                    set: { model.setFilterEnabled($0) }
-                ))
-                Toggle(l10n.t("settings.proxyEnabled"), isOn: Binding(
-                    get: { model.proxyEnabled },
-                    set: { model.setProxyEnabled($0) }
-                ))
-                Toggle(l10n.t("settings.alertsEnabled"), isOn: $model.alertsEnabled)
-            } header: {
-                Text(l10n.t("settings.protection"))
-            }
-
-            Section {
-                Picker(l10n.t("menu.menuStyle"), selection: Binding(
-                    get: { model.menuBarDisplayStyle },
-                    set: {
-                        model.menuBarDisplayStyle = $0
-                        MenuBarController.shared.refreshStatusItemAppearance()
-                    }
-                )) {
-                    ForEach(AppModel.MenuBarDisplayStyle.allCases) { style in
-                        Text(l10n.t(style.localizationKey)).tag(style)
-                    }
-                }
-                Text(l10n.t("menu.style.hint"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } header: {
-                Text(l10n.t("menu.style.section"))
-            }
-
-            Section {
-                HStack {
-                    Text(l10n.t("overview.colSpacing"))
-                    Spacer()
-                    Text("\(Int(model.rankingColumnSpacing)) pt")
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                }
-                Slider(
-                    value: Binding(
-                        get: { model.rankingColumnSpacing },
-                        set: { model.rankingColumnSpacing = AppModel.clampRankingColumnSpacing($0) }
-                    ),
-                    in: AppModel.rankingColumnSpacingRange,
-                    step: 1
-                )
-                Text(l10n.t("overview.colSpacing.hint"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button(l10n.t("overview.colSpacing.reset")) {
-                    model.resetRankingColumnSpacing()
-                }
-            } header: {
-                Text(l10n.t("overview.ranking"))
-            }
-
-            Section {
-                Text(l10n.t("settings.extensionNote"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            } header: {
-                Text(l10n.t("settings.general"))
-            }
-        }
-        .formStyle(.grouped)
-        .padding()
-        .frame(width: 480, height: 520)
-        .id(l10n.revision)
-    }
-
-    private var displayNameForResolved: String {
-        switch l10n.resolvedCode {
-        case "zh-Hans": return l10n.t("lang.chinese")
-        default: return l10n.t("lang.english")
-        }
-    }
-}

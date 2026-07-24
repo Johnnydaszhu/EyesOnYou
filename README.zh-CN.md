@@ -6,6 +6,18 @@
 
 > 工作代号：正式公开发布前请自行核对商标与域名可用性。
 
+## 截图
+
+<p align="center">
+  <img src="docs/screenshots/overview-light.png" alt="FlowLens 总览 — 浅色外观" width="860" />
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/overview-dark.png" alt="FlowLens 总览 — 深色外观" width="860" />
+</p>
+
+总览面板：时段合计、实时流量、代理路由占比、流量构成 sunburst，以及按应用排行（收藏、分组、选择性代理）。
+
 ## 功能（v0.1）
 
 - **按应用流量** — 实时速率、合计、历史汇总（今天 / 本周 / 本月 / 近 30 天）
@@ -14,6 +26,7 @@
 - **原生技术栈** — SwiftUI + AppKit 宿主，System Extension（Filter + Transparent Proxy）
 - **隐私优先** — 仅元数据与计数；不抓取载荷、不做 TLS 中间人解密
 - **面向 Agent 的 CLI** — JSON 输出，便于脚本与编程助手（`docs/CLI.md`）
+- **应用内更新** — 自动检查 [GitHub Releases](https://github.com/Johnnydaszhu/FlowLens/releases)；左下角版本号可手动检查 / 下载
 
 ## 快速开始
 

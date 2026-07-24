@@ -8,98 +8,109 @@ struct OverviewTabView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var l10n: LocalizationStore
     @FocusState private var rankingSearchFocused: Bool
+    @State private var isGroupManagerPresented = false
+    @State private var spacingDragOrigin: Double? = nil
 
     var body: some View {
         GeometryReader { geo in
             let m = BentoMetrics(container: geo.size)
-            let metricsH = m.metricsBlockHeight
-
-            VStack(alignment: .leading, spacing: m.gap) {
-                metricsBento(m)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: metricsH)
-                detailBento(m)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+            bentoLayout(m, size: geo.size)
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
         }
         .id(l10n.revision)
     }
 
-    // MARK: - Row 1 metrics
-
+    /// Single column grid for the whole page so gutters line up across rows.
     @ViewBuilder
-    private func metricsBento(_ m: BentoMetrics) -> some View {
-        let h = m.metricsRowHeight
+    private func bentoLayout(_ m: BentoMetrics, size: CGSize) -> some View {
+        let w = size.width
+        let h = size.height
+        let gap = m.gap
+
         if m.isThreeUpMetrics {
-            // True equal-height 3-up using Grid
-            Grid(horizontalSpacing: m.gap, verticalSpacing: m.gap) {
-                GridRow {
-                    totalsCard(m).gridCellColumns(1)
-                    liveTrafficCard(m).gridCellColumns(1)
-                    proxyRoutingCard(m).gridCellColumns(1)
-                }
-            }
-            .frame(height: h)
-        } else if m.isTwoUpMetrics {
-            VStack(spacing: m.gap) {
-                Grid(horizontalSpacing: m.gap, verticalSpacing: m.gap) {
-                    GridRow {
-                        totalsCard(m)
-                        liveTrafficCard(m)
-                    }
-                }
-                .frame(height: h)
-                proxyRoutingCard(m)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: h * 0.85)
-            }
-        } else {
-            // compact / tiny — fill fixed metrics block height; no page scroll.
-            VStack(spacing: m.gap) {
-                totalsCard(m)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                liveTrafficCard(m)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                proxyRoutingCard(m)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-    }
+            // Shared 3-column grid — col1 width locks totals ↔ pie gutter.
+            // Trailing cells expand so right edges stay flush.
+            let col1 = m.columnWidth(in: w, columns: 3)
+            let metricsH = m.metricsRowHeight
 
-    // MARK: - Row 2 detail
+            VStack(spacing: gap) {
+                HStack(spacing: gap) {
+                    totalsCard(m)
+                        .frame(width: col1, height: metricsH)
+                    liveTrafficCard(m)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: metricsH)
+                    proxyRoutingCard(m)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: metricsH)
+                }
+                .frame(width: w, height: metricsH, alignment: .leading)
 
-    @ViewBuilder
-    private func detailBento(_ m: BentoMetrics) -> some View {
-        if m.isSideBySideDetail {
-            GeometryReader { rowGeo in
-                let sunW = m.sunburstWidth(in: rowGeo.size.width)
-                HStack(alignment: .top, spacing: m.gap) {
+                HStack(alignment: .top, spacing: gap) {
                     pieCard(m)
-                        .frame(width: sunW)
+                        .frame(width: col1)
                         .frame(maxHeight: .infinity)
                     rankingTable(m)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                .frame(width: w, height: max(0, h - metricsH - gap), alignment: .topLeading)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(width: w, height: h, alignment: .topLeading)
+        } else if m.isTwoUpMetrics {
+            // Shared 2-column grid — pie under totals, ranking under live.
+            let col1 = m.columnWidth(in: w, columns: 2)
+            let metricsH = m.metricsRowHeight
+            let proxyH = metricsH * 0.85
+            let metricsBlock = metricsH + gap + proxyH
+
+            VStack(spacing: gap) {
+                HStack(spacing: gap) {
+                    totalsCard(m)
+                        .frame(width: col1, height: metricsH)
+                    liveTrafficCard(m)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: metricsH)
+                }
+                .frame(width: w, height: metricsH, alignment: .leading)
+
+                proxyRoutingCard(m)
+                    .frame(width: w, height: proxyH)
+
+                HStack(alignment: .top, spacing: gap) {
+                    pieCard(m)
+                        .frame(width: col1)
+                        .frame(maxHeight: .infinity)
+                    rankingTable(m)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .frame(width: w, height: max(0, h - metricsBlock - gap), alignment: .topLeading)
+            }
+            .frame(width: w, height: h, alignment: .topLeading)
         } else {
-            // Stacked: sunburst takes a fixed share; ranking fills the rest and scrolls inside.
-            VStack(spacing: m.gap) {
+            // compact / tiny — single column stack
+            VStack(spacing: gap) {
+                totalsCard(m)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: m.metricsRowHeight * 0.72)
+                liveTrafficCard(m)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: m.metricsRowHeight * 0.72)
+                proxyRoutingCard(m)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: m.metricsRowHeight * 0.72)
                 pieCard(m)
                     .frame(maxWidth: .infinity)
                     .frame(height: m.stackedSunburstHeight)
                 rankingTable(m)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(width: w, height: h, alignment: .topLeading)
         }
     }
 
-    // MARK: - Shared card chrome (title top, body centered)
+    // MARK: - Shared card chrome (title band + top-aligned body)
 
-    /// Title pinned top; remaining space centers the body for consistent card alignment.
+    /// Fixed title band so all metric cards share the same content origin.
     private func bentoCard<Body: View>(
         title: String,
         systemImage: String,
@@ -113,9 +124,10 @@ struct OverviewTabView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(height: 16 * scale, alignment: .leading)
 
             body()
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .flowCard()
@@ -144,7 +156,7 @@ struct OverviewTabView: View {
     private func totalsBody(_ m: BentoMetrics, compact: Bool) -> some View {
         let stackSpacing: CGFloat = compact ? 6 : 10
         return VStack(spacing: stackSpacing) {
-            VStack(spacing: compact ? 4 : 6) {
+            VStack(alignment: .leading, spacing: compact ? 4 : 6) {
                 Text(l10n.t("overview.networkTraffic"))
                     .font(.system(size: 11 * m.typeScale, weight: .semibold))
                     .foregroundStyle(FlowLensTheme.brandGreen)
@@ -179,7 +191,7 @@ struct OverviewTabView: View {
                     .padding(.horizontal, 4)
             }
 
-            VStack(spacing: compact ? 4 : 6) {
+            VStack(alignment: .leading, spacing: compact ? 4 : 6) {
                 Text(l10n.t("overview.diskIO"))
                     .font(.system(size: 11 * m.typeScale, weight: .semibold))
                     .foregroundStyle(FlowLensTheme.diskRead)
@@ -203,10 +215,10 @@ struct OverviewTabView: View {
                 )
             }
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
-    /// Icon + label/value on the left, mini area chart on the right (same row).
+    /// Icon + label/value on the left (intrinsic), mini area chart fills remaining width.
     private func trendMetricRow(
         _ m: BentoMetrics,
         icon: String,
@@ -217,7 +229,8 @@ struct OverviewTabView: View {
         tint: Color,
         compact: Bool
     ) -> some View {
-        HStack(spacing: 8) {
+        let chartH: CGFloat = (compact ? 26 : 34) * m.typeScale
+        return HStack(alignment: .center, spacing: 10) {
             Image(systemName: icon)
                 .font(.system(size: (compact ? 12 : 14) * m.typeScale, weight: .semibold))
                 .foregroundStyle(iconColor)
@@ -234,12 +247,17 @@ struct OverviewTabView: View {
                     .foregroundStyle(FlowLensTheme.textPrimary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.55)
+                    .monospacedDigit()
             }
-            .frame(minWidth: 64, maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: true, vertical: false)
+            .layoutPriority(1)
 
             MiniAreaChartView(values: trend, tint: tint)
-                .frame(width: compact ? 56 : 72, height: compact ? 22 : 28)
+                .frame(minWidth: 72, maxWidth: .infinity)
+                .frame(height: chartH)
+                .layoutPriority(0)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// Icon to the left of label + value (disk rows).
@@ -273,9 +291,10 @@ struct OverviewTabView: View {
     // MARK: - Live traffic (area chart)
 
     private func liveTrafficCard(_ m: BentoMetrics) -> some View {
-        bentoCard(title: liveTrafficCardTitle, systemImage: "waveform.path", scale: m.typeScale) {
+        let metaH = 36 * m.typeScale
+        let footerH = 18 * m.typeScale
+        return bentoCard(title: liveTrafficCardTitle, systemImage: "waveform.path", scale: m.typeScale) {
             VStack(spacing: 8 * m.typeScale) {
-                // Compact rates on one line (ref layout)
                 HStack(spacing: 16) {
                     rateInline(
                         m,
@@ -293,13 +312,17 @@ struct OverviewTabView: View {
                     )
                     Spacer(minLength: 0)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(height: metaH, alignment: .center)
 
                 AreaChartView(down: model.sparklineDown, up: model.sparklineUp)
-                    .frame(maxWidth: .infinity)
-                    .frame(minHeight: m.areaChartHeight * 0.75, idealHeight: m.areaChartHeight, maxHeight: m.areaChartHeight * 1.2)
-                    .layoutPriority(1)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                // Spacer matching proxy card footer so chart bottoms align.
+                Color.clear
+                    .frame(height: footerH)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .padding(.top, 8 * m.typeScale)
         }
     }
@@ -339,27 +362,57 @@ struct OverviewTabView: View {
     // MARK: - Proxy routing
 
     private func proxyRoutingCard(_ m: BentoMetrics) -> some View {
-        bentoCard(title: proxyRoutingCardTitle, systemImage: "arrow.triangle.branch", scale: m.typeScale) {
-            VStack(spacing: 10 * m.typeScale) {
-                VStack(spacing: 8 * m.typeScale) {
-                    routeBar(m, label: l10n.t("overview.routeDirect"), percent: model.routeMix.directPercent, color: FlowLensTheme.accentGreen)
-                    routeBar(m, label: l10n.t("overview.routeSystemProxy"), percent: model.routeMix.systemProxyPercent, color: FlowLensTheme.accentAmber)
-                    routeBar(m, label: l10n.t("overview.routeCustomProxy"), percent: model.routeMix.customProxyPercent, color: FlowLensTheme.accentPurple)
+        let metaH = 36 * m.typeScale
+        let footerH = 18 * m.typeScale
+        return bentoCard(title: proxyRoutingCardTitle, systemImage: "arrow.triangle.branch", scale: m.typeScale) {
+            VStack(spacing: 8 * m.typeScale) {
+                HStack(spacing: 12) {
+                    routeLegendChip(
+                        m,
+                        tint: FlowLensTheme.accentGreen,
+                        title: l10n.t("overview.routeDirect"),
+                        percent: model.routeMix.directPercent
+                    )
+                    routeLegendChip(
+                        m,
+                        tint: FlowLensTheme.accentAmber,
+                        title: l10n.t("overview.routeSystemProxy"),
+                        percent: model.routeMix.systemProxyPercent
+                    )
+                    routeLegendChip(
+                        m,
+                        tint: FlowLensTheme.accentPurple,
+                        title: l10n.t("overview.routeCustomProxy"),
+                        percent: model.routeMix.customProxyPercent
+                    )
+                    Spacer(minLength: 0)
                 }
-                .frame(maxWidth: min(320, m.contentWidth * 0.9))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(height: metaH, alignment: .center)
+
+                RouteMixAreaChartView(
+                    direct: model.sparklineRouteDirect,
+                    system: model.sparklineRouteSystem,
+                    custom: model.sparklineRouteCustom
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 HStack(spacing: 6) {
                     Text(l10n.t("overview.activeRules"))
-                        .font(.system(size: 12 * m.typeScale))
+                        .font(.system(size: 11 * m.typeScale))
                         .foregroundStyle(FlowLensTheme.textSecondary)
                         .lineLimit(1)
                         .minimumScaleFactor(0.7)
                     Text("\(model.routeMix.activeRules)")
-                        .font(.system(size: 14 * m.typeScale, weight: .bold, design: .rounded))
+                        .font(.system(size: 13 * m.typeScale, weight: .bold, design: .rounded))
                         .foregroundStyle(FlowLensTheme.textPrimary)
+                        .monospacedDigit()
+                    Spacer(minLength: 0)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(height: footerH, alignment: .center)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .padding(.top, 8 * m.typeScale)
         }
     }
@@ -371,28 +424,29 @@ struct OverviewTabView: View {
         return l10n.t("overview.proxyRouting")
     }
 
-    private func routeBar(_ m: BentoMetrics, label: String, percent: Double, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(label)
-                    .font(.system(size: 11 * m.typeScale))
+    private func routeLegendChip(
+        _ m: BentoMetrics,
+        tint: Color,
+        title: String,
+        percent: Double
+    ) -> some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(tint)
+                .frame(width: 7, height: 7)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("\(Int(percent.rounded()))%")
+                    .font(.system(size: 13 * m.typeScale, weight: .bold, design: .rounded))
+                    .foregroundStyle(FlowLensTheme.textPrimary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.55)
+                    .monospacedDigit()
+                Text(title)
+                    .font(.system(size: 9 * m.typeScale))
                     .foregroundStyle(FlowLensTheme.textSecondary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
-                Spacer(minLength: 4)
-                Text("\(Int(percent))%")
-                    .font(.system(size: 11 * m.typeScale, weight: .semibold, design: .rounded))
-                    .foregroundStyle(FlowLensTheme.textPrimary)
             }
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(FlowLensTheme.trackFill)
-                    Capsule()
-                        .fill(color)
-                        .frame(width: max(4, geo.size.width * percent / 100))
-                }
-            }
-            .frame(height: max(5, 7 * m.typeScale))
         }
     }
 
@@ -405,6 +459,8 @@ struct OverviewTabView: View {
                 .foregroundStyle(FlowLensTheme.textSecondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(height: 16 * m.typeScale, alignment: .leading)
 
             if model.rankingRows.isEmpty {
                 Text(l10n.t("overview.pieEmpty"))
@@ -425,6 +481,7 @@ struct OverviewTabView: View {
 
     private func rankingTable(_ m: BentoMetrics) -> some View {
         let rows = model.displayedRankingRows
+        let colInset: CGFloat = 2
 
         return VStack(alignment: .leading, spacing: 8 * m.typeScale) {
             HStack(spacing: 10) {
@@ -438,7 +495,7 @@ struct OverviewTabView: View {
                 .foregroundStyle(FlowLensTheme.textSecondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
-                rankingColumnSpacingControl(m)
+                .frame(height: 16 * m.typeScale, alignment: .leading)
                 if model.selectedApp != nil {
                     Button {
                         model.clearRankingSelection()
@@ -455,11 +512,13 @@ struct OverviewTabView: View {
                 }
                 Spacer(minLength: 8)
                 rankingSearchField(m)
+                groupsManageButton(m)
                 archiveToggleButton(m)
             }
 
-            // Adaptive header — columns collapse with width class
+            // Adaptive header — same horizontal inset as rows for strict column lock.
             rankingHeader(m)
+                .padding(.horizontal, colInset)
 
             Divider().overlay(FlowLensTheme.hairline)
 
@@ -487,6 +546,7 @@ struct OverviewTabView: View {
                         .foregroundStyle(FlowLensTheme.textSecondary)
                         .lineLimit(1)
                 }
+                .padding(.horizontal, colInset)
             }
 
             // Only this list scrolls — page chrome stays fixed.
@@ -513,11 +573,38 @@ struct OverviewTabView: View {
                         }
                     }
                 }
+                .padding(.horizontal, colInset)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .flowCard()
+        .sheet(isPresented: $isGroupManagerPresented) {
+            GroupManagerSheet()
+                .environmentObject(model)
+                .environmentObject(l10n)
+        }
+    }
+
+    private func groupsManageButton(_ m: BentoMetrics) -> some View {
+        Button {
+            isGroupManagerPresented = true
+        } label: {
+            Image(systemName: "folder.badge.gearshape")
+                .font(.system(size: 13 * m.typeScale, weight: .semibold))
+                .foregroundStyle(FlowLensTheme.textSecondary)
+                .frame(width: 28, height: 28)
+                .background {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.white.opacity(0.04))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.8)
+                        )
+                }
+        }
+        .buttonStyle(.plain)
+        .help(l10n.t("groups.manage.help"))
     }
 
     private func archiveToggleButton(_ m: BentoMetrics) -> some View {
@@ -609,48 +696,40 @@ struct OverviewTabView: View {
         }
     }
 
-    /// Compact − / value / + control for column title spacing (persisted on AppModel).
-    private func rankingColumnSpacingControl(_ m: BentoMetrics) -> some View {
-        HStack(spacing: 4) {
-            Button {
-                model.nudgeRankingColumnSpacing(-1)
-            } label: {
-                Image(systemName: "minus")
-                    .font(.system(size: 9 * m.typeScale, weight: .bold))
-                    .frame(width: 18, height: 18)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(FlowLensTheme.textSecondary)
-            .disabled(model.rankingColumnSpacing <= AppModel.rankingColumnSpacingRange.lowerBound)
-            .help(l10n.t("overview.colSpacing.decrease"))
-
-            Text("\(Int(model.rankingColumnSpacing))")
-                .font(.system(size: 10 * m.typeScale, weight: .semibold, design: .monospaced))
-                .foregroundStyle(FlowLensTheme.textSecondary)
-                .monospacedDigit()
-                .frame(minWidth: 14)
-                .help(l10n.t("overview.colSpacing.help"))
-
-            Button {
-                model.nudgeRankingColumnSpacing(1)
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 9 * m.typeScale, weight: .bold))
-                    .frame(width: 18, height: 18)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(FlowLensTheme.textSecondary)
-            .disabled(model.rankingColumnSpacing >= AppModel.rankingColumnSpacingRange.upperBound)
-            .help(l10n.t("overview.colSpacing.increase"))
+    /// Drag handle between metric columns and tag columns — adjusts tag/title spacing.
+    private func rankingSpacingDragHandle(_ m: BentoMetrics) -> some View {
+        let hitWidth: CGFloat = max(8, model.rankingColumnSpacing)
+        return ZStack {
+            Rectangle()
+                .fill(Color.clear)
+                .frame(width: hitWidth, height: 18)
+            RoundedRectangle(cornerRadius: 1, style: .continuous)
+                .fill(FlowLensTheme.hairline)
+                .frame(width: 2, height: 14)
         }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 2)
-        .background {
-            Capsule()
-                .fill(Color.white.opacity(0.05))
-                .overlay(Capsule().strokeBorder(Color.white.opacity(0.1), lineWidth: 0.6))
+        .contentShape(Rectangle())
+        .onHover { inside in
+            if inside {
+                NSCursor.resizeLeftRight.push()
+            } else {
+                NSCursor.pop()
+            }
         }
-        .accessibilityElement(children: .combine)
+        .gesture(
+            DragGesture(minimumDistance: 1)
+                .onChanged { value in
+                    if spacingDragOrigin == nil {
+                        spacingDragOrigin = model.rankingColumnSpacing
+                    }
+                    let origin = spacingDragOrigin ?? model.rankingColumnSpacing
+                    let next = origin + Double(value.translation.width) / 5.0
+                    model.rankingColumnSpacing = AppModel.clampRankingColumnSpacing(next)
+                }
+                .onEnded { _ in
+                    spacingDragOrigin = nil
+                }
+        )
+        .help(l10n.t("overview.colSpacing.dragHelp"))
         .accessibilityLabel(l10n.t("overview.colSpacing.help"))
         .accessibilityValue("\(Int(model.rankingColumnSpacing))")
     }
@@ -658,7 +737,7 @@ struct OverviewTabView: View {
     private func rankingHeader(_ m: BentoMetrics) -> some View {
         let gap = CGFloat(model.rankingColumnSpacing)
         return HStack(spacing: gap) {
-            Text("#").frame(width: 18, alignment: .leading)
+            Text("#").frame(width: Self.rankingIndexWidth, alignment: .leading)
             Text(l10n.t("overview.colApp")).frame(minWidth: 72, maxWidth: .infinity, alignment: .leading)
             headerCell(l10n.t("overview.colDown"), width: colW(m, base: 56), align: .trailing)
             headerCell(l10n.t("overview.colUp"), width: colW(m, base: 56), align: .trailing)
@@ -667,18 +746,24 @@ struct OverviewTabView: View {
                 headerCell(l10n.t("overview.colDiskWrite"), width: colW(m, base: 56), align: .trailing)
             }
             headerCell(l10n.t("overview.colRequests"), width: colW(m, base: 44), align: .trailing)
+
+            // Draggable divider between metrics and tag columns (route / status / group).
+            rankingSpacingDragHandle(m)
+
             if m.showRouteStatusColumns {
-                headerCell(l10n.t("overview.colRoute"), width: colW(m, base: 64), align: .center)
-                headerCell(l10n.t("overview.colStatus"), width: colW(m, base: 56), align: .center)
+                headerCell(l10n.t("overview.colRoute"), width: colW(m, base: 64), align: .leading)
+                headerCell(l10n.t("overview.colStatus"), width: colW(m, base: 56), align: .leading)
             }
             if m.showGroupProxyColumns {
-                headerCell(l10n.t("overview.colGroup"), width: colW(m, base: 52), align: .leading)
+                headerCell(l10n.t("overview.colGroup"), width: colW(m, base: 72), align: .leading)
                 headerCell(l10n.t("overview.colProxy"), width: colW(m, base: 40), align: .center)
             }
         }
         .font(.system(size: m.rankingHeaderFont, weight: .medium))
         .foregroundStyle(FlowLensTheme.textSecondary)
     }
+
+    private static let rankingIndexWidth: CGFloat = 22
 
     private func headerCell(_ title: String, width: CGFloat, align: Alignment) -> some View {
         Text(title)
@@ -706,6 +791,7 @@ struct OverviewTabView: View {
             .minimumScaleFactor(minScale)
             .allowsTightening(true)
             .truncationMode(.tail)
+            .monospacedDigit()
             .frame(width: width, alignment: align)
     }
 
@@ -733,26 +819,30 @@ struct OverviewTabView: View {
 
         let routeW = colW(m, base: 64)
         let statusW = colW(m, base: 56)
-        let groupW = colW(m, base: 52)
+        let groupW = colW(m, base: 72)
         let proxyW = colW(m, base: 40)
         let badgeFont = max(9, m.rankingRowFont * 0.95)
         let gap = CGFloat(model.rankingColumnSpacing)
+
+        let favSlot: CGFloat = 14 * m.typeScale
 
         return HStack(spacing: gap) {
             Text("\(index)")
                 .foregroundStyle(FlowLensTheme.textSecondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
-                .frame(width: 18, alignment: .leading)
+                .monospacedDigit()
+                .frame(width: Self.rankingIndexWidth, alignment: .leading)
 
             HStack(spacing: 5) {
                 if !drilled {
                     FavoriteButton(app: app.app, size: 10 * m.typeScale)
+                        .frame(width: favSlot, alignment: .center)
                 } else {
                     Image(systemName: drillIcon(for: app.app))
                         .font(.system(size: 10 * m.typeScale))
                         .foregroundStyle(FlowLensTheme.accentPurple)
-                        .frame(width: 12)
+                        .frame(width: favSlot, alignment: .center)
                 }
                 AppIconView(app: app.app, displayName: app.displayName, size: iconSize)
                 VStack(alignment: .leading, spacing: 1) {
@@ -802,6 +892,10 @@ struct OverviewTabView: View {
             }
             adaptiveCell("\(app.totals.flowsOpened)", width: colW(m, base: 44))
 
+            // Match header drag-handle width so tag columns stay aligned.
+            Color.clear
+                .frame(width: max(8, model.rankingColumnSpacing), height: 1)
+
             if m.showRouteStatusColumns {
                 RouteBadge(
                     label: app.route.chipLabel,
@@ -810,7 +904,7 @@ struct OverviewTabView: View {
                     verticalPadding: 2,
                     minScale: 0.5
                 )
-                .frame(width: routeW)
+                .frame(width: routeW, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
 
                 HStack(spacing: 3) {
@@ -829,13 +923,7 @@ struct OverviewTabView: View {
             }
 
             if m.showGroupProxyColumns {
-                adaptiveCell(
-                    row.groupName ?? l10n.t("overview.ungrouped"),
-                    width: groupW,
-                    align: .leading,
-                    color: row.groupName == nil ? FlowLensTheme.textSecondary : FlowLensTheme.textPrimary,
-                    minScale: 0.45
-                )
+                rankingGroupPicker(m, app: app.app, width: groupW)
 
                 Toggle("", isOn: Binding(
                     get: { ProxyToggleLogic.isProxyEnabled(app.route) },
@@ -844,13 +932,12 @@ struct OverviewTabView: View {
                 .toggleStyle(.switch)
                 .controlSize(.mini)
                 .labelsHidden()
-                .frame(width: proxyW)
+                .frame(width: proxyW, alignment: .center)
             }
         }
         .font(.system(size: m.rankingRowFont))
         .foregroundStyle(FlowLensTheme.textPrimary)
         .padding(.vertical, 6 * m.typeScale)
-        .padding(.horizontal, 2)
         .background {
             if highlighted {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -873,14 +960,13 @@ struct OverviewTabView: View {
                 model.setHoverNode(nil)
             }
         }
-        .onTapGesture(count: 2) {
-            if !drilled, !app.sites.isEmpty {
-                model.drillInto(nodeID: row.id)
-            }
-        }
-        .onTapGesture(count: 1) {
+        .onTapGesture {
             if drilled { return }
-            model.selectRankingApp(app.app)
+            if !app.sites.isEmpty {
+                model.drillInto(nodeID: row.id)
+            } else {
+                model.selectRankingApp(app.app)
+            }
         }
         .contextMenu {
             if !drilled {
@@ -946,6 +1032,20 @@ struct OverviewTabView: View {
 
         Divider()
 
+        Menu {
+            groupAssignmentMenu(for: app)
+        } label: {
+            Label(l10n.t("groups.assign"), systemImage: "folder")
+        }
+
+        Button {
+            isGroupManagerPresented = true
+        } label: {
+            Label(l10n.t("groups.manage"), systemImage: "folder.badge.gearshape")
+        }
+
+        Divider()
+
         Button {
             model.revealInFinder(app)
         } label: {
@@ -957,6 +1057,69 @@ struct OverviewTabView: View {
         } label: {
             Label(l10n.t("ranking.delete"), systemImage: "trash")
         }
+    }
+
+    @ViewBuilder
+    private func groupAssignmentMenu(for app: AppIdentityKey) -> some View {
+        let current = model.group(containing: app)
+        Button {
+            model.setAppGroup(app, groupID: nil)
+        } label: {
+            HStack {
+                Text(l10n.t("overview.ungrouped"))
+                if current == nil {
+                    Image(systemName: "checkmark")
+                }
+            }
+        }
+        if !model.groups.isEmpty {
+            Divider()
+            ForEach(model.groups) { group in
+                Button {
+                    model.setAppGroup(app, groupID: group.id)
+                } label: {
+                    HStack {
+                        Text(group.name)
+                        if current?.id == group.id {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        }
+        Divider()
+        Button {
+            isGroupManagerPresented = true
+        } label: {
+            Label(l10n.t("groups.createNew"), systemImage: "plus")
+        }
+    }
+
+    private func rankingGroupPicker(_ m: BentoMetrics, app: AppIdentityKey, width: CGFloat) -> some View {
+        let current = model.group(containing: app)
+        return Menu {
+            groupAssignmentMenu(for: app)
+        } label: {
+            HStack(spacing: 3) {
+                Text(current?.name ?? l10n.t("overview.ungrouped"))
+                    .font(.system(size: m.rankingRowFont))
+                    .foregroundStyle(
+                        current == nil ? FlowLensTheme.textSecondary : FlowLensTheme.textPrimary
+                    )
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.45)
+                    .allowsTightening(true)
+                    .truncationMode(.tail)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(FlowLensTheme.textSecondary)
+            }
+            .frame(width: width, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .help(l10n.t("groups.assign.help"))
     }
 
     private func isRowHighlighted(_ rowID: String) -> Bool {
@@ -1051,6 +1214,149 @@ struct MiniAreaChartView: View {
             p.addLine(to: CGPoint(x: x, y: y))
         }
         p.addLine(to: CGPoint(x: width, y: height))
+        p.closeSubpath()
+        return p
+    }
+}
+
+/// Stacked area chart for proxy routing mix: direct / system / custom shares over time.
+struct RouteMixAreaChartView: View {
+    let direct: [Double]
+    let system: [Double]
+    let custom: [Double]
+    var lineWidth: CGFloat = 1.5
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = max(geo.size.width, 1)
+            let h = max(geo.size.height, 1)
+            let count = max(2, max(direct.count, max(system.count, custom.count)))
+            let customP = padded(custom, count: count)
+            let systemP = padded(system, count: count)
+            let directP = padded(direct, count: count)
+            let customEdge = customP
+            let systemEdge = zipSum(customP, systemP)
+            let directEdge = zipSum(systemEdge, directP)
+            let isLight = colorScheme == .light
+
+            ZStack {
+                ForEach(0..<3, id: \.self) { i in
+                    let y = h * CGFloat(i + 1) / 4
+                    Path { p in
+                        p.move(to: CGPoint(x: 0, y: y))
+                        p.addLine(to: CGPoint(x: w, y: y))
+                    }
+                    .stroke(FlowLensTheme.hairline.opacity(0.7), lineWidth: 0.5)
+                }
+
+                stackedBand(lower: Array(repeating: 0.0, count: count), upper: customEdge, width: w, height: h)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                FlowLensTheme.accentPurple.opacity(isLight ? 0.32 : 0.42),
+                                FlowLensTheme.accentPurple.opacity(0.05)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+
+                stackedBand(lower: customEdge, upper: systemEdge, width: w, height: h)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                FlowLensTheme.accentAmber.opacity(isLight ? 0.30 : 0.40),
+                                FlowLensTheme.accentAmber.opacity(0.05)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+
+                stackedBand(lower: systemEdge, upper: directEdge, width: w, height: h)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                FlowLensTheme.accentGreen.opacity(isLight ? 0.28 : 0.38),
+                                FlowLensTheme.accentGreen.opacity(0.05)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+
+                linePath(values: directEdge, width: w, height: h)
+                    .stroke(
+                        FlowLensTheme.accentGreen.opacity(isLight ? 0.65 : 0.85),
+                        style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
+                    )
+                linePath(values: systemEdge, width: w, height: h)
+                    .stroke(
+                        FlowLensTheme.accentAmber.opacity(isLight ? 0.7 : 0.9),
+                        style: StrokeStyle(lineWidth: lineWidth * 0.85, lineCap: .round, lineJoin: .round)
+                    )
+                linePath(values: customEdge, width: w, height: h)
+                    .stroke(
+                        FlowLensTheme.accentPurple.opacity(isLight ? 0.7 : 0.9),
+                        style: StrokeStyle(lineWidth: lineWidth * 0.85, lineCap: .round, lineJoin: .round)
+                    )
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+    }
+
+    private func padded(_ values: [Double], count: Int) -> [Double] {
+        let n = max(count, 2)
+        if values.isEmpty { return Array(repeating: 0, count: n) }
+        if values.count == 1 { return Array(repeating: values[0], count: n) }
+        if values.count >= n { return Array(values.suffix(n)) }
+        var out = values
+        while out.count < n { out.insert(out[0], at: 0) }
+        return out
+    }
+
+    private func zipSum(_ a: [Double], _ b: [Double]) -> [Double] {
+        let n = max(a.count, b.count)
+        let aa = padded(a, count: n)
+        let bb = padded(b, count: n)
+        return zip(aa, bb).map { min(100, $0 + $1) }
+    }
+
+    private func yPosition(_ value: Double, height: CGFloat) -> CGFloat {
+        let clamped = min(100, max(0, value))
+        return height - (height * CGFloat(clamped / 100.0)) * 0.92
+    }
+
+    private func linePath(values: [Double], width: CGFloat, height: CGFloat) -> Path {
+        guard values.count > 1 else { return Path() }
+        var p = Path()
+        for (i, v) in values.enumerated() {
+            let x = width * CGFloat(i) / CGFloat(values.count - 1)
+            let y = yPosition(v, height: height)
+            if i == 0 { p.move(to: CGPoint(x: x, y: y)) }
+            else { p.addLine(to: CGPoint(x: x, y: y)) }
+        }
+        return p
+    }
+
+    private func stackedBand(lower: [Double], upper: [Double], width: CGFloat, height: CGFloat) -> Path {
+        let n = max(lower.count, upper.count)
+        let lo = padded(lower, count: n)
+        let hi = padded(upper, count: n)
+        guard n > 1 else { return Path() }
+        var p = Path()
+        for (i, v) in hi.enumerated() {
+            let x = width * CGFloat(i) / CGFloat(n - 1)
+            let y = yPosition(v, height: height)
+            if i == 0 { p.move(to: CGPoint(x: x, y: y)) }
+            else { p.addLine(to: CGPoint(x: x, y: y)) }
+        }
+        for i in stride(from: n - 1, through: 0, by: -1) {
+            let x = width * CGFloat(i) / CGFloat(n - 1)
+            let y = yPosition(lo[i], height: height)
+            p.addLine(to: CGPoint(x: x, y: y))
+        }
         p.closeSubpath()
         return p
     }

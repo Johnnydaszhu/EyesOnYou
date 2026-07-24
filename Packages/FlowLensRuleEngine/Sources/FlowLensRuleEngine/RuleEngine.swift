@@ -184,6 +184,34 @@ public final class PolicyStore: @unchecked Sendable {
         generation &+= 1
     }
 
+    /// Exclusive membership: remove `app` from every group, then optionally add to `groupID`.
+    public func moveApp(_ app: AppIdentityKey, toGroup groupID: UUID?) {
+        lock.lock(); defer { lock.unlock() }
+        for i in groups.indices {
+            groups[i].remove(app)
+        }
+        if let groupID, let idx = groups.firstIndex(where: { $0.id == groupID }) {
+            groups[idx].add(app)
+        }
+        generation &+= 1
+    }
+
+    /// Reorder groups to match `orderedIDs` (unknown ids appended at end).
+    public func reorderGroups(orderedIDs: [UUID]) {
+        lock.lock(); defer { lock.unlock() }
+        var byID = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0) })
+        var next: [AppGroup] = []
+        next.reserveCapacity(groups.count)
+        for id in orderedIDs {
+            if let g = byID.removeValue(forKey: id) {
+                next.append(g)
+            }
+        }
+        next.append(contentsOf: byID.values)
+        groups = next
+        generation &+= 1
+    }
+
     public func allRules() -> [NetworkPolicyRule] {
         lock.lock(); defer { lock.unlock() }
         return rules

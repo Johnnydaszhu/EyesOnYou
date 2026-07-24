@@ -6,6 +6,18 @@ Native macOS network observability, per-app firewall, and selective proxy.
 
 > Working codename — verify trademark and domain before a public launch.
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/overview-light.png" alt="FlowLens overview — light appearance" width="860" />
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/overview-dark.png" alt="FlowLens overview — dark appearance" width="860" />
+</p>
+
+Overview dashboard: period totals, live traffic, proxy routing mix, sunburst traffic map, and per-app ranking (favorites, groups, selective proxy).
+
 ## Features (v0.1)
 
 - **Per-app traffic** — live rates, totals, history rollups (today / week / month / last 30 days)
@@ -14,6 +26,7 @@ Native macOS network observability, per-app firewall, and selective proxy.
 - **Native stack** — SwiftUI + AppKit host, system extension with Filter + Transparent Proxy providers
 - **Privacy first** — metadata and counters only; no payload capture, no TLS MITM
 - **Agent-friendly CLI** — JSON output for scripts and coding agents (`docs/CLI.md`)
+- **In-app updates** — checks [GitHub Releases](https://github.com/Johnnydaszhu/FlowLens/releases) automatically; footer version label for manual check / download
 
 ## Quick start
 
@@ -49,7 +62,7 @@ The host launches with **demo telemetry** when the system extension is not insta
 | `NetworkExtension` | Filter + Transparent Proxy providers |
 | `Sources/FlowLensCLI` | `flowlens` CLI |
 | `schema/` | SQL drafts |
-| `docs/` | Spec, ADRs, Xcode bootstrap, CLI |
+| `docs/` | Spec, ADRs, Xcode bootstrap, CLI, screenshots |
 | `examples/` | Earlier design skeletons (reference only) |
 
 ## Docs
