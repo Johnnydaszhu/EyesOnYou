@@ -60,7 +60,6 @@ struct MenuBarPopoverView: View {
                     lineWidth: 1
                 )
         )
-        .preferredColorScheme(.dark)
         .id(l10n.revision)
     }
 

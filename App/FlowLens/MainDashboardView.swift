@@ -29,7 +29,7 @@ struct MainDashboardView: View {
                     .liquidGlassBar()
             }
         }
-        .preferredColorScheme(.dark)
+        // Follow system appearance — design refs cover both dark charcoal and cream light.
         .id(l10n.revision)
         .onAppear {
             if let delegate = NSApp.delegate as? AppDelegate {
@@ -90,6 +90,19 @@ struct MainDashboardView: View {
             }
             .font(.system(size: 11))
             .foregroundStyle(FlowLensTheme.textSecondary)
+
+            Button {
+                model.openSettings()
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(FlowLensTheme.textSecondary)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(l10n.t("settings.title"))
+            .padding(.leading, 4)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 10)

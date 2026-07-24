@@ -57,7 +57,6 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         let root = MenuBarPopoverView()
             .environmentObject(model)
             .environmentObject(LocalizationStore.shared)
-            .preferredColorScheme(.dark)
 
         let host = NSHostingController(rootView: AnyView(root))
         host.view.frame = NSRect(x: 0, y: 0, width: 340, height: 460)
@@ -174,7 +173,6 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
                 MenuBarPopoverView()
                     .environmentObject(model)
                     .environmentObject(LocalizationStore.shared)
-                    .preferredColorScheme(.dark)
             )
         }
         popover?.contentSize = NSSize(width: 340, height: 460)

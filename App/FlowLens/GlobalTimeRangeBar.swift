@@ -1,9 +1,10 @@
 import SwiftUI
 
-/// Global time-range filter for Overview / Apps / History (and any period-scoped data).
+/// Global time-range filter — pill chips matching design refs (selected = brand green).
 struct GlobalTimeRangeBar: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var l10n: LocalizationStore
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -24,7 +25,7 @@ struct GlobalTimeRangeBar: View {
 
                 Text(l10n.overviewRangeCaption(start: model.periodRangeStart, end: model.periodRangeEnd))
                     .font(.system(size: 11, weight: .medium, design: .rounded))
-                    .foregroundStyle(FlowLensTheme.accentBlue)
+                    .foregroundStyle(FlowLensTheme.brandGreen)
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
             }
@@ -44,7 +45,6 @@ struct GlobalTimeRangeBar: View {
                         .labelsHidden()
                         .datePickerStyle(.compact)
                         .controlSize(.small)
-                        .colorScheme(.dark)
                     }
                     HStack(spacing: 6) {
                         Text(l10n.t("overview.period.to"))
@@ -59,7 +59,6 @@ struct GlobalTimeRangeBar: View {
                         .labelsHidden()
                         .datePickerStyle(.compact)
                         .controlSize(.small)
-                        .colorScheme(.dark)
                     }
                     Spacer(minLength: 0)
                 }
@@ -69,34 +68,44 @@ struct GlobalTimeRangeBar: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background {
-            LiquidGlassBackground(style: .card, cornerRadius: 14)
+            LiquidGlassBackground(style: .card, cornerRadius: 16)
         }
         .id(l10n.revision)
     }
 
     private func chip(_ period: AppModel.OverviewPeriod) -> some View {
         let selected = model.overviewPeriod == period
+        let isLight = colorScheme == .light
         return Button {
             model.overviewPeriod = period
         } label: {
             Text(l10n.overviewPeriodTitle(period))
                 .font(.system(size: 11, weight: selected ? .semibold : .medium))
-                .foregroundStyle(selected ? Color.black.opacity(0.88) : FlowLensTheme.textSecondary)
-                .padding(.horizontal, 11)
+                .foregroundStyle(
+                    selected
+                        ? (isLight ? Color.white : Color.black.opacity(0.88))
+                        : FlowLensTheme.textSecondary
+                )
+                .padding(.horizontal, 12)
                 .padding(.vertical, 6)
                 .background {
                     if selected {
                         Capsule()
-                            .fill(FlowLensTheme.accentBlue.opacity(0.92))
-                            .overlay(
-                                Capsule().strokeBorder(Color.white.opacity(0.35), lineWidth: 0.7)
+                            .fill(FlowLensTheme.brandGreen)
+                            .shadow(
+                                color: FlowLensTheme.brandGreen.opacity(isLight ? 0.25 : 0.4),
+                                radius: 6,
+                                y: 2
                             )
-                            .shadow(color: FlowLensTheme.accentBlue.opacity(0.35), radius: 6, y: 2)
                     } else {
                         Capsule()
-                            .fill(.ultraThinMaterial)
-                            .overlay(Capsule().fill(Color.white.opacity(0.05)))
-                            .overlay(Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 0.7))
+                            .fill(isLight ? Color.white.opacity(0.7) : Color.white.opacity(0.05))
+                            .overlay(
+                                Capsule().strokeBorder(
+                                    FlowLensTheme.cardBorder.opacity(isLight ? 0.7 : 1),
+                                    lineWidth: 0.7
+                                )
+                            )
                     }
                 }
         }

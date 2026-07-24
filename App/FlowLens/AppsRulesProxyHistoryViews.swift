@@ -428,6 +428,32 @@ struct SettingsView: View {
             }
 
             Section {
+                HStack {
+                    Text(l10n.t("overview.colSpacing"))
+                    Spacer()
+                    Text("\(Int(model.rankingColumnSpacing)) pt")
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                Slider(
+                    value: Binding(
+                        get: { model.rankingColumnSpacing },
+                        set: { model.rankingColumnSpacing = AppModel.clampRankingColumnSpacing($0) }
+                    ),
+                    in: AppModel.rankingColumnSpacingRange,
+                    step: 1
+                )
+                Text(l10n.t("overview.colSpacing.hint"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button(l10n.t("overview.colSpacing.reset")) {
+                    model.resetRankingColumnSpacing()
+                }
+            } header: {
+                Text(l10n.t("overview.ranking"))
+            }
+
+            Section {
                 Text(l10n.t("settings.extensionNote"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -437,7 +463,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
-        .frame(width: 480, height: 420)
+        .frame(width: 480, height: 520)
         .id(l10n.revision)
     }
 

@@ -377,16 +377,70 @@ public final class TelemetryAggregator: @unchecked Sendable {
     }
 
     public func liveRateBps() -> (up: Double, down: Double) {
+        liveRateBps(for: nil)
+    }
+
+    /// Live up/down rates; pass `app` to scope to one process.
+    public func liveRateBps(for app: AppIdentityKey?) -> (up: Double, down: Double) {
         lock.lock()
         defer { lock.unlock() }
         var up = 0.0
         var down = 0.0
         let cutoff = Date().addingTimeInterval(-2)
+        if let app {
+            if let rate = liveRates[app], rate.at >= cutoff {
+                return (rate.up, rate.down)
+            }
+            return (0, 0)
+        }
         for (_, rate) in liveRates where rate.at >= cutoff {
             up += rate.up
             down += rate.down
         }
         return (up, down)
+    }
+
+    /// Drop all buckets / live state for one app (ranking delete).
+    public func purge(app: AppIdentityKey) {
+        lock.lock()
+        defer { lock.unlock() }
+        buckets = buckets.filter { $0.key.app != app }
+        liveRates.removeValue(forKey: app)
+        activeFlows = activeFlows.filter { $0.value.app != app }
+        recentConnections.removeAll { $0.app == app }
+        appDisplayNames.removeValue(forKey: app)
+    }
+
+    /// Time series of (up, down) byte totals across buckets in range — for period trend charts.
+    public func byteSeries(
+        for app: AppIdentityKey?,
+        from: Date,
+        to: Date,
+        points: Int = 24
+    ) -> (up: [Double], down: [Double]) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let fromMs = Int64(from.timeIntervalSince1970 * 1000)
+        let toMs = Int64(to.timeIntervalSince1970 * 1000)
+        let spanMs = max(1, toMs - fromMs)
+        let n = max(2, points)
+        var upBins = Array(repeating: 0.0, count: n)
+        var downBins = Array(repeating: 0.0, count: n)
+
+        let spanSec = max(1, Int(to.timeIntervalSince1970 - from.timeIntervalSince1970))
+        let granularity = Self.chooseGranularity(spanSeconds: spanSec)
+
+        for (key, totals) in buckets {
+            guard key.granularity == granularity else { continue }
+            if let app, key.app != app { continue }
+            if key.bucketStartMs + Int64(granularity.seconds) * 1000 <= fromMs { continue }
+            if key.bucketStartMs >= toMs { continue }
+            let idx = min(n - 1, max(0, Int((key.bucketStartMs - fromMs) * Int64(n) / spanMs)))
+            upBins[idx] += Double(totals.bytesUp)
+            downBins[idx] += Double(totals.bytesDown)
+        }
+        return (upBins, downBins)
     }
 
     public func recentConnections(limit: Int = 20) -> [LiveConnection] {

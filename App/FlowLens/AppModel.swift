@@ -76,6 +76,14 @@ final class AppModel: ObservableObject {
     /// Path total (down+up) history for compact dual sparkline.
     @Published var sparklineDirect: [Double] = []
     @Published var sparklineProxy: [Double] = []
+    /// Period trend series for totals card mini charts (upload / download).
+    @Published var periodTrendDown: [Double] = []
+    @Published var periodTrendUp: [Double] = []
+
+    /// Selected ranking app; nil = all apps. Filters totals / live / proxy cards with time range.
+    @Published var selectedApp: AppIdentityKey? = nil
+    /// Show archived apps panel (from ranking search-bar archive icon).
+    @Published var isArchivePanelPresented: Bool = false
 
     /// Overview totals time range (presets + custom).
     @Published var overviewPeriod: OverviewPeriod = .week {
@@ -109,15 +117,24 @@ final class AppModel: ObservableObject {
     @Published var historyRange: HistoryRange = .day
     @Published var historyRows: [AppTrafficSnapshot] = []
 
-    // MARK: Favorites & global search
+    // MARK: Favorites, archive, block & global search
 
     /// Favorited app storage keys (`AppIdentityKey.storageKey`); pinned to ranking top.
     @Published private(set) var favoriteKeys: Set<String> = []
+    /// Archived apps — hidden from main ranking (viewable via archive panel).
+    @Published private(set) var archivedKeys: Set<String> = []
+    /// Explicitly blocked apps (firewall) — still visible in ranking unless also archived.
+    @Published private(set) var blockedKeys: Set<String> = []
+    /// Snapshot of archived ranking rows for the archive panel (includes zero-traffic).
+    @Published private(set) var archivedRankingRows: [AppRankingRow] = []
+
     @Published var searchQuery: String = "" {
         didSet { recomputeSearchResults() }
     }
     @Published var isSearchPresented: Bool = false
     @Published private(set) var searchResults: [SearchHit] = []
+    /// Ranking filter query (supports combined tokens; see `RankingQuery`).
+    @Published var rankingFilterQuery: String = ""
 
     let aggregator = TelemetryAggregator()
     let policyStore = PolicyStore()
@@ -125,6 +142,10 @@ final class AppModel: ObservableObject {
     private var demoClock: TimeInterval = 0
     private let demoMode: Bool
     private static let favoritesDefaultsKey = "flowlens.favoriteAppKeys"
+    private static let archivedDefaultsKey = "flowlens.archivedAppKeys"
+    private static let blockedDefaultsKey = "flowlens.blockedAppKeys"
+    /// How many apps to materialize into the ranking table.
+    private static let rankingLimit = 64
 
     /// History range identity (titles come from LocalizationStore).
     enum HistoryRange: String, CaseIterable, Identifiable {
@@ -215,11 +236,32 @@ final class AppModel: ObservableObject {
     }
 
     private static let menuBarStyleKey = "flowlens.menuBarDisplayStyle"
+    private static let rankingColumnSpacingKey = "flowlens.rankingColumnSpacing"
 
     @Published var menuBarDisplayStyle: MenuBarDisplayStyle = .dualPath {
         didSet {
             UserDefaults.standard.set(menuBarDisplayStyle.rawValue, forKey: Self.menuBarStyleKey)
         }
+    }
+
+    /// Horizontal spacing between ranking table columns / header labels (points).
+    /// User-adjustable and persisted; clamped to ``rankingColumnSpacingRange``.
+    @Published var rankingColumnSpacing: Double = 4 {
+        didSet {
+            let clamped = Self.clampRankingColumnSpacing(rankingColumnSpacing)
+            if clamped != rankingColumnSpacing {
+                rankingColumnSpacing = clamped
+                return
+            }
+            UserDefaults.standard.set(rankingColumnSpacing, forKey: Self.rankingColumnSpacingKey)
+        }
+    }
+
+    static let rankingColumnSpacingRange: ClosedRange<Double> = 2...14
+    static let rankingColumnSpacingDefault: Double = 4
+
+    static func clampRankingColumnSpacing(_ value: Double) -> Double {
+        min(rankingColumnSpacingRange.upperBound, max(rankingColumnSpacingRange.lowerBound, value.rounded()))
     }
 
     /// Soft update banner on the main window (nil / false → show nothing in the top bar).
@@ -353,13 +395,29 @@ final class AppModel: ObservableObject {
            let style = MenuBarDisplayStyle(rawValue: raw) {
             menuBarDisplayStyle = style
         }
+        if UserDefaults.standard.object(forKey: Self.rankingColumnSpacingKey) != nil {
+            rankingColumnSpacing = Self.clampRankingColumnSpacing(
+                UserDefaults.standard.double(forKey: Self.rankingColumnSpacingKey)
+            )
+        } else {
+            rankingColumnSpacing = Self.rankingColumnSpacingDefault
+        }
         loadFavorites()
+        loadArchivedAndBlocked()
         seedPolicies()
         if demoMode {
             seedDemoTraffic()
         }
         refreshPublishedState()
         startTicker()
+    }
+
+    func resetRankingColumnSpacing() {
+        rankingColumnSpacing = Self.rankingColumnSpacingDefault
+    }
+
+    func nudgeRankingColumnSpacing(_ delta: Double) {
+        rankingColumnSpacing = Self.clampRankingColumnSpacing(rankingColumnSpacing + delta)
     }
 
     // MARK: - Favorites
@@ -398,13 +456,288 @@ final class AppModel: ObservableObject {
         sunburstRoot = Self.buildSunburst(from: rankingRows)
     }
 
+    /// Ranking order: favorites first, then period total bytes, then live rate, then name.
     private static func sortByFavorites(_ rows: [AppRankingRow], favorites: Set<String>) -> [AppRankingRow] {
         rows.sorted { a, b in
             let af = favorites.contains(a.snapshot.app.storageKey)
             let bf = favorites.contains(b.snapshot.app.storageKey)
             if af != bf { return af && !bf }
-            return a.snapshot.totals.totalBytes > b.snapshot.totals.totalBytes
+            let at = a.snapshot.totals.totalBytes
+            let bt = b.snapshot.totals.totalBytes
+            if at != bt { return at > bt }
+            let ar = a.snapshot.rateDownBps + a.snapshot.rateUpBps
+            let br = b.snapshot.rateDownBps + b.snapshot.rateUpBps
+            if abs(ar - br) > 1 { return ar > br }
+            let ac = a.snapshot.totals.flowsOpened
+            let bc = b.snapshot.totals.flowsOpened
+            if ac != bc { return ac > bc }
+            return a.snapshot.displayName.localizedCaseInsensitiveCompare(b.snapshot.displayName) == .orderedAscending
         }
+    }
+
+    // MARK: - Block / archive
+
+    func isArchived(_ app: AppIdentityKey) -> Bool {
+        archivedKeys.contains(app.storageKey)
+    }
+
+    func isBlocked(_ app: AppIdentityKey) -> Bool {
+        blockedKeys.contains(app.storageKey) || resolveFirewall(for: app) == .block
+    }
+
+    func toggleArchive(_ app: AppIdentityKey) {
+        let key = app.storageKey
+        if archivedKeys.contains(key) {
+            archivedKeys.remove(key)
+        } else {
+            archivedKeys.insert(key)
+        }
+        persistArchivedAndBlocked()
+        refreshPublishedState()
+    }
+
+    func toggleBlock(_ app: AppIdentityKey) {
+        let key = app.storageKey
+        if blockedKeys.contains(key) {
+            blockedKeys.remove(key)
+            removeBlockRules(for: app)
+        } else {
+            blockedKeys.insert(key)
+            let rule = NetworkPolicyRule(
+                priority: 50_000,
+                app: .exact(app),
+                destination: .any,
+                firewall: .block,
+                route: .inherit,
+                note: "UI block"
+            )
+            policyStore.upsert(rule: rule)
+        }
+        persistArchivedAndBlocked()
+        refreshPublishedState()
+    }
+
+    private func removeBlockRules(for app: AppIdentityKey) {
+        for rule in policyStore.allRules() where rule.note == "UI block" {
+            if case .exact(let key) = rule.app, key == app {
+                policyStore.removeRule(id: rule.id)
+            }
+        }
+    }
+
+    private func loadArchivedAndBlocked() {
+        if let arr = UserDefaults.standard.array(forKey: Self.archivedDefaultsKey) as? [String] {
+            archivedKeys = Set(arr)
+        }
+        if let arr = UserDefaults.standard.array(forKey: Self.blockedDefaultsKey) as? [String] {
+            blockedKeys = Set(arr)
+        }
+    }
+
+    private func persistArchivedAndBlocked() {
+        UserDefaults.standard.set(Array(archivedKeys).sorted(), forKey: Self.archivedDefaultsKey)
+        UserDefaults.standard.set(Array(blockedKeys).sorted(), forKey: Self.blockedDefaultsKey)
+    }
+
+    // MARK: - Combined ranking filter
+
+    /// Parsed ranking search: free-text tokens are AND; field tokens filter columns.
+    /// Examples: `chrome route:direct`, `status:block group:Media`, `proxy:on 收藏`
+    struct RankingQuery: Equatable {
+        var texts: [String] = []
+        var routes: Set<String> = []      // direct / system / socks5 / proxy
+        var statuses: Set<String> = []    // allow / block
+        var groups: [String] = []
+        var proxyOn: Bool? = nil
+        var favoritesOnly = false
+        var archivedOnly = false
+
+        var isEmpty: Bool {
+            texts.isEmpty && routes.isEmpty && statuses.isEmpty
+                && groups.isEmpty && proxyOn == nil && !favoritesOnly && !archivedOnly
+        }
+
+        static func parse(_ raw: String) -> RankingQuery {
+            var q = RankingQuery()
+            let parts = raw
+                .split(whereSeparator: { $0.isWhitespace || $0 == "," || $0 == "，" || $0 == ";" })
+                .map(String.init)
+                .filter { !$0.isEmpty }
+            for part in parts {
+                let lower = part.lowercased()
+                if lower.hasPrefix("route:") || lower.hasPrefix("路由:") {
+                    let v = String(part.split(separator: ":", maxSplits: 1).last ?? "")
+                        .trimmingCharacters(in: .whitespaces)
+                        .lowercased()
+                    q.routes.formUnion(Self.normalizeRouteTokens(v))
+                } else if lower.hasPrefix("status:") || lower.hasPrefix("状态:") {
+                    let v = String(part.split(separator: ":", maxSplits: 1).last ?? "")
+                        .trimmingCharacters(in: .whitespaces)
+                        .lowercased()
+                    q.statuses.formUnion(Self.normalizeStatusTokens(v))
+                } else if lower.hasPrefix("group:") || lower.hasPrefix("分组:") {
+                    let v = String(part.split(separator: ":", maxSplits: 1).last ?? "")
+                        .trimmingCharacters(in: .whitespaces)
+                        .lowercased()
+                    if !v.isEmpty { q.groups.append(v) }
+                } else if lower.hasPrefix("proxy:") || lower.hasPrefix("代理:") {
+                    let v = String(part.split(separator: ":", maxSplits: 1).last ?? "")
+                        .trimmingCharacters(in: .whitespaces)
+                        .lowercased()
+                    if ["on", "1", "true", "yes", "开", "开启"].contains(v) { q.proxyOn = true }
+                    if ["off", "0", "false", "no", "关", "关闭"].contains(v) { q.proxyOn = false }
+                } else if ["fav", "favorite", "favorites", "★", "收藏", "star"].contains(lower) {
+                    q.favoritesOnly = true
+                } else if ["archived", "archive", "归档"].contains(lower) {
+                    q.archivedOnly = true
+                } else {
+                    q.texts.append(lower)
+                }
+            }
+            return q
+        }
+
+        private static func normalizeRouteTokens(_ v: String) -> Set<String> {
+            switch v {
+            case "direct", "直连": return ["direct"]
+            case "system", "系统", "systemproxy", "系统代理": return ["system"]
+            case "socks5", "proxy", "代理", "custom", "自定义", "自定义代理": return ["socks5", "proxy"]
+            default: return [v]
+            }
+        }
+
+        private static func normalizeStatusTokens(_ v: String) -> Set<String> {
+            switch v {
+            case "block", "blocked", "拦截", "屏蔽", "deny": return ["block"]
+            case "allow", "allowed", "允许", "放行": return ["allow"]
+            default: return [v]
+            }
+        }
+
+        func matches(row: AppRankingRow, isFavorite: Bool, isBlocked: Bool, isArchived: Bool) -> Bool {
+            let snap = row.snapshot
+            if favoritesOnly && !isFavorite { return false }
+            if archivedOnly && !isArchived { return false }
+            if !routes.isEmpty {
+                let label = snap.route.chipLabel.lowercased()
+                let hit = routes.contains { token in
+                    label.contains(token) || token == "direct" && label == "direct"
+                        || token == "system" && (label == "system" || label.contains("system"))
+                        || (token == "socks5" || token == "proxy") && (label.contains("socks") || label == "proxy")
+                }
+                if !hit { return false }
+            }
+            if !statuses.isEmpty {
+                let blocked = isBlocked || snap.firewallStatus == .block
+                let wantBlock = statuses.contains("block")
+                let wantAllow = statuses.contains("allow")
+                if wantBlock && !wantAllow && !blocked { return false }
+                if wantAllow && !wantBlock && blocked { return false }
+            }
+            if let proxyOn {
+                let on = ProxyToggleLogic.isProxyEnabled(snap.route)
+                if on != proxyOn { return false }
+            }
+            if !groups.isEmpty {
+                let g = (row.groupName ?? "").lowercased()
+                if !groups.contains(where: { g.contains($0) }) { return false }
+            }
+            for t in texts {
+                let name = snap.displayName.lowercased()
+                let sid = snap.app.signingIdentifier.lowercased()
+                let g = (row.groupName ?? "").lowercased()
+                if !(name.contains(t) || sid.contains(t) || g.contains(t)) {
+                    return false
+                }
+            }
+            return true
+        }
+    }
+
+    func filteredRankingRows(_ rows: [AppRankingRow]) -> [AppRankingRow] {
+        let parsed = RankingQuery.parse(rankingFilterQuery)
+        guard !parsed.isEmpty else { return rows }
+        return rows.filter { row in
+            parsed.matches(
+                row: row,
+                isFavorite: isFavorite(row.snapshot.app),
+                isBlocked: isBlocked(row.snapshot.app),
+                isArchived: isArchived(row.snapshot.app)
+            )
+        }
+    }
+
+    /// Rows shown in ranking: active or archived panel, then combined filter.
+    var displayedRankingRows: [AppRankingRow] {
+        let base: [AppRankingRow]
+        let parsed = RankingQuery.parse(rankingFilterQuery)
+        if isArchivePanelPresented || parsed.archivedOnly {
+            base = archivedRankingRows
+        } else {
+            base = visibleRankingRows
+        }
+        return filteredRankingRows(base)
+    }
+
+    var selectedRankingRow: AppRankingRow? {
+        guard let app = selectedApp else { return nil }
+        return rankingRows.first(where: { $0.snapshot.app == app })
+            ?? archivedRankingRows.first(where: { $0.snapshot.app == app })
+    }
+
+    var selectedAppDisplayName: String? {
+        selectedRankingRow?.snapshot.displayName
+    }
+
+    func selectRankingApp(_ app: AppIdentityKey?) {
+        if let app, selectedApp == app {
+            selectedApp = nil
+        } else {
+            selectedApp = app
+        }
+        sparklineDown = []
+        sparklineUp = []
+        refreshPublishedState()
+    }
+
+    func clearRankingSelection() {
+        guard selectedApp != nil else { return }
+        selectedApp = nil
+        sparklineDown = []
+        sparklineUp = []
+        refreshPublishedState()
+    }
+
+    func revealInFinder(_ app: AppIdentityKey) {
+        let sid = app.signingIdentifier
+        let aliases: [String: String] = [
+            "com.apple.WebKit.Networking": "com.apple.Safari",
+            "com.google.Chrome.helper": "com.google.Chrome",
+            "com.anthropic.claude": "com.anthropic.claudefordesktop",
+        ]
+        let bundleID = aliases[sid] ?? sid
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            return
+        }
+        let name = AppIconCache.shared.displayName(forSigningID: sid, fallback: sid)
+        if let path = NSWorkspace.shared.fullPath(forApplication: name) {
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+        }
+    }
+
+    /// Remove telemetry for the app and drop it from ranking (also clears favorite pin).
+    func deleteAppFromRanking(_ app: AppIdentityKey) {
+        aggregator.purge(app: app)
+        favoriteKeys.remove(app.storageKey)
+        persistFavorites()
+        archivedKeys.remove(app.storageKey)
+        blockedKeys.remove(app.storageKey)
+        persistArchivedAndBlocked()
+        if selectedApp == app {
+            selectedApp = nil
+        }
+        refreshPublishedState()
     }
 
     private static func sortSnapshotsByFavorites(
@@ -697,11 +1030,32 @@ final class AppModel: ObservableObject {
         periodRangeStart = periodFrom
         periodRangeEnd = periodTo
         let dayFrom = now.addingTimeInterval(-86_400)
-        let rates = aggregator.liveRateBps()
+
+        // Resolve selected app identity early (may be nil).
+        let selectedIdentity = selectedApp
+
+        let rates = aggregator.liveRateBps(for: selectedIdentity)
         // Blend live rates with demo floor so UI stays lively in demo mode
         if demoMode {
-            rateDownBps = max(rates.down, 1_550_000 + sin(demoClock / 4) * 200_000)
-            rateUpBps = max(rates.up, 280_000 + cos(demoClock / 5) * 40_000)
+            if let selectedIdentity,
+               let snap = rankingRows.first(where: { $0.snapshot.app == selectedIdentity })
+                ?? archivedRankingRows.first(where: { $0.snapshot.app == selectedIdentity }) {
+                rateDownBps = max(snap.snapshot.rateDownBps, rates.down)
+                rateUpBps = max(snap.snapshot.rateUpBps, rates.up)
+                // Soft floor so selected app still animates a little in demo.
+                if rateDownBps < 1_000 {
+                    rateDownBps = 120_000 + sin(demoClock / 4) * 20_000
+                }
+                if rateUpBps < 1_000 {
+                    rateUpBps = 28_000 + cos(demoClock / 5) * 6_000
+                }
+            } else if selectedIdentity != nil {
+                rateDownBps = rates.down
+                rateUpBps = rates.up
+            } else {
+                rateDownBps = max(rates.down, 1_550_000 + sin(demoClock / 4) * 200_000)
+                rateUpBps = max(rates.up, 280_000 + cos(demoClock / 5) * 40_000)
+            }
         } else {
             rateDownBps = rates.down
             rateUpBps = rates.up
@@ -714,11 +1068,11 @@ final class AppModel: ObservableObject {
             sparklineUp.removeFirst(sparklineUp.count - 40)
         }
 
-        // Period network totals for active range
-        let periodTotals = aggregator.totals(for: nil, from: periodFrom, to: periodTo)
+        // Period network totals for active range (optionally scoped to selected app).
+        let periodTotals = aggregator.totals(for: selectedIdentity, from: periodFrom, to: periodTo)
         if demoMode {
             // Scale seeded demo traffic so longer ranges look larger than the live window.
-            let live = aggregator.totals(for: nil, from: dayFrom, to: now)
+            let live = aggregator.totals(for: selectedIdentity, from: dayFrom, to: now)
             var scale = overviewPeriod.networkScale
             if overviewPeriod == .custom {
                 let hours = max(1, periodTo.timeIntervalSince(periodFrom) / 3600)
@@ -734,8 +1088,20 @@ final class AppModel: ObservableObject {
                 let days = max(0.05, periodTo.timeIntervalSince(periodFrom) / 86_400)
                 ds = days / 7.0
             }
-            periodDiskRead = UInt64(Double(weekRead) * ds)
-            periodDiskWrite = UInt64(Double(weekWrite) * ds)
+            var diskR = UInt64(Double(weekRead) * ds)
+            var diskW = UInt64(Double(weekWrite) * ds)
+            if let selectedIdentity {
+                // Share of global disk by this app's network share in the period.
+                let allNet = aggregator.totals(for: nil, from: periodFrom, to: periodTo)
+                let appNet = max(1, periodTotals.totalBytes)
+                let allBytes = max(1, allNet.totalBytes)
+                let share = min(1.0, Double(appNet) / Double(allBytes))
+                let bias = demoDiskBias(for: selectedIdentity)
+                diskR = UInt64(Double(diskR) * share * bias)
+                diskW = UInt64(Double(diskW) * share * (2.0 - bias))
+            }
+            periodDiskRead = diskR
+            periodDiskWrite = diskW
         } else {
             periodNetworkUp = periodTotals.bytesUp
             periodNetworkDown = periodTotals.bytesDown
@@ -743,9 +1109,47 @@ final class AppModel: ObservableObject {
             periodDiskWrite = 0
         }
 
-        var tops = aggregator.topApps(from: periodFrom, to: periodTo, limit: 10, includeSitesForBrowsers: true)
+        // Period trend series for totals mini charts.
+        let series = aggregator.byteSeries(
+            for: selectedIdentity,
+            from: periodFrom,
+            to: periodTo,
+            points: 28
+        )
+        if series.down.contains(where: { $0 > 0 }) || series.up.contains(where: { $0 > 0 }) {
+            periodTrendDown = series.down
+            periodTrendUp = series.up
+        } else if demoMode {
+            // Synthesize a gentle trend from current period totals so charts aren't flat.
+            let baseDown = Double(max(1, periodNetworkDown)) / 28.0
+            let baseUp = Double(max(1, periodNetworkUp)) / 28.0
+            let clock = demoClock
+            var downTrend: [Double] = []
+            var upTrend: [Double] = []
+            downTrend.reserveCapacity(28)
+            upTrend.reserveCapacity(28)
+            for i in 0..<28 {
+                let waveDown = 0.5 + 0.5 * sin(Double(i) / 4.0 + clock / 9)
+                let waveUp = 0.5 + 0.5 * cos(Double(i) / 5.0 + clock / 11)
+                downTrend.append(baseDown * (0.55 + 0.45 * waveDown))
+                upTrend.append(baseUp * (0.55 + 0.45 * waveUp))
+            }
+            periodTrendDown = downTrend
+            periodTrendUp = upTrend
+        } else {
+            periodTrendDown = series.down
+            periodTrendUp = series.up
+        }
+
+        var tops = aggregator.topApps(
+            from: periodFrom,
+            to: periodTo,
+            limit: Self.rankingLimit,
+            includeSitesForBrowsers: true
+        )
         tops = tops.map { snap in
             let route = resolveRoute(for: snap.app)
+            let firewall = resolveFirewall(for: snap.app)
             let name = AppIconCache.shared.displayName(
                 forSigningID: snap.app.signingIdentifier,
                 fallback: snap.displayName
@@ -758,7 +1162,7 @@ final class AppModel: ObservableObject {
                 rateDownBps: snap.rateDownBps,
                 activeConnections: snap.activeConnections,
                 route: route,
-                firewallStatus: snap.firewallStatus,
+                firewallStatus: firewall,
                 isBrowser: snap.isBrowser,
                 sites: snap.sites
             )
@@ -766,7 +1170,14 @@ final class AppModel: ObservableObject {
         rules = policyStore.allRules()
         groups = policyStore.allGroups()
 
-        liveConnections = aggregator.recentConnections(limit: 12).map { conn in
+        let connectionPool = aggregator.recentConnections(limit: 40)
+        let scopedConnections: [LiveConnection]
+        if let selectedIdentity {
+            scopedConnections = connectionPool.filter { $0.app == selectedIdentity }
+        } else {
+            scopedConnections = connectionPool
+        }
+        liveConnections = Array(scopedConnections.prefix(12)).map { conn in
             LiveConnection(
                 id: conn.id,
                 app: conn.app,
@@ -781,11 +1192,50 @@ final class AppModel: ObservableObject {
             )
         }
 
-        let dayTotals = aggregator.totals(for: nil, from: dayFrom, to: now)
-        blockedToday = dayTotals.flowsBlocked > 0 ? dayTotals.flowsBlocked : (demoMode ? 1_248 : 0)
-        allowedConnections = dayTotals.flowsOpened > 0 ? dayTotals.flowsOpened : (demoMode ? 12_853 : 0)
+        let dayTotals = aggregator.totals(for: selectedIdentity, from: dayFrom, to: now)
+        blockedToday = dayTotals.flowsBlocked > 0 ? dayTotals.flowsBlocked : (demoMode && selectedIdentity == nil ? 1_248 : dayTotals.flowsBlocked)
+        allowedConnections = dayTotals.flowsOpened > 0 ? dayTotals.flowsOpened : (demoMode && selectedIdentity == nil ? 12_853 : dayTotals.flowsOpened)
 
-        if proxyEnabled {
+        if let selectedIdentity,
+           let snap = tops.first(where: { $0.app == selectedIdentity }) {
+            // Proxy routing card reflects the selected app's resolved route.
+            let resolved = snap.route
+            switch resolved {
+            case .direct, .inherit:
+                routeMix = RouteMix(
+                    directPercent: 100,
+                    systemProxyPercent: 0,
+                    customProxyPercent: 0,
+                    blockedCount: blockedToday,
+                    activeRules: policyStore.compileSnapshot().activeRuleCount + groups.count
+                )
+            case .systemProxy:
+                routeMix = RouteMix(
+                    directPercent: 0,
+                    systemProxyPercent: 100,
+                    customProxyPercent: 0,
+                    blockedCount: blockedToday,
+                    activeRules: policyStore.compileSnapshot().activeRuleCount + groups.count
+                )
+            case .proxy(_):
+                routeMix = RouteMix(
+                    directPercent: 0,
+                    systemProxyPercent: 0,
+                    customProxyPercent: 100,
+                    blockedCount: blockedToday,
+                    activeRules: policyStore.compileSnapshot().activeRuleCount + groups.count
+                )
+            }
+            if !proxyEnabled {
+                routeMix = RouteMix(
+                    directPercent: 100,
+                    systemProxyPercent: 0,
+                    customProxyPercent: 0,
+                    blockedCount: blockedToday,
+                    activeRules: routeMix.activeRules
+                )
+            }
+        } else if proxyEnabled {
             // Demo mix with light motion so shares feel live (real path: tally by resolved route).
             let wobble = sin(demoClock / 11) * 4
             let direct = max(5, min(90, 62 + wobble))
@@ -809,25 +1259,87 @@ final class AppModel: ObservableObject {
         }
         recomputePathRates()
 
-        // Build ranking rows with group + proportional demo disk share
-        let netTotal = max(1, tops.reduce(UInt64(0)) { $0 &+ $1.totals.totalBytes })
-        let diskR = periodDiskRead
-        let diskW = periodDiskWrite
-        let unsorted = tops.map { snap -> AppRankingRow in
-            let share = Double(snap.totals.totalBytes) / Double(netTotal)
-            let groupName = groups.first(where: { $0.memberKeys.contains(snap.app) })?.name
-            // Stable per-app disk bias so rows look distinct in demo mode.
-            let bias = demoDiskBias(for: snap.app)
-            return AppRankingRow(
-                snapshot: snap,
-                diskRead: UInt64(Double(diskR) * share * bias),
-                diskWrite: UInt64(Double(diskW) * share * (2.0 - bias)),
-                groupName: groupName,
-                share: share
+        // Build ranking rows with group + proportional demo disk share.
+        // Share is relative to the *active* (non-archived) set so pie + rank stay consistent.
+        let activeTops = tops.filter { !archivedKeys.contains($0.app.storageKey) }
+        var archivedTops = tops.filter { archivedKeys.contains($0.app.storageKey) }
+        // Keep archived keys visible even with zero traffic in the current period.
+        let presentArchived = Set(archivedTops.map(\.app.storageKey))
+        for key in archivedKeys where !presentArchived.contains(key) {
+            let parts = key.split(separator: "|", maxSplits: 1).map(String.init)
+            let team = parts.first.flatMap { $0.isEmpty ? nil : $0 }
+            let sid = parts.count > 1 ? parts[1] : key
+            let identity = AppIdentityKey(teamIdentifier: team, signingIdentifier: sid)
+            let name = AppIconCache.shared.displayName(forSigningID: sid, fallback: sid)
+            archivedTops.append(
+                AppTrafficSnapshot(
+                    app: identity,
+                    displayName: name,
+                    totals: TrafficTotals(),
+                    rateUpBps: 0,
+                    rateDownBps: 0,
+                    activeConnections: 0,
+                    route: resolveRoute(for: identity),
+                    firewallStatus: resolveFirewall(for: identity),
+                    isBrowser: BrowserIdentity.isBrowser(identity),
+                    sites: []
+                )
             )
         }
+        let netTotal = max(1, activeTops.reduce(UInt64(0)) { $0 &+ $1.totals.totalBytes })
+        let diskR = selectedIdentity == nil ? periodDiskRead : {
+            // When filtered, ranking disk columns still use global period disk for proportions.
+            let weekRead: UInt64 = 42_000_000_000
+            var ds = overviewPeriod.diskScale
+            if overviewPeriod == .custom {
+                let days = max(0.05, periodTo.timeIntervalSince(periodFrom) / 86_400)
+                ds = days / 7.0
+            }
+            return demoMode ? UInt64(Double(weekRead) * ds) : periodDiskRead
+        }()
+        let diskW = selectedIdentity == nil ? periodDiskWrite : {
+            let weekWrite: UInt64 = 18_500_000_000
+            var ds = overviewPeriod.diskScale
+            if overviewPeriod == .custom {
+                let days = max(0.05, periodTo.timeIntervalSince(periodFrom) / 86_400)
+                ds = days / 7.0
+            }
+            return demoMode ? UInt64(Double(weekWrite) * ds) : periodDiskWrite
+        }()
+
+        func makeRows(from snaps: [AppTrafficSnapshot], shareBase: UInt64) -> [AppRankingRow] {
+            snaps.map { snap -> AppRankingRow in
+                let share = Double(snap.totals.totalBytes) / Double(max(1, shareBase))
+                let groupName = groups.first(where: { $0.memberKeys.contains(snap.app) })?.name
+                let bias = demoDiskBias(for: snap.app)
+                return AppRankingRow(
+                    snapshot: snap,
+                    diskRead: UInt64(Double(diskR) * share * bias),
+                    diskWrite: UInt64(Double(diskW) * share * (2.0 - bias)),
+                    groupName: groupName,
+                    share: min(1, share)
+                )
+            }
+        }
+
+        let unsorted = makeRows(from: activeTops, shareBase: netTotal)
         rankingRows = Self.sortByFavorites(unsorted, favorites: favoriteKeys)
         topApps = rankingRows.map(\.snapshot)
+
+        let archBase = max(1, archivedTops.reduce(UInt64(0)) { $0 &+ $1.totals.totalBytes })
+        archivedRankingRows = Self.sortByFavorites(
+            makeRows(from: archivedTops, shareBase: archBase),
+            favorites: favoriteKeys
+        )
+
+        // Drop stale selection if app vanished after purge / archive.
+        if let app = selectedApp {
+            let stillThere = rankingRows.contains(where: { $0.snapshot.app == app })
+                || archivedRankingRows.contains(where: { $0.snapshot.app == app })
+            if !stillThere {
+                selectedApp = nil
+            }
+        }
 
         sunburstRoot = Self.buildSunburst(from: rankingRows)
         // Drop path segments that no longer exist after data refresh.
@@ -925,6 +1437,26 @@ final class AppModel: ObservableObject {
     private func demoDiskBias(for app: AppIdentityKey) -> Double {
         let h = abs(app.signingIdentifier.hashValue % 100)
         return 0.7 + Double(h) / 200.0
+    }
+
+    private func resolveFirewall(for app: AppIdentityKey) -> FirewallAction {
+        if blockedKeys.contains(app.storageKey) { return .block }
+        // Prefer explicit UI/policy block rules.
+        for rule in policyStore.allRules() where rule.enabled && rule.firewall == .block {
+            switch rule.app {
+            case .exact(let key) where key == app:
+                return .block
+            case .signingID(let sid) where sid == app.signingIdentifier:
+                return .block
+            default:
+                continue
+            }
+        }
+        if let group = groups.first(where: { $0.memberKeys.contains(app) }),
+           group.defaultFirewall == .block {
+            return .block
+        }
+        return .allow
     }
 
     private func resolveRoute(for app: AppIdentityKey) -> RouteAction {
