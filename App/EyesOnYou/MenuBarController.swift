@@ -280,9 +280,12 @@ struct MenuBarStatusItemView: View {
         Group {
             switch style {
             case .iconOnly:
-                Image(systemName: "waveform.path.ecg")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Color.primary)
+                AppBrand.logo
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 16, height: 16)
+                    .clipShape(RoundedRectangle(cornerRadius: 3.5, style: .continuous))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .compactRates:
                 VStack(alignment: .trailing, spacing: -1) {

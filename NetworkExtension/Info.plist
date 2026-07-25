@@ -17,9 +17,9 @@
 	<key>CFBundlePackageType</key>
 	<string>SYSX</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.2</string>
+	<string>0.1.3</string>
 	<key>CFBundleVersion</key>
-	<string>3</string>
+	<string>4</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>NetworkExtension</key>
@@ -28,10 +28,10 @@
 		<string>$(TeamIdentifierPrefix)com.example.EyesOnYou.NetworkExtension</string>
 		<key>NEProviderClasses</key>
 		<dict>
-			<key>com.apple.networkextension.filter-data</key>
-			<string>$(PRODUCT_MODULE_NAME).FlowFilterDataProvider</string>
 			<key>com.apple.networkextension.app-proxy</key>
 			<string>$(PRODUCT_MODULE_NAME).FlowTransparentProxyProvider</string>
+			<key>com.apple.networkextension.filter-data</key>
+			<string>$(PRODUCT_MODULE_NAME).FlowFilterDataProvider</string>
 		</dict>
 	</dict>
 </dict>

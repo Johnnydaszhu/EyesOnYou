@@ -172,25 +172,9 @@ struct MainDashboardView: View {
             .help(l10n.t("update.check.help"))
             .disabled(model.isCheckingForUpdates || model.isDownloadingUpdate)
 
-            if model.appUpdateAvailable {
-                Button {
-                    model.installOrOpenUpdate()
-                } label: {
-                    Text(
-                        model.isDownloadingUpdate
-                            ? l10n.t("update.downloading")
-                            : l10n.t("update.action")
-                    )
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Color.black.opacity(0.85))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Capsule().fill(EyesOnYouTheme.accentBlue.opacity(0.95)))
-                }
-                .buttonStyle(.plain)
-                .disabled(model.isDownloadingUpdate)
-                .help(l10n.t("update.action.help"))
-            } else if let key = model.updateCheckMessage {
+            // When an update exists, the top banner owns the install CTA —
+            // avoid a second "Update" chip next to the version label.
+            if !model.appUpdateAvailable, let key = model.updateCheckMessage {
                 Text(l10n.t("update.status.\(key)"))
                     .font(.system(size: 10))
                     .foregroundStyle(EyesOnYouTheme.textSecondary)

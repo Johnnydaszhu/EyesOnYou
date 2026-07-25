@@ -357,15 +357,23 @@ struct SettingsView: View {
     private var aboutPane: some View {
         Form {
             Section {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(AppBrand.displayName)
-                        .font(.title2.weight(.semibold))
-                    Text(l10n.t("settings.about.tagline"))
-                        .foregroundStyle(.secondary)
-                    Text(l10n.t("update.version", model.appVersion))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
+                HStack(alignment: .center, spacing: 14) {
+                    AppBrand.logo
+                        .resizable()
+                        .interpolation(.high)
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 56, height: 56)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(AppBrand.displayName)
+                            .font(.title2.weight(.semibold))
+                        Text(l10n.t("settings.about.tagline"))
+                            .foregroundStyle(.secondary)
+                        Text(l10n.t("update.version", model.appVersion))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
                 }
                 .padding(.vertical, 4)
 

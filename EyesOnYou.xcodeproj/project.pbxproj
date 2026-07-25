@@ -26,6 +26,7 @@
 		8148AE358C833297522912A6 /* EyesOnYouStorage in Frameworks */ = {isa = PBXBuildFile; productRef = 22DF9C94FC061A30076633C0 /* EyesOnYouStorage */; };
 		834A015FC9FFE1F1128391A7 /* EyesOnYouCore in Frameworks */ = {isa = PBXBuildFile; productRef = 75DE2F1284C09EAA91FC5FD3 /* EyesOnYouCore */; };
 		83D2BBE5B4C2D74C30DA65AC /* EyesOnYouProxyCore in Frameworks */ = {isa = PBXBuildFile; productRef = 76141785414B7419F3A1692D /* EyesOnYouProxyCore */; };
+		8BBA520C78B78CA6C8BA07E8 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 45F99DC22BAB52F4CC9882E6 /* Assets.xcassets */; };
 		8CA216D0899EDEE0AA5BCD00 /* L10n.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FBFA66B31016007A47A9919 /* L10n.swift */; };
 		8F87E434886CF04C4D1AD853 /* MainDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 582489B800CEF299FE4487DA /* MainDashboardView.swift */; };
 		90958A43D52589CC10F72A14 /* EyesOnYouRuleEngine in Frameworks */ = {isa = PBXBuildFile; productRef = E2A35F8C3520E8A62BAE07F1 /* EyesOnYouRuleEngine */; };
@@ -74,6 +75,7 @@
 		0FA88181A021E5C7848D45FD /* OverviewTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverviewTabView.swift; sourceTree = "<group>"; };
 		2C87A984273121A251272FBE /* EyesOnYou.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EyesOnYou.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3D342B481B38BC2ECF1B36E7 /* SystemExtensions.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemExtensions.framework; path = System/Library/Frameworks/SystemExtensions.framework; sourceTree = SDKROOT; };
+		45F99DC22BAB52F4CC9882E6 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4609AF65E8D35D03F0155042 /* FilterManagerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilterManagerController.swift; sourceTree = "<group>"; };
 		47C3F46F8008E7E80AA71546 /* EyesOnYouNetworkExtension.systemextension */ = {isa = PBXFileReference; explicitFileType = "wrapper.system-extension"; includeInIndex = 0; path = EyesOnYouNetworkExtension.systemextension; sourceTree = BUILT_PRODUCTS_DIR; };
 		49C6B9B1327E17077E01B75C /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
@@ -148,6 +150,7 @@
 				C4FE3BCCCC1E44EDC1517019 /* AppModel.swift */,
 				58205854FE302D0373F89421 /* AppsRulesProxyHistoryViews.swift */,
 				7EEDF548435AE3B919D922B1 /* AppUpdateService.swift */,
+				45F99DC22BAB52F4CC9882E6 /* Assets.xcassets */,
 				EE988E436C31D33BBC74FCFE /* BentoLayout.swift */,
 				6E6383950E80A740A829FAF6 /* EyesOnYouApp.swift */,
 				4609AF65E8D35D03F0155042 /* FilterManagerController.swift */,
@@ -229,6 +232,7 @@
 			buildConfigurationList = E47D0E477F4CB89DB043E86D /* Build configuration list for PBXNativeTarget "EyesOnYou" */;
 			buildPhases = (
 				D3786875DB66F3C7C4F07054 /* Sources */,
+				3BD46D5D6B880694ECB19D0A /* Resources */,
 				D5169D9DC84FCDD2CBBF36D2 /* Frameworks */,
 				C8209DC4A50E19EDBB0A5561 /* Embed Dependencies */,
 			);
@@ -312,6 +316,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		3BD46D5D6B880694ECB19D0A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8BBA520C78B78CA6C8BA07E8 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		76BE761C3C3D5A2A4BB415EE /* Sources */ = {
@@ -448,7 +463,7 @@
 		6B23EC17315E912D0917FF65 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGNING_REQUIRED = NO;
 				CODE_SIGN_ENTITLEMENTS = App/EyesOnYou/EyesOnYou.entitlements;
@@ -469,7 +484,7 @@
 		A79B7523C54BE07555506AC6 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGNING_REQUIRED = NO;
 				CODE_SIGN_ENTITLEMENTS = App/EyesOnYou/EyesOnYou.entitlements;
