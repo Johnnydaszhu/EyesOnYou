@@ -689,9 +689,9 @@ struct SunburstChart: View {
     /// it picked instead of sliding off the shape it just moved.
     private func explodeOffset(slice: LaidOutSlice, size: CGFloat, active: Bool) -> CGSize {
         guard active else { return .zero }
-        let mid = Angle(degrees: (slice.start + slice.end) / 2).radians
+        let mid: Double = Angle(degrees: (slice.start + slice.end) / 2).radians
         let push = max(4, size * 0.032)
-        return CGSize(width: cos(mid) * push, height: sin(mid) * push)
+        return CGSize(width: CGFloat(cos(mid)) * push, height: CGFloat(sin(mid)) * push)
     }
 
     private func ringRatios(ring: Int) -> (inner: CGFloat, outer: CGFloat) {
