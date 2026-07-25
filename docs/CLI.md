@@ -49,7 +49,29 @@ eyesonyou --json apps --period week --limit 20
 | `--period` | `week` | `hour` `today` `day` `week` `month` `year` |
 | `--limit` | `20` | positive int |
 
-Favorites are sorted to the top. Each app may include `segments` (websites / projects / sessions).
+Favorites are sorted to the top. Each app may include `segments` (websites / projects). IDE / agent segments are filled from real local workspaces when discoverable.
+
+### `workspaces` (alias `projects`)
+
+```bash
+eyesonyou --json workspaces --limit 20
+eyesonyou --json workspaces --source codex --limit 15
+eyesonyou --json workspaces --app com.openai.codex
+```
+
+| Flag | Default | Values |
+|---|---|---|
+| `--source` | `all` | `all` `codex` `cursor` `vscode` `claude` `codexmonitor` |
+| `--limit` | `40` | positive int |
+| `--app` | — | signing id filter (e.g. `com.todesktop.230313mzl4w4u92`) |
+
+Reads local metadata (no MITM):
+
+- Codex desktop: `~/.codex/.codex-global-state.json` (`local-projects`)
+- Codex sessions: recent `~/.codex/sessions/**/*.jsonl` `cwd`
+- CodexMonitor: `~/Library/Application Support/com.dimillian.codexmonitor/workspaces.json`
+- Cursor / VS Code: `storage.json` + `~/.cursor/projects`
+- Claude Code: `~/.claude/projects`
 
 ### `traffic`
 

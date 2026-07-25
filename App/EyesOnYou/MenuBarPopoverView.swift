@@ -2,15 +2,18 @@ import SwiftUI
 import EyesOnYouCore
 
 /// Single-column menu bar dropdown:
-/// 1) Live traffic + period picker + full-width chart
-/// 2) App list
+/// 1) Live / history traffic + period picker + full-width chart
+/// 2) App list (at least top 10 visible)
 /// 3) Footer actions: open panel / settings / menu style (opens sub-panel)
 struct MenuBarPopoverView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var l10n: LocalizationStore
     @State private var showingStylePicker = false
+    /// Menu bar traffic scope — defaults to real-time; other picks show history traffic.
+    @State private var menuTrafficPeriod: MenuBarTrafficPeriod = .realtime
 
     private let popoverWidth: CGFloat = 340
+    private let popoverHeight: CGFloat = 640
 
     var body: some View {
         VStack(spacing: 0) {
@@ -29,8 +32,7 @@ struct MenuBarPopoverView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: showingStylePicker)
-        .frame(width: popoverWidth)
-        .frame(minHeight: 380, maxHeight: 520)
+        .frame(width: popoverWidth, height: popoverHeight)
         .background {
             LiquidGlassWindowBackdrop()
         }
@@ -38,6 +40,12 @@ struct MenuBarPopoverView: View {
         .preferredColorScheme(model.appearanceMode.preferredColorScheme)
         .id(l10n.revision)
         .animation(nil, value: model.themeRevision)
+        .onAppear {
+            applyMenuTrafficPeriod(menuTrafficPeriod)
+        }
+        .onChange(of: menuTrafficPeriod) { newValue in
+            applyMenuTrafficPeriod(newValue)
+        }
     }
 
     // MARK: - Main panel
@@ -46,8 +54,8 @@ struct MenuBarPopoverView: View {
         VStack(spacing: 0) {
             liveTrafficBlock
                 .padding(.horizontal, 14)
-                .padding(.top, 14)
-                .padding(.bottom, 10)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
 
             appList
                 .padding(.horizontal, 10)
@@ -61,45 +69,91 @@ struct MenuBarPopoverView: View {
         }
     }
 
-    // MARK: - Live traffic (rates + period + chart)
+    // MARK: - Live / history traffic (rates + period + chart)
+
+    private var isRealtime: Bool {
+        menuTrafficPeriod == .realtime
+    }
 
     private var liveTrafficBlock: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(isRealtime ? l10n.t("menu.liveTraffic") : l10n.t("menu.historyTraffic"))
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(EyesOnYouTheme.textSecondary)
+                .padding(.horizontal, 2)
+
+            VStack(alignment: .leading, spacing: 6) {
                 pathRateLine(
                     label: l10n.t("status.path.direct"),
-                    down: model.directDownBps,
-                    up: model.directUpBps,
-                    share: model.directShare,
+                    downText: pathDownText(isDirect: true),
+                    upText: pathUpText(isDirect: true),
+                    share: pathShare(isDirect: true),
                     color: EyesOnYouTheme.routeDirect
                 )
                 pathRateLine(
                     label: l10n.t("status.path.proxy"),
-                    down: model.proxyDownBps,
-                    up: model.proxyUpBps,
-                    share: model.proxyShare,
+                    downText: pathDownText(isDirect: false),
+                    upText: pathUpText(isDirect: false),
+                    share: pathShare(isDirect: false),
                     color: EyesOnYouTheme.routeProxy
                 )
             }
 
             periodSegmentedControl
 
-            // Same series / palette as main dashboard live-traffic card.
             AreaChartView(
-                down: model.sparklineDown,
-                up: model.sparklineUp,
+                down: isRealtime ? model.sparklineDown : model.periodTrendDown,
+                up: isRealtime ? model.sparklineUp : model.periodTrendUp,
                 lineWidth: 1.5
             )
             .frame(maxWidth: .infinity)
-            .frame(height: 52)
+            .frame(height: 48)
             .accessibilityHidden(true)
         }
     }
 
+    private func pathDownText(isDirect: Bool) -> String {
+        if isRealtime {
+            return ByteFormat.rateMBps(
+                bytesPerSecond: isDirect ? model.directDownBps : model.proxyDownBps
+            )
+        }
+        let share = pathShare(isDirect: isDirect)
+        let bytes = UInt64((Double(model.periodNetworkDown) * share).rounded())
+        return ByteFormat.string(for: bytes)
+    }
+
+    private func pathUpText(isDirect: Bool) -> String {
+        if isRealtime {
+            return ByteFormat.rateMBps(
+                bytesPerSecond: isDirect ? model.directUpBps : model.proxyUpBps
+            )
+        }
+        let share = pathShare(isDirect: isDirect)
+        let bytes = UInt64((Double(model.periodNetworkUp) * share).rounded())
+        return ByteFormat.string(for: bytes)
+    }
+
+    private func pathShare(isDirect: Bool) -> Double {
+        if isRealtime {
+            return isDirect ? model.directShare : model.proxyShare
+        }
+        let direct = max(0, model.routeMix.directPercent) / 100
+        let proxy = max(
+            0,
+            (model.routeMix.systemProxyPercent + model.routeMix.customProxyPercent) / 100
+        )
+        let sum = direct + proxy
+        if sum <= 0.000_1 {
+            return isDirect ? 1 : 0
+        }
+        return isDirect ? (direct / sum) : (proxy / sum)
+    }
+
     private func pathRateLine(
         label: String,
-        down: Double,
-        up: Double,
+        downText: String,
+        upText: String,
         share: Double,
         color: Color
     ) -> some View {
@@ -107,38 +161,52 @@ struct MenuBarPopoverView: View {
             Circle()
                 .fill(color)
                 .frame(width: 6, height: 6)
+
             Text(label)
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(color)
-                .frame(width: 32, alignment: .leading)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(1)
+
+            Spacer(minLength: 4)
+
             HStack(spacing: 2) {
                 Image(systemName: "arrow.down")
                     .font(.system(size: 8, weight: .bold))
-                Text(ByteFormat.rateMBps(bytesPerSecond: down))
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                Text(downText)
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
             .foregroundStyle(EyesOnYouTheme.textPrimary)
+            .frame(minWidth: 72, alignment: .trailing)
+
             HStack(spacing: 2) {
                 Image(systemName: "arrow.up")
                     .font(.system(size: 8, weight: .bold))
-                Text(ByteFormat.rateMBps(bytesPerSecond: up))
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                Text(upText)
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
             .foregroundStyle(EyesOnYouTheme.textPrimary.opacity(0.9))
-            Spacer(minLength: 2)
+            .frame(minWidth: 68, alignment: .trailing)
+
             Text("\(Int((share * 100).rounded()))%")
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
                 .foregroundStyle(color)
                 .monospacedDigit()
+                .frame(width: 32, alignment: .trailing)
         }
     }
 
-    /// Unified pill segmented control — one surface, no per-chip borders.
+    /// Unified pill segmented control — real-time first, then history ranges.
     private var periodSegmentedControl: some View {
         HStack(spacing: 2) {
-            ForEach(AppModel.OverviewPeriod.menuQuickPeriods) { period in
+            ForEach(MenuBarTrafficPeriod.allCases) { period in
                 periodSegment(period)
             }
         }
@@ -149,14 +217,16 @@ struct MenuBarPopoverView: View {
         }
     }
 
-    private func periodSegment(_ period: AppModel.OverviewPeriod) -> some View {
-        let selected = model.overviewPeriod == period
+    private func periodSegment(_ period: MenuBarTrafficPeriod) -> some View {
+        let selected = menuTrafficPeriod == period
         return Button {
-            model.overviewPeriod = period
+            menuTrafficPeriod = period
         } label: {
-            Text(l10n.overviewPeriodTitle(period))
-                .font(.system(size: 10, weight: selected ? .semibold : .medium))
+            Text(periodTitle(period))
+                .font(.system(size: 9, weight: selected ? .semibold : .medium))
                 .foregroundStyle(selected ? EyesOnYouTheme.textPrimary : EyesOnYouTheme.textSecondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 6)
                 .background {
@@ -167,6 +237,22 @@ struct MenuBarPopoverView: View {
                 }
         }
         .buttonStyle(.plain)
+    }
+
+    private func periodTitle(_ period: MenuBarTrafficPeriod) -> String {
+        switch period {
+        case .realtime: return l10n.t("menu.period.realtime")
+        case .today: return l10n.t("menu.period.today")
+        case .week: return l10n.t("menu.period.week")
+        case .month: return l10n.t("menu.period.month")
+        case .last30Days: return l10n.t("menu.period.last30Days")
+        }
+    }
+
+    private func applyMenuTrafficPeriod(_ period: MenuBarTrafficPeriod) {
+        if let overview = period.overviewPeriod {
+            model.overviewPeriod = overview
+        }
     }
 
     // MARK: - App list
@@ -181,19 +267,34 @@ struct MenuBarPopoverView: View {
 
             ScrollView {
                 LazyVStack(spacing: 0) {
-                    let apps: [AppTrafficSnapshot] = {
-                        if !model.rankingRows.isEmpty {
-                            return Array(model.rankingRows.prefix(24).map(\.snapshot))
-                        }
-                        return Array(model.topApps.prefix(24))
-                    }()
-                    ForEach(Array(apps.enumerated()), id: \.element.id) { index, app in
+                    ForEach(Array(visibleApps.enumerated()), id: \.element.id) { index, app in
                         appRow(rank: index + 1, app: app)
                     }
                 }
             }
-            .frame(maxHeight: 260)
+            // Tall enough for ~10 compact rows without scrolling.
+            .frame(maxHeight: .infinity)
         }
+        .frame(maxHeight: .infinity)
+    }
+
+    private var visibleApps: [AppTrafficSnapshot] {
+        let source: [AppTrafficSnapshot] = {
+            if !model.rankingRows.isEmpty {
+                return model.rankingRows.map(\.snapshot)
+            }
+            return model.topApps
+        }()
+        if isRealtime {
+            return Array(
+                source
+                    .sorted {
+                        ($0.rateDownBps + $0.rateUpBps) > ($1.rateDownBps + $1.rateUpBps)
+                    }
+                    .prefix(24)
+            )
+        }
+        return Array(source.prefix(24))
     }
 
     private func appRow(rank: Int, app: AppTrafficSnapshot) -> some View {
@@ -202,7 +303,7 @@ struct MenuBarPopoverView: View {
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(EyesOnYouTheme.textSecondary)
                 .frame(width: 16, alignment: .trailing)
-            AppIconView(app: app.app, displayName: app.displayName, size: 20)
+            AppIconView(app: app.app, displayName: app.displayName, size: 18)
             VStack(alignment: .leading, spacing: 1) {
                 Text(app.displayName)
                     .font(.system(size: 12, weight: .medium))
@@ -230,7 +331,7 @@ struct MenuBarPopoverView: View {
                 .foregroundStyle(EyesOnYouTheme.textSecondary.opacity(0.55))
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 8)
+        .padding(.vertical, 5)
         .contentShape(Rectangle())
         .onTapGesture {
             model.hoverNodeID = app.app.storageKey
@@ -381,6 +482,29 @@ struct MenuBarPopoverView: View {
         case .dualPath: return l10n.t("menu.style.dualPath.detail")
         case .compactRates: return l10n.t("menu.style.compactRates.detail")
         case .iconOnly: return l10n.t("menu.style.iconOnly.detail")
+        }
+    }
+}
+
+// MARK: - Menu bar traffic period
+
+private enum MenuBarTrafficPeriod: String, CaseIterable, Identifiable {
+    case realtime
+    case today
+    case week
+    case month
+    case last30Days
+
+    var id: String { rawValue }
+
+    /// Maps to dashboard overview period when showing history; nil keeps live chart/rates.
+    var overviewPeriod: AppModel.OverviewPeriod? {
+        switch self {
+        case .realtime: return nil
+        case .today: return .today
+        case .week: return .week
+        case .month: return .month
+        case .last30Days: return .last30Days
         }
     }
 }

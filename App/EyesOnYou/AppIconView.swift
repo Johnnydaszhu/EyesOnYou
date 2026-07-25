@@ -27,6 +27,7 @@ final class AppIconCache: ObservableObject {
         "com.spotify.client.helper": "com.spotify.client",
         // Demo / alternate product IDs
         "com.anthropic.claude": "com.anthropic.claudefordesktop",
+        "com.openai.chat": "com.openai.codex",
         "us.zoom.xos": "us.zoom.xos",
     ]
 

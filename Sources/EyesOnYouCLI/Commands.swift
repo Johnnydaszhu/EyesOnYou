@@ -94,39 +94,7 @@ enum CLIDemoCatalog {
     }
 
     private static func seed(into agg: TelemetryAggregator) {
-        let now = Date()
-        let samples: [(String, String, String?, String, UInt64, UInt64)] = [
-            ("Chrome", "com.google.Chrome", "EQHXZ8M8AV", "www.google.com", 120_000_000, 1_200_000_000),
-            ("Chrome", "com.google.Chrome", "EQHXZ8M8AV", "github.com", 80_000_000, 900_000_000),
-            ("Chrome", "com.google.Chrome", "EQHXZ8M8AV", "www.youtube.com", 200_000_000, 980_000_000),
-            ("Safari", "com.apple.Safari", "APPLE", "www.apple.com", 30_000_000, 180_000_000),
-            ("Visual Studio Code", "com.microsoft.VSCode", "UBF8T346G9", "project:EyesOnYou", 90_000_000, 420_000_000),
-            ("Visual Studio Code", "com.microsoft.VSCode", "UBF8T346G9", "project:design-system", 40_000_000, 190_000_000),
-            ("ChatGPT", "com.openai.chat", "2DC432GLL2", "session:Swift concurrency", 40_000_000, 220_000_000),
-            ("Claude", "com.anthropic.claude", "TEAM2", "session:Architecture review", 50_000_000, 400_000_000),
-            ("Xcode", "com.apple.dt.Xcode", "APPLE", "developer.apple.com", 198_000_000, 1_120_000_000),
-            ("Discord", "com.hnc.Discord", "53Q6R32WPB", "gateway.discord.gg", 156_000_000, 823_000_000),
-            ("Spotify", "com.spotify.client", "2FNC3A47ZF", "audio-fa.scdn.co", 98_000_000, 512_000_000),
-        ]
-        for (i, s) in samples.enumerated() {
-            let app = AppIdentityKey(teamIdentifier: s.2, signingIdentifier: s.1)
-            let flow = FlowDescriptor(
-                app: app,
-                remoteHostname: s.3,
-                remotePort: 443,
-                openedAt: now.addingTimeInterval(Double(-i) - 1)
-            )
-            agg.recordOpen(flow, displayName: s.0, route: .direct)
-            agg.recordDelta(
-                flowID: flow.id,
-                app: app,
-                up: s.4,
-                down: s.5,
-                at: now.addingTimeInterval(Double(-i)),
-                route: .direct,
-                destinationKey: DestinationKey.make(hostname: s.3, address: nil)
-            )
-        }
+        DemoTrafficSeeder.seed(into: agg)
     }
 }
 
@@ -200,7 +168,7 @@ func cmdStatus(opts: GlobalOptions) throws -> ExitCode {
         "favorites_count": fav.count,
         "telemetry_db_present": dbExists,
         "notes": [
-            "Without a live system extension, apps/traffic use a deterministic demo seed.",
+            "Without a live system extension, apps/traffic use a demo seed; IDE/agent segments come from real local workspaces (see `workspaces`).",
             "Pass --json for stable machine parsing."
         ]
     ]
@@ -228,6 +196,82 @@ func cmdPaths(opts: GlobalOptions) -> ExitCode {
         print(EyesOnYouPaths.favoritesFile.path)
     }
     return .ok
+}
+
+func cmdWorkspaces(opts: GlobalOptions) throws -> ExitCode {
+    let limit = opts.flagInt("limit", default: 40)
+    let sourceRaw = (opts.flag("source") ?? "all").lowercased()
+    let appFilter = opts.flag("app")
+
+    let options = WorkspaceDiscoveryOptions(limit: max(limit, 1))
+    var rows: [DiscoveredWorkspace]
+    if let appFilter, !appFilter.isEmpty {
+        rows = WorkspaceDiscovery.projects(forSigningIdentifier: appFilter, options: options)
+    } else {
+        rows = WorkspaceDiscovery.discover(options: options)
+        rows = filterWorkspaces(rows, source: sourceRaw)
+    }
+    rows = Array(rows.prefix(max(limit, 1)))
+
+    let payload: [String: Any] = [
+        "ok": true,
+        "source": sourceRaw,
+        "count": rows.count,
+        "workspaces": rows.map { workspaceJSON($0) }
+    ]
+    emit(payload, json: opts.json) {
+        if rows.isEmpty {
+            print("(no workspaces discovered)")
+            return
+        }
+        for row in rows {
+            let sources = row.sources.map(\.rawValue).sorted().joined(separator: ",")
+            print("\(row.name)\t\(row.path)\t\(sources)\tsessions=\(row.sessionCount)")
+        }
+    }
+    return .ok
+}
+
+private func filterWorkspaces(_ rows: [DiscoveredWorkspace], source: String) throws -> [DiscoveredWorkspace] {
+    switch source {
+    case "all", "":
+        return rows
+    case "codex":
+        return rows.filter { !$0.sources.isDisjoint(with: [.codexDesktop, .codexSession, .codexMonitor]) }
+    case "codexdesktop":
+        return rows.filter { $0.sources.contains(.codexDesktop) }
+    case "codexsession", "sessions":
+        return rows.filter { $0.sources.contains(.codexSession) }
+    case "codexmonitor", "monitor":
+        return rows.filter { $0.sources.contains(.codexMonitor) }
+    case "cursor":
+        return rows.filter { $0.sources.contains(.cursor) }
+    case "vscode", "code":
+        return rows.filter { $0.sources.contains(.vsCode) }
+    case "claude", "claudecode":
+        return rows.filter { $0.sources.contains(.claudeCode) }
+    default:
+        throw CLIError.usage(
+            "invalid --source \(source); use all|codex|cursor|vscode|claude|codexmonitor"
+        )
+    }
+}
+
+private func workspaceJSON(_ row: DiscoveredWorkspace) -> [String: Any] {
+    var dict: [String: Any] = [
+        "name": row.name,
+        "path": row.path,
+        "destination_key": row.destinationKey,
+        "sources": row.sources.map(\.rawValue).sorted(),
+        "primary_source": row.primarySource.rawValue,
+        "session_count": row.sessionCount,
+        "pinned": row.isPinned,
+        "active": row.isActive
+    ]
+    if let last = row.lastActiveAt {
+        dict["last_active_at"] = ISO8601DateFormatter().string(from: last)
+    }
+    return dict
 }
 
 func cmdApps(opts: GlobalOptions) throws -> ExitCode {

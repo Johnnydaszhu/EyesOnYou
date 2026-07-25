@@ -59,10 +59,10 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             .environmentObject(LocalizationStore.shared)
 
         let host = NSHostingController(rootView: AnyView(root))
-        host.view.frame = NSRect(x: 0, y: 0, width: 340, height: 460)
+        host.view.frame = NSRect(x: 0, y: 0, width: 340, height: 640)
 
         let pop = NSPopover()
-        pop.contentSize = NSSize(width: 340, height: 460)
+        pop.contentSize = NSSize(width: 340, height: 640)
         pop.behavior = .transient
         pop.animates = true
         pop.delegate = self
@@ -109,7 +109,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         switch style {
         case .iconOnly: width = 26
         case .compactRates: width = 72
-        case .dualPath: width = 118
+        case .dualPath: width = 132
         }
         statusItem?.length = width
 
@@ -188,7 +188,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             )
         }
         refreshPopoverAppearance()
-        popover?.contentSize = NSSize(width: 340, height: 460)
+        popover?.contentSize = NSSize(width: 340, height: 640)
         popover?.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         button.isHighlighted = true
         NSApp.activate(ignoringOtherApps: true)
@@ -285,15 +285,15 @@ struct MenuBarStatusItemView: View {
                     .foregroundStyle(Color.primary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .compactRates:
-                VStack(alignment: .leading, spacing: -1) {
+                VStack(alignment: .trailing, spacing: -1) {
                     Text("↓\(shortRate(model.rateDownBps))")
                     Text("↑\(shortRate(model.rateUpBps))")
                 }
                 .font(.system(size: 8, weight: .semibold, design: .monospaced))
                 .monospacedDigit()
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
             case .dualPath:
-                HStack(spacing: 3) {
+                HStack(spacing: 6) {
                     PathDualSparkline(
                         direct: model.sparklineDirect,
                         proxy: model.sparklineProxy,
@@ -301,17 +301,18 @@ struct MenuBarStatusItemView: View {
                         fillOpacity: 0.1
                     )
                     .frame(width: 22, height: 10)
-                    VStack(alignment: .leading, spacing: -1) {
-                        HStack(spacing: 2) {
+                    HStack(spacing: 4) {
+                        VStack(alignment: .leading, spacing: -1) {
                             Text(l10n.t("status.path.direct"))
                                 .foregroundStyle(statusRouteDirect)
-                            Text("↓\(shortRate(model.directDownBps))")
-                        }
-                        HStack(spacing: 2) {
                             Text(l10n.t("status.path.proxy"))
                                 .foregroundStyle(statusRouteProxy)
+                        }
+                        VStack(alignment: .trailing, spacing: -1) {
+                            Text("↓\(shortRate(model.directDownBps))")
                             Text("↓\(shortRate(model.proxyDownBps))")
                         }
+                        .frame(minWidth: 36, alignment: .trailing)
                     }
                     .font(.system(size: 8, weight: .semibold, design: .monospaced))
                     .monospacedDigit()

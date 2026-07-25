@@ -299,15 +299,21 @@ public enum DrillableIdentity {
     public static func segmentKind(for app: AppIdentityKey) -> DrillSegmentKind {
         let id = app.signingIdentifier.lowercased()
         if BrowserIdentity.isBrowser(app) { return .website }
-        if id.contains("vscode") || id.contains("code") && id.contains("microsoft")
+        // IDE / agent apps: drill children are local workspace folders (see WorkspaceDiscovery).
+        if id.contains("vscode")
+            || (id.contains("code") && id.contains("microsoft"))
             || id == "com.microsoft.vscode"
             || id.contains("cursor")
-            || id.contains("xcode") {
+            || id.contains("todesktop")
+            || id.contains("xcode")
+            || id.contains("codex")
+            || id.contains("openai")
+            || id.contains("chatgpt")
+            || id.contains("claude")
+            || id.contains("anthropic") {
             return .project
         }
-        if id.contains("chatgpt") || id.contains("openai")
-            || id.contains("claude") || id.contains("anthropic")
-            || id.contains("copilot") {
+        if id.contains("copilot") {
             return .session
         }
         return .destination

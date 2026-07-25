@@ -9,6 +9,7 @@ This repository is optimized for **Codex**, **Claude Code**, and similar agents.
 swift run eyesonyou --json agent-manifest   # discover commands
 swift run eyesonyou --json status
 swift run eyesonyou --json apps --period week --limit 15
+swift run eyesonyou --json workspaces --limit 20
 swift run eyesonyou --json evaluate --app com.google.Chrome --host github.com
 swift run eyesonyou --json search vscode
 swift run eyesonyou --json favorites list

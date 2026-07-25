@@ -12,7 +12,7 @@ enum ExitCode: Int {
 }
 
 enum CLIRunner {
-    static let version = "0.1.0"
+    static let version = "0.1.1"
 
     static func run(args: [String]) -> ExitCode {
         do {
@@ -64,6 +64,8 @@ enum CLIRunner {
             return .ok
         case "paths":
             return cmdPaths(opts: opts)
+        case "workspaces", "projects":
+            return try cmdWorkspaces(opts: opts)
         default:
             throw CLIError.usage("unknown command: \(command)\nRun `eyesonyou help` for usage.")
         }
@@ -233,6 +235,7 @@ func helpText(json: Bool) -> String {
       rules               List policy rules in the demo/default store
       search <query>      Search apps / destinations / rules
       favorites           list | add <signing.id> | remove <signing.id>
+      workspaces          Discover local Codex / Cursor / VS Code / Claude projects
       paths               Print data directories used by CLI
       agent-manifest      Full command schema as JSON (for agent tool registration)
       help                This help
@@ -240,6 +243,8 @@ func helpText(json: Bool) -> String {
     EXAMPLES (agent-friendly)
       eyesonyou --json status
       eyesonyou --json apps --period week --limit 20
+      eyesonyou --json workspaces --limit 20
+      eyesonyou --json workspaces --source codex --limit 15
       eyesonyou --json traffic --app com.google.Chrome --period day
       eyesonyou --json evaluate --app com.google.Chrome --host github.com --port 443
       eyesonyou --json search chrome
@@ -323,12 +328,22 @@ func agentManifest() -> [String: Any] {
             [
                 "name": "paths",
                 "summary": "Print on-disk paths"
+            ],
+            [
+                "name": "workspaces",
+                "summary": "Discover local project folders (Codex desktop/sessions, CodexMonitor, Cursor, VS Code, Claude Code)",
+                "aliases": ["projects"],
+                "flags": [
+                    ["name": "source", "type": "enum", "values": ["all", "codex", "cursor", "vscode", "claude", "codexmonitor"], "default": "all"],
+                    ["name": "limit", "type": "int", "default": 40],
+                    ["name": "app", "type": "string", "description": "optional signing id filter (e.g. com.openai.codex)"]
+                ]
             ]
         ],
         "notes_for_agents": [
             "Always pass --json when parsing stdout.",
             "Do not use interactive prompts; none are offered.",
-            "Without a live system extension, traffic/apps use a deterministic demo seed so agents can still exercise evaluate/search/favorites.",
+            "Without a live system extension, traffic/apps use a demo seed; VS Code/Cursor/ChatGPT(Codex)/Claude segments are filled from real local workspaces via WorkspaceDiscovery.",
             "Favorites share the host app UserDefaults key eyesonyou.favoriteAppKeys when available.",
             "Fail-open: evaluate defaults to allow/direct when no matching rule."
         ]

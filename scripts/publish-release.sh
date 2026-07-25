@@ -124,10 +124,15 @@ if [[ "$PRERELEASE" -eq 1 ]]; then
   GH_ARGS+=(--prerelease)
 fi
 
-# If the release already exists, upload/replace the asset instead.
+# If the release already exists, replace the asset and refresh title/notes.
 if gh release view "$TAG" >/dev/null 2>&1; then
-  echo "==> release $TAG exists — uploading asset"
+  echo "==> release $TAG exists — uploading asset and refreshing metadata"
   gh release upload "$TAG" "$DMG_PATH" --clobber
+  gh release edit "$TAG" --title "EyesOnYou ${VERSION}" --notes-file "$NOTES_FILE"
+  # Drop legacy FlowLens asset name if still attached to this tag.
+  if gh release view "$TAG" --json assets --jq '.assets[].name' | grep -qx "FlowLens-${VERSION}.dmg"; then
+    gh release delete-asset "$TAG" "FlowLens-${VERSION}.dmg" --yes || true
+  fi
   echo "==> updated https://github.com/$(gh repo view --json nameWithOwner -q .nameWithOwner)/releases/tag/$TAG"
 else
   echo "==> creating release $TAG"

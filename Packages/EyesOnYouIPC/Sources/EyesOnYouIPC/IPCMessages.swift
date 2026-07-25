@@ -21,7 +21,7 @@ public struct ExtensionStatus: Codable, Sendable, Equatable {
         proxyEnabled: Bool = false,
         ruleGeneration: UInt64 = 0,
         providerReachable: Bool = false,
-        version: String = "0.1.0"
+        version: String = "0.1.1"
     ) {
         self.filterEnabled = filterEnabled
         self.proxyEnabled = proxyEnabled

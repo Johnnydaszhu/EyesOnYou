@@ -1786,7 +1786,7 @@ final class AppModel: ObservableObject {
         let children: [SunburstNode] = rows.enumerated().map { index, row in
             let hue = (Double(index) / paletteCount).truncatingRemainder(dividingBy: 1.0)
             let appID = row.snapshot.id
-            // Drill children: websites (Chrome), projects (VS Code), sessions (ChatGPT)…
+            // Drill children: websites (Chrome), projects (VS Code / Cursor / ChatGPT Codex / Claude)…
             let siteChildren: [SunburstNode]
             if !row.snapshot.sites.isEmpty {
                 let siteTotal = max(1, row.snapshot.sites.reduce(UInt64(0)) { $0 &+ $1.totals.totalBytes })
@@ -2077,131 +2077,11 @@ final class AppModel: ObservableObject {
     }
 
     private func seedDemoTraffic() {
-        // Drill-down demos:
-        // - Chrome/Safari → websites
-        // - VS Code → projects
-        // - ChatGPT / Claude → sessions
-        let chrome = AppIdentityKey(teamIdentifier: "EQHXZ8M8AV", signingIdentifier: "com.google.Chrome")
-        let safari = AppIdentityKey(teamIdentifier: "APPLE", signingIdentifier: "com.apple.Safari")
-        let vscode = AppIdentityKey(teamIdentifier: "UBF8T346G9", signingIdentifier: "com.microsoft.VSCode")
-        let chatgpt = AppIdentityKey(teamIdentifier: "2DC432GLL2", signingIdentifier: "com.openai.chat")
-        let claude = AppIdentityKey(teamIdentifier: "TEAM2", signingIdentifier: "com.anthropic.claude")
-
-        let chromeSites: [(String, UInt64, UInt64)] = [
-            ("www.google.com", 120_000_000, 1_200_000_000),
-            ("github.com", 80_000_000, 900_000_000),
-            ("www.youtube.com", 200_000_000, 980_000_000),
-            ("news.ycombinator.com", 42_000_000, 220_000_000),
-            ("stackoverflow.com", 50_000_000, 150_000_000),
-            ("docs.python.org", 28_000_000, 110_000_000),
-        ]
-        let safariSites: [(String, UInt64, UInt64)] = [
-            ("www.apple.com", 30_000_000, 180_000_000),
-            ("developer.apple.com", 25_000_000, 220_000_000),
-            ("icloud.com", 15_000_000, 90_000_000),
-        ]
-        // VS Code: different projects (synthetic destination keys)
-        let vscodeProjects: [(String, UInt64, UInt64)] = [
-            ("project:EyesOnYou", 90_000_000, 420_000_000),
-            ("project:dontbesilent-web", 55_000_000, 280_000_000),
-            ("project:design-system", 40_000_000, 190_000_000),
-            ("project:api-gateway", 35_000_000, 160_000_000),
-            ("project:infra-scripts", 18_000_000, 70_000_000),
-        ]
-        // ChatGPT: different chats / projects
-        let chatgptSessions: [(String, UInt64, UInt64)] = [
-            ("session:Swift concurrency rewrite", 40_000_000, 220_000_000),
-            ("session:App Store copy", 22_000_000, 95_000_000),
-            ("session:Travel planning", 12_000_000, 48_000_000),
-            ("session:Code review helpers", 30_000_000, 150_000_000),
-        ]
-        let claudeSessions: [(String, UInt64, UInt64)] = [
-            ("session:Architecture review", 50_000_000, 400_000_000),
-            ("session:Debug NEFilter", 35_000_000, 280_000_000),
-            ("session:Marketing outline", 20_000_000, 120_000_000),
-        ]
-
-        let other: [(String, String, String?, UInt64, UInt64, String)] = [
-            ("Xcode", "com.apple.dt.Xcode", "APPLE", 198_000_000, 1_120_000_000, "developer.apple.com"),
-            ("Discord", "com.hnc.Discord", "53Q6R32WPB", 156_000_000, 823_000_000, "gateway.discord.gg"),
-            ("Spotify", "com.spotify.client", "2FNC3A47ZF", 98_000_000, 512_000_000, "audio-fa.scdn.co"),
-            ("Slack", "com.tinyspeck.slackmacgap", "BQR82RBBHL", 64_000_000, 342_000_000, "wss-primary.slack.com"),
-            ("Telegram", "ru.keepcoder.Telegram", "6N38VWS5BX", 37_000_000, 221_000_000, "api.telegram.org"),
-            ("zoom.us", "us.zoom.xos", "BJ4HAAB9B3", 28_000_000, 178_000_000, "zoom.us"),
-        ]
-
-        let now = Date()
-        var offset = 0
-        for site in chromeSites {
-            seedSite(app: chrome, displayName: "Chrome", host: site.0, up: site.1, down: site.2, at: now, offset: offset)
-            offset += 1
+        // Browsers keep illustrative hostnames; VS Code / Cursor / ChatGPT(Codex) / Claude
+        // drill into real local workspaces discovered from disk (CodexMonitor-style cwd roots).
+        DemoTrafficSeeder.seed(into: aggregator) { app in
+            resolveRoute(for: app)
         }
-        for site in safariSites {
-            seedSite(app: safari, displayName: "Safari", host: site.0, up: site.1, down: site.2, at: now, offset: offset)
-            offset += 1
-        }
-        for p in vscodeProjects {
-            seedSite(app: vscode, displayName: "Visual Studio Code", host: p.0, up: p.1, down: p.2, at: now, offset: offset)
-            offset += 1
-        }
-        for s in chatgptSessions {
-            seedSite(app: chatgpt, displayName: "ChatGPT", host: s.0, up: s.1, down: s.2, at: now, offset: offset)
-            offset += 1
-        }
-        for s in claudeSessions {
-            seedSite(app: claude, displayName: "Claude", host: s.0, up: s.1, down: s.2, at: now, offset: offset)
-            offset += 1
-        }
-        for sample in other {
-            let app = AppIdentityKey(teamIdentifier: sample.2, signingIdentifier: sample.1)
-            seedSite(
-                app: app,
-                displayName: sample.0,
-                host: sample.5,
-                up: sample.3,
-                down: sample.4,
-                at: now,
-                offset: offset
-            )
-            offset += 1
-        }
-
-        let blockedApp = AppIdentityKey(teamIdentifier: "ANALYTICS", signingIdentifier: "com.example.Analytics")
-        let blockedFlow = FlowDescriptor(
-            app: blockedApp,
-            remoteHostname: "metrics.example.com",
-            remotePort: 443,
-            openedAt: now
-        )
-        aggregator.recordOpen(blockedFlow, displayName: "Analytics", route: .direct, firewall: .block)
-    }
-
-    private func seedSite(
-        app: AppIdentityKey,
-        displayName: String,
-        host: String,
-        up: UInt64,
-        down: UInt64,
-        at: Date,
-        offset: Int
-    ) {
-        let flow = FlowDescriptor(
-            app: app,
-            remoteHostname: host,
-            remotePort: 443,
-            openedAt: at.addingTimeInterval(Double(-offset) - 1)
-        )
-        let route = resolveRoute(for: app)
-        aggregator.recordOpen(flow, displayName: displayName, route: route)
-        aggregator.recordDelta(
-            flowID: flow.id,
-            app: app,
-            up: up,
-            down: down,
-            at: at.addingTimeInterval(Double(-offset)),
-            route: route,
-            destinationKey: DestinationKey.make(hostname: host, address: nil)
-        )
     }
 
     private func injectDemoDelta() {
