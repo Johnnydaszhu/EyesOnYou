@@ -92,7 +92,12 @@ public final class RuleSnapshot: @unchecked Sendable {
             return RouteDecision(action: group.defaultRoute, matchedRuleID: nil)
         }
 
-        return RouteDecision(action: .direct, matchedRuleID: nil)
+        // Nothing matched. That is not the same as "bypass the proxy": an app with no
+        // EyesOnYou policy keeps whatever macOS system proxy settings say, so report
+        // `.inherit` (follow the system) rather than asserting `.direct`.
+        // `ProxyRouteEvaluator` still declines to claim `.inherit`, so the fail-open
+        // behaviour of the transparent proxy is unchanged.
+        return RouteDecision(action: .inherit, matchedRuleID: nil)
     }
 
     private func groupContaining(_ app: AppIdentityKey) -> AppGroup? {
@@ -220,6 +225,24 @@ public final class PolicyStore: @unchecked Sendable {
     public func allGroups() -> [AppGroup] {
         lock.lock(); defer { lock.unlock() }
         return groups
+    }
+
+    public func setGroups(_ newGroups: [AppGroup]) {
+        lock.lock(); defer { lock.unlock() }
+        groups = newGroups
+        generation &+= 1
+    }
+
+    /// Every explicit per-app route assignment (`.inherit` is absence, never a value).
+    public func allAssignments() -> [AppIdentityKey: RouteAction] {
+        lock.lock(); defer { lock.unlock() }
+        return appAssignments
+    }
+
+    public func setAssignments(_ assignments: [AppIdentityKey: RouteAction]) {
+        lock.lock(); defer { lock.unlock() }
+        appAssignments = assignments.filter { $0.value != .inherit }
+        generation &+= 1
     }
 
     public func assignment(for app: AppIdentityKey) -> RouteAction {

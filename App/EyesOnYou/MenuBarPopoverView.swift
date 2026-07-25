@@ -1,9 +1,39 @@
 import SwiftUI
 import EyesOnYouCore
 
+/// Shared sizing for menu-bar popover content + `NSPopover.contentSize`.
+enum MenuBarPopoverSizing {
+    static let width: CGFloat = 340
+    /// Compact app row (icon 18 + vertical padding).
+    static let rowHeight: CGFloat = 32
+    /// Section title above the scrollable rows.
+    static let listHeaderHeight: CGFloat = 18
+    /// Traffic block + list/footer paddings + footer (excludes list header & rows).
+    static let chromeHeight: CGFloat = 235
+    /// Cap popover at 3/5 of the hosting screen's visible height.
+    static let maxScreenFraction: CGFloat = 3.0 / 5.0
+
+    private static var baseHeight: CGFloat {
+        chromeHeight + listHeaderHeight
+    }
+
+    static func preferredHeight(appCount: Int, screenHeight: CGFloat) -> CGFloat {
+        let rows = CGFloat(max(appCount, 0))
+        let ideal = baseHeight + rows * rowHeight
+        let maxHeight = max(screenHeight * maxScreenFraction, baseHeight)
+        return min(ideal, maxHeight)
+    }
+
+    static func listRowsHeight(appCount: Int, popoverHeight: CGFloat) -> CGFloat {
+        let available = max(0, popoverHeight - baseHeight)
+        let ideal = CGFloat(max(appCount, 0)) * rowHeight
+        return min(ideal, available)
+    }
+}
+
 /// Single-column menu bar dropdown:
 /// 1) Live / history traffic + period picker + full-width chart
-/// 2) App list (at least top 10 visible)
+/// 2) App list (height grows with rows; scrolls when capped)
 /// 3) Footer actions: open panel / settings / menu style (opens sub-panel)
 struct MenuBarPopoverView: View {
     @EnvironmentObject private var model: AppModel
@@ -12,8 +42,12 @@ struct MenuBarPopoverView: View {
     /// Menu bar traffic scope — defaults to real-time; other picks show history traffic.
     @State private var menuTrafficPeriod: MenuBarTrafficPeriod = .realtime
 
-    private let popoverWidth: CGFloat = 340
-    private let popoverHeight: CGFloat = 640
+    private var popoverHeight: CGFloat {
+        MenuBarPopoverSizing.preferredHeight(
+            appCount: visibleApps.count,
+            screenHeight: MenuBarController.shared.popoverScreenVisibleHeight
+        )
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -32,7 +66,7 @@ struct MenuBarPopoverView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: showingStylePicker)
-        .frame(width: popoverWidth, height: popoverHeight)
+        .frame(width: MenuBarPopoverSizing.width, height: popoverHeight)
         .background {
             LiquidGlassWindowBackdrop()
         }
@@ -42,10 +76,18 @@ struct MenuBarPopoverView: View {
         .animation(nil, value: model.themeRevision)
         .onAppear {
             applyMenuTrafficPeriod(menuTrafficPeriod)
+            syncPopoverContentSize()
         }
         .onChange(of: menuTrafficPeriod) { newValue in
             applyMenuTrafficPeriod(newValue)
         }
+        .onChange(of: visibleApps.count) { _ in
+            syncPopoverContentSize()
+        }
+    }
+
+    private func syncPopoverContentSize() {
+        MenuBarController.shared.applyPopoverContentSize(appCount: visibleApps.count)
     }
 
     // MARK: - Main panel
@@ -258,12 +300,17 @@ struct MenuBarPopoverView: View {
     // MARK: - App list
 
     private var appList: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        let rowsHeight = MenuBarPopoverSizing.listRowsHeight(
+            appCount: visibleApps.count,
+            popoverHeight: popoverHeight
+        )
+        return VStack(alignment: .leading, spacing: 2) {
             Text(l10n.t("menu.topApps"))
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(EyesOnYouTheme.textSecondary)
                 .padding(.horizontal, 8)
                 .padding(.bottom, 2)
+                .frame(height: MenuBarPopoverSizing.listHeaderHeight, alignment: .bottomLeading)
 
             ScrollView {
                 LazyVStack(spacing: 0) {
@@ -272,10 +319,8 @@ struct MenuBarPopoverView: View {
                     }
                 }
             }
-            // Tall enough for ~10 compact rows without scrolling.
-            .frame(maxHeight: .infinity)
+            .frame(height: rowsHeight)
         }
-        .frame(maxHeight: .infinity)
     }
 
     private var visibleApps: [AppTrafficSnapshot] {
@@ -332,6 +377,7 @@ struct MenuBarPopoverView: View {
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
+        .frame(height: MenuBarPopoverSizing.rowHeight)
         .contentShape(Rectangle())
         .onTapGesture {
             model.hoverNodeID = app.app.storageKey

@@ -1,0 +1,14 @@
+// Local development signing.
+//
+// Ad-hoc signing ("-") gives every build a new code identity, so macOS discards
+// Accessibility / notification grants and prompts again after each rebuild. That
+// makes the app unusable to develop against, because the permission dies with the
+// build that was granted it.
+//
+// Default stays ad-hoc so a fresh clone builds with no setup. Run
+//   scripts/dev-signing-identity.sh create
+// once to generate a stable local certificate; it writes LocalSigning.xcconfig
+// (git-ignored) which the optional include below picks up.
+EYESONYOU_CODE_SIGN_IDENTITY = -
+
+#include? "LocalSigning.xcconfig"

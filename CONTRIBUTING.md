@@ -65,7 +65,36 @@ xcodebuild -project EyesOnYou.xcodeproj -scheme EyesOnYou \
   build
 ```
 
-Network Extension features require a paid Apple Developer Team, matching App Group IDs, and user approval of the system extension. Without signing, the host still launches with **demo telemetry** so UI and package logic remain testable.
+### Keeping macOS permissions across rebuilds
+
+Ad-hoc signing (`CODE_SIGN_IDENTITY="-"`) produces a new code identity on every
+build, so macOS treats each build as a different app and re-asks for Accessibility
+and "access data from other apps". Sign with a stable local certificate to avoid
+that:
+
+```bash
+scripts/dev-signing-identity.sh create        # once per machine
+```
+
+That writes `config/LocalSigning.xcconfig` (git-ignored), which the project includes,
+so **Xcode builds pick it up too** — no environment variable needed. Verify with:
+
+```bash
+codesign -d -r- <path-to>/EyesOnYou.app   # "certificate leaf = ...", not "cdhash ..."
+```
+
+A `cdhash` requirement means the build is still ad-hoc and macOS will re-ask for
+Accessibility after every rebuild. Override per-invocation with
+`EYESONYOU_CODE_SIGN_IDENTITY=-` if you want ad-hoc back.
+
+Subsequent builds keep the same designated requirement, so a permission granted
+once stays granted. Leaving the variable unset keeps the old ad-hoc behaviour.
+Switching between ad-hoc and the stable identity leaves the embedded network
+extension signed the old way, and the next build fails with "Embedded binary is
+not signed with the same certificate as the parent app". Run `xcodebuild ... clean`
+once when you change mode.
+
+Network Extension features require a paid Apple Developer Team, matching App Group IDs, and user approval of the system extension. Without signing, the host app still runs and records **real** traffic through socket-level attribution — there is no demo telemetry.
 
 See [`docs/XCODE_BOOTSTRAP.md`](docs/XCODE_BOOTSTRAP.md) and [`config/`](config/) for entitlements.
 

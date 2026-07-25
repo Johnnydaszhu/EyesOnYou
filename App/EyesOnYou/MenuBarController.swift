@@ -10,6 +10,9 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
 
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
+    /// Invisible screen-space anchor so the popover opens on the clicked display
+    /// (NSPopover + NSStatusItem is unreliable across multiple monitors).
+    private var positioningWindow: NSWindow?
     private var model: AppModel?
     private var eventMonitor: Any?
     private var rateCancellable: AnyCancellable?
@@ -59,10 +62,11 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             .environmentObject(LocalizationStore.shared)
 
         let host = NSHostingController(rootView: AnyView(root))
-        host.view.frame = NSRect(x: 0, y: 0, width: 340, height: 640)
+        let size = preferredPopoverSize(appCount: currentMenuAppCount(in: model))
+        host.view.frame = NSRect(origin: .zero, size: size)
 
         let pop = NSPopover()
-        pop.contentSize = NSSize(width: 340, height: 640)
+        pop.contentSize = size
         pop.behavior = .transient
         pop.animates = true
         pop.delegate = self
@@ -71,6 +75,41 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         pop.contentViewController = host
         popover = pop
         hostingController = host
+    }
+
+    /// Visible frame height of the screen hosting the status item (fallback: main).
+    var popoverScreenVisibleHeight: CGFloat {
+        let screen = statusItem?.button?.window?.screen
+            ?? NSScreen.main
+        return screen?.visibleFrame.height ?? 900
+    }
+
+    /// Keep `NSPopover.contentSize` aligned with adaptive SwiftUI height.
+    func applyPopoverContentSize(appCount: Int) {
+        let size = preferredPopoverSize(appCount: appCount)
+        if let host = hostingController {
+            host.view.frame = NSRect(origin: .zero, size: size)
+        }
+        popover?.contentSize = size
+    }
+
+    private func preferredPopoverSize(appCount: Int) -> NSSize {
+        let height = MenuBarPopoverSizing.preferredHeight(
+            appCount: appCount,
+            screenHeight: popoverScreenVisibleHeight
+        )
+        return NSSize(width: MenuBarPopoverSizing.width, height: height)
+    }
+
+    private func currentMenuAppCount(in model: AppModel) -> Int {
+        // Keep in sync with `MenuBarPopoverView.visibleApps` (capped at 24).
+        let sourceCount: Int = {
+            if !model.rankingRows.isEmpty {
+                return model.rankingRows.count
+            }
+            return model.topApps.count
+        }()
+        return min(sourceCount, 24)
     }
 
     /// Keep popover chrome in sync with main-window appearance.
@@ -186,17 +225,76 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
                     .environmentObject(model)
                     .environmentObject(LocalizationStore.shared)
             )
+            applyPopoverContentSize(appCount: currentMenuAppCount(in: model))
         }
         refreshPopoverAppearance()
-        popover?.contentSize = NSSize(width: 340, height: 640)
-        popover?.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+
+        // Anchor in screen space under the clicked status item. Direct
+        // `show(relativeTo:of:)` against NSStatusBarButton often lands on the
+        // primary display when the icon was clicked on another monitor.
+        if let anchorView = preparePositioningAnchor(for: button) {
+            popover?.show(relativeTo: anchorView.bounds, of: anchorView, preferredEdge: .minY)
+        } else {
+            popover?.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        }
+
+        // Pin the popover window as key *before* app activation, otherwise
+        // activation can promote the dashboard on another display and drag
+        // placement / focus with it.
+        if let popoverWindow = popover?.contentViewController?.view.window {
+            popoverWindow.makeKeyAndOrderFront(nil)
+        }
         button.isHighlighted = true
         NSApp.activate(ignoringOtherApps: true)
         startEventMonitor()
     }
 
+    /// Places a transparent 1pt-tall window under the status button on the
+    /// same screen, and returns its content view for popover attachment.
+    private func preparePositioningAnchor(for button: NSStatusBarButton) -> NSView? {
+        guard let buttonWindow = button.window else { return nil }
+
+        let buttonInWindow = button.convert(button.bounds, to: nil)
+        let buttonInScreen = buttonWindow.convertToScreen(buttonInWindow)
+        guard buttonInScreen.width > 0, buttonInScreen.height > 0 else { return nil }
+
+        let anchor = positioningWindow ?? makePositioningWindow()
+        positioningWindow = anchor
+
+        let width = max(buttonInScreen.width, 2)
+        let height: CGFloat = 1
+        let frame = NSRect(
+            x: buttonInScreen.midX - width / 2,
+            y: buttonInScreen.minY,
+            width: width,
+            height: height
+        )
+        anchor.setFrame(frame, display: true)
+        // Stay on the clicked display's Space without stealing focus yet.
+        anchor.orderFrontRegardless()
+        return anchor.contentView
+    }
+
+    private func makePositioningWindow() -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 2, height: 1),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.alphaValue = 0
+        window.hasShadow = false
+        window.ignoresMouseEvents = true
+        window.level = .statusBar
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        return window
+    }
+
     func closePopover() {
         popover?.performClose(nil)
+        positioningWindow?.orderOut(nil)
         statusItem?.button?.isHighlighted = false
         stopEventMonitor()
     }
@@ -252,6 +350,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     // MARK: - NSPopoverDelegate
 
     func popoverDidClose(_ notification: Notification) {
+        positioningWindow?.orderOut(nil)
         statusItem?.button?.isHighlighted = false
         stopEventMonitor()
     }

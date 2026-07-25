@@ -59,9 +59,11 @@ public enum RouteAction: Hashable, Codable, Sendable {
     case systemProxy
     case proxy(profileID: UUID)
 
+    /// `.inherit` is the default state: no EyesOnYou rule, so macOS decides — which
+    /// is "follow system", not "bypass the proxy".
     public var displayName: String {
         switch self {
-        case .inherit: return "Inherit"
+        case .inherit: return "Follow System"
         case .direct: return "Direct"
         case .systemProxy: return "System"
         case .proxy: return "Proxy"
@@ -71,7 +73,7 @@ public enum RouteAction: Hashable, Codable, Sendable {
     /// UI-facing short label matching mockup chips.
     public var chipLabel: String {
         switch self {
-        case .inherit: return "Inherit"
+        case .inherit: return "Follow"
         case .direct: return "Direct"
         case .systemProxy: return "System"
         case .proxy: return "SOCKS5"
@@ -287,8 +289,11 @@ public enum BrowserIdentity {
     ]
 
     public static func isBrowser(_ app: AppIdentityKey) -> Bool {
-        if browserSigningIDs.contains(app.signingIdentifier) { return true }
-        let id = app.signingIdentifier.lowercased()
+        let canonical = ProcessAppIdentity.canonicalSigningID(app.signingIdentifier)
+        if browserSigningIDs.contains(canonical) || browserSigningIDs.contains(app.signingIdentifier) {
+            return true
+        }
+        let id = canonical.lowercased()
         return id.contains("chrome") || id.contains("firefox") || id.contains("safari")
             || id.contains("edgemac") || id.contains("brave") || id.hasSuffix(".browser")
     }
@@ -339,7 +344,23 @@ public enum DrillableIdentity {
 /// Normalize a remote host into a stable destination key for bucketing.
 public enum DestinationKey {
     public static let unknown = "unknown"
-    private static let labeledPrefixes = ["project:", "session:", "chat:", "workspace:"]
+
+    /// Aggregate path segments for traffic that went through a local proxy client.
+    ///
+    /// A client socket ends at the proxy, so the real site is invisible without
+    /// payload capture — but the proxy's egress tells us *how* the bytes left:
+    /// via the proxy node (翻墙) or straight out under a DIRECT rule (e.g. bilibili).
+    /// These keys make that split visible instead of lumping everything as unknown.
+    public static let viaProxyNode = "path:proxy"
+    public static let directByRule = "path:direct"
+
+    /// Foreground window title (`window:AppModel.swift — EyesOnYou`), for apps whose
+    /// only machine-readable "what am I working on" signal is the window itself.
+    public static let windowPrefix = "window:"
+
+    private static let labeledPrefixes = [
+        "project:", "session:", "chat:", "workspace:", "path:", "window:"
+    ]
 
     public static func make(hostname: String?, address: String?) -> String {
         if let hostname, !hostname.isEmpty {

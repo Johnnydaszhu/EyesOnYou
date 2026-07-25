@@ -8,7 +8,6 @@ import EyesOnYouProxyCore
 struct AppsTabView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var l10n: LocalizationStore
-    @State private var isGroupManagerPresented = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -43,67 +42,9 @@ struct AppsTabView: View {
                     }
                 }
             }
-
-            if !model.groups.isEmpty {
-                HStack {
-                    Text(l10n.t("apps.groups"))
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(EyesOnYouTheme.textPrimary)
-                    Spacer()
-                    Button {
-                        isGroupManagerPresented = true
-                    } label: {
-                        Label(l10n.t("groups.manage"), systemImage: "folder.badge.gearshape")
-                            .font(.system(size: 11, weight: .medium))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(EyesOnYouTheme.accentBlue)
-                }
-                .padding(.top, 8)
-                ForEach(model.groups) { group in
-                    HStack {
-                        Image(systemName: "folder.fill")
-                            .foregroundStyle(EyesOnYouTheme.accentBlue)
-                        Text(group.name)
-                        Text(l10n.t("apps.appsCount", group.memberKeys.count))
-                            .foregroundStyle(EyesOnYouTheme.textSecondary)
-                        Spacer()
-                        RouteBadge(label: group.defaultRoute.chipLabel)
-                    }
-                    .font(.system(size: 12))
-                    .foregroundStyle(EyesOnYouTheme.textPrimary)
-                    .padding(10)
-                    .background { LiquidGlassBackground(style: .inset, cornerRadius: 10) }
-                    .contextMenu {
-                        Button(l10n.t("groups.manage")) {
-                            isGroupManagerPresented = true
-                        }
-                        Button(role: .destructive) {
-                            model.deleteGroup(id: group.id)
-                        } label: {
-                            Label(l10n.t("groups.delete"), systemImage: "trash")
-                        }
-                    }
-                }
-            } else {
-                Button {
-                    isGroupManagerPresented = true
-                } label: {
-                    Label(l10n.t("groups.manage"), systemImage: "folder.badge.gearshape")
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(EyesOnYouTheme.accentBlue)
-                .padding(.top, 8)
-            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .id(l10n.revision)
-        .sheet(isPresented: $isGroupManagerPresented) {
-            GroupManagerSheet()
-                .environmentObject(model)
-                .environmentObject(l10n)
-        }
     }
 
     @ViewBuilder
@@ -192,15 +133,6 @@ struct AppsTabView: View {
                 .frame(width: 90, alignment: .trailing)
             Text(ByteFormat.string(for: app.totals.bytesUp))
                 .frame(width: 90, alignment: .trailing)
-            RouteBadge(label: app.route.chipLabel)
-                .frame(width: 100)
-            Toggle("", isOn: Binding(
-                get: { ProxyToggleLogic.isProxyEnabled(app.route) },
-                set: { _ in model.toggleAppProxy(app) }
-            ))
-            .toggleStyle(.switch)
-            .labelsHidden()
-            .frame(width: 90)
         }
         .font(.system(size: 12))
         .foregroundStyle(EyesOnYouTheme.textPrimary)

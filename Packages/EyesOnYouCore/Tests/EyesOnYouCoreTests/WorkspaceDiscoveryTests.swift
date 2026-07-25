@@ -211,50 +211,6 @@ final class WorkspaceDiscoveryTests: XCTestCase {
         XCTAssertEqual(DrillableIdentity.segmentKind(for: claude), .project)
     }
 
-    func testDemoSeederUsesDiscoveredDestinationKeys() throws {
-        let projectPath = tempRoot.appendingPathComponent("Documents/GitHub/EyesOnYou", isDirectory: true)
-        try FileManager.default.createDirectory(at: projectPath, withIntermediateDirectories: true)
-        let codexHome = tempRoot.appendingPathComponent(".codex", isDirectory: true)
-        try FileManager.default.createDirectory(at: codexHome, withIntermediateDirectories: true)
-        let state: [String: Any] = [
-            "local-projects": [
-                "local-1": [
-                    "id": "local-1",
-                    "name": "EyesOnYou",
-                    "rootPaths": [projectPath.path],
-                    "updatedAt": 1_700_000_000_000
-                ] as [String: Any]
-            ]
-        ]
-        try JSONSerialization.data(withJSONObject: state)
-            .write(to: codexHome.appendingPathComponent(".codex-global-state.json"))
-
-        let options = WorkspaceDiscoveryOptions(
-            homeDirectory: tempRoot,
-            codexHome: codexHome,
-            cursorHome: tempRoot.appendingPathComponent(".cursor"),
-            claudeHome: tempRoot.appendingPathComponent(".claude"),
-            applicationSupport: tempRoot.appendingPathComponent("Library/Application Support"),
-            limit: 10
-        )
-        let agg = TelemetryAggregator()
-        DemoTrafficSeeder.seed(into: agg, discoveryOptions: options)
-        let now = Date()
-        let apps = agg.topApps(
-            from: now.addingTimeInterval(-86_400),
-            to: now.addingTimeInterval(86_400),
-            limit: 20,
-            preferredGranularity: .oneMinute,
-            includeSitesForBrowsers: true
-        )
-        let chatgpt = apps.first { $0.app.signingIdentifier == "com.openai.codex" }
-        XCTAssertNotNil(chatgpt)
-        XCTAssertTrue(
-            chatgpt?.sites.contains(where: { $0.destinationKey == "project:EyesOnYou" }) == true,
-            "sites=\(chatgpt?.sites.map(\.destinationKey) ?? [])"
-        )
-    }
-
     // MARK: - Helpers
 
     private func writeStorage(at url: URL, folderURI: String) throws {

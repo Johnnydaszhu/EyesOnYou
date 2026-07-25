@@ -2,7 +2,7 @@
 
 [English](./README.md) · [简体中文](./README.zh-CN.md)
 
-Native macOS network observability, per-app firewall, and selective proxy.
+Native macOS network observability: per-app traffic, measured egress, and live connections.
 
 <p align="center">
   <img src="docs/screenshots/overview.gif" alt="EyesOnYou overview dashboard" width="860" />
@@ -11,8 +11,24 @@ Native macOS network observability, per-app firewall, and selective proxy.
 ## Features
 
 - Per-app traffic: live rates, totals, and history
-- Selective proxy: per-app and group routes (direct / system / SOCKS5 · HTTP CONNECT)
+- Per-project drill-down: Claude Code / Codex / Cursor / VS Code traffic splits by the
+  project actually being worked on — read from process working directories and editor
+  window workspaces, not estimated — and `node` / `npm` children roll up into the app
+  that spawned them
+- Persistent history: traffic is written to SQLite and reloaded on launch, so totals
+  and per-project breakdowns survive restarts; routes and rules persist too
+- Measured egress: each app shows whether its bytes actually left direct or through a
+  local proxy client, with the split when both paths carried traffic — observed, never
+  a rule
+- Live connections: each app shows whether it is holding established sockets right now
+- Observe-only by design: the app never changes your system proxy or blocks a
+  connection, so nothing on the dashboard can mean two different things. Route and
+  firewall rules remain available headlessly via the CLI
 - Privacy first: metadata and counters only — no payload capture, no TLS MITM
+  (browser page-title labelling is opt-in and off by default)
+- Traffic alerts: daily / cumulative / per-app budgets, burst detection, and
+  first-seen-app notices — thresholds configurable, each condition notifies once
+  per period rather than repeatedly
 - Agent-friendly CLI with JSON output ([docs/CLI.md](docs/CLI.md))
 
 ## Download
@@ -32,6 +48,19 @@ xcodebuild -project EyesOnYou.xcodeproj -scheme EyesOnYou \
 ```
 
 More: [CONTRIBUTING.md](./CONTRIBUTING.md) · [docs/](./docs/) · [README.zh-CN.md](./README.zh-CN.md)
+
+## Data
+
+Everything shown is measured on your machine — there is no seeded or sample traffic.
+
+| File (`~/Library/Application Support/EyesOnYou/`) | Contents |
+|---|---|
+| `telemetry.sqlite` | minute / hour / day traffic buckets per app and destination |
+| `policy.json` | routes, rules, groups, proxy profiles |
+| `favorites.json` | pinned apps |
+
+Retention: minute buckets 7 days, hour buckets 1 year, day buckets kept. Nothing
+leaves the machine.
 
 ## License
 

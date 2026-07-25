@@ -66,6 +66,12 @@ enum CLIRunner {
             return cmdPaths(opts: opts)
         case "workspaces", "projects":
             return try cmdWorkspaces(opts: opts)
+        case "attribution", "attr":
+            return try cmdAttribution(opts: opts)
+        case "route", "routes":
+            return try cmdRoute(opts: opts)
+        case "enforce":
+            return try cmdEnforce(opts: opts)
         default:
             throw CLIError.usage("unknown command: \(command)\nRun `eyesonyou help` for usage.")
         }
@@ -199,6 +205,11 @@ enum EyesOnYouPaths {
         supportDir.appendingPathComponent("favorites.json")
     }
 
+    /// Same path the host app uses, so CLI and GUI share one restore point.
+    static var systemProxyBackup: URL {
+        supportDir.appendingPathComponent("system-proxy-backup.json")
+    }
+
     /// Same key as the host app (`AppModel`).
     static let favoritesDefaultsKey = "eyesonyou.favoriteAppKeys"
 
@@ -232,10 +243,13 @@ func helpText(json: Bool) -> String {
       apps                List apps by traffic (period-scoped)
       traffic             Totals (optional --app)
       evaluate            Evaluate firewall + route for a flow
-      rules               List policy rules in the demo/default store
+      rules               List saved policy rules and groups
       search <query>      Search apps / destinations / rules
       favorites           list | add <signing.id> | remove <signing.id>
       workspaces          Discover local Codex / Cursor / VS Code / Claude projects
+      attribution         Live per-process owner app + project for open sockets
+      route               list | set | clear | block | allow  (per-app routing policy)
+      enforce             status | serve | restore  (local enforcement proxy)
       paths               Print data directories used by CLI
       agent-manifest      Full command schema as JSON (for agent tool registration)
       help                This help
@@ -245,6 +259,9 @@ func helpText(json: Bool) -> String {
       eyesonyou --json apps --period week --limit 20
       eyesonyou --json workspaces --limit 20
       eyesonyou --json workspaces --source codex --limit 15
+      eyesonyou --json attribution --limit 25
+      eyesonyou route set --app com.google.Chrome --route system
+      eyesonyou --json enforce serve --port 18080 --seconds 60
       eyesonyou --json traffic --app com.google.Chrome --period day
       eyesonyou --json evaluate --app com.google.Chrome --host github.com --port 443
       eyesonyou --json search chrome
@@ -338,12 +355,47 @@ func agentManifest() -> [String: Any] {
                     ["name": "limit", "type": "int", "default": 40],
                     ["name": "app", "type": "string", "description": "optional signing id filter (e.g. com.openai.codex)"]
                 ]
+            ],
+            [
+                "name": "route",
+                "summary": "Read and edit per-app routing policy (written to policy.json, shared with the GUI)",
+                "aliases": ["routes"],
+                "positionals": ["subcommand: list|set|clear|block|allow"],
+                "flags": [
+                    ["name": "app", "type": "string", "description": "signing identifier"],
+                    ["name": "route", "type": "enum", "values": ["direct", "system", "proxy", "inherit"]],
+                    ["name": "profile", "type": "string", "description": "proxy profile for --route proxy"],
+                    ["name": "host", "type": "string", "description": "hostname suffix for block/allow"],
+                    ["name": "team", "type": "string", "required": false]
+                ]
+            ],
+            [
+                "name": "enforce",
+                "summary": "Run/inspect the local enforcement proxy; serve streams one JSON line per completed flow so routing can be verified with curl",
+                "positionals": ["subcommand: status|serve|restore"],
+                "flags": [
+                    ["name": "port", "type": "int", "default": 0],
+                    ["name": "seconds", "type": "int", "default": 20],
+                    ["name": "system-proxy", "type": "bool", "description": "also take over the macOS system proxy (restored on exit)"],
+                    ["name": "upstream", "type": "string", "description": "host:port to chain to; defaults to the current system proxy"],
+                    ["name": "upstream-kind", "type": "enum", "values": ["http", "socks5"], "default": "http"]
+                ]
+            ],
+            [
+                "name": "attribution",
+                "summary": "Live per-process attribution: owning app (helpers rolled up via ppid) plus the project each socket-holding process is working in",
+                "aliases": ["attr"],
+                "flags": [
+                    ["name": "limit", "type": "int", "default": 25],
+                    ["name": "all", "type": "bool", "description": "include local proxy client processes"]
+                ]
             ]
         ],
         "notes_for_agents": [
             "Always pass --json when parsing stdout.",
             "Do not use interactive prompts; none are offered.",
-            "Without a live system extension, traffic/apps use a demo seed; VS Code/Cursor/ChatGPT(Codex)/Claude segments are filled from real local workspaces via WorkspaceDiscovery.",
+            "There is no seeded data: apps/traffic report only what the host app recorded, and are empty until it has run.",
+            "`attribution` samples live processes directly and works without recorded history.",
             "Favorites share the host app UserDefaults key eyesonyou.favoriteAppKeys when available.",
             "Fail-open: evaluate defaults to allow/direct when no matching rule."
         ]

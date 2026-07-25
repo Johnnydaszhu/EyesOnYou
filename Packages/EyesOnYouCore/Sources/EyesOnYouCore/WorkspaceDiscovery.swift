@@ -130,26 +130,75 @@ public enum WorkspaceDiscovery {
         return merged
     }
 
+    /// Apps that own each discovery source.
+    ///
+    /// Matched by exact identifier or vendor prefix rather than substring: a
+    /// third-party companion like `com.steipete.codexbar` reads Codex state without
+    /// being Codex, and must not inherit its projects.
+    private static let sourceOwners: [(ids: Set<String>, prefixes: [String], sources: Set<WorkspaceSource>)] = [
+        (
+            ["com.openai.codex", "com.openai.chat"],
+            ["com.openai."],
+            [.codexDesktop, .codexSession, .codexMonitor]
+        ),
+        (
+            ["com.todesktop.230313mzl4w4u92", "com.cursor.cursor"],
+            ["com.cursor."],
+            [.cursor]
+        ),
+        (
+            ["com.microsoft.vscode", "com.microsoft.vscodeinsiders", "com.visualstudio.code.oss"],
+            ["com.microsoft.vscode"],
+            [.vsCode]
+        ),
+        (
+            ["com.anthropic.claude-code", "com.anthropic.claudefordesktop", "com.anthropic.claude"],
+            ["com.anthropic."],
+            [.claudeCode]
+        ),
+    ]
+
     /// Projects relevant to a host app signing identifier.
     public static func projects(
         forSigningIdentifier signingID: String,
         options: WorkspaceDiscoveryOptions = .default
     ) -> [DiscoveredWorkspace] {
-        let id = signingID.lowercased()
-        let all = discover(options: options)
-        let allowed: Set<WorkspaceSource>
-        if id.contains("codex") || id.contains("openai") || id.contains("chatgpt") {
-            allowed = [.codexDesktop, .codexSession, .codexMonitor]
-        } else if id.contains("cursor") || id.contains("todesktop") {
-            allowed = [.cursor]
-        } else if id.contains("vscode") || (id.contains("microsoft") && id.contains("code")) {
-            allowed = [.vsCode]
-        } else if id.contains("claude") || id.contains("anthropic") {
-            allowed = [.claudeCode]
-        } else {
-            return []
+        guard let allowed = sources(forSigningIdentifier: signingID) else { return [] }
+        return discover(options: options).filter { !$0.sources.isDisjoint(with: allowed) }
+    }
+
+    /// Discovery sources owned by an app, or `nil` when the app owns none.
+    public static func sources(forSigningIdentifier signingID: String) -> Set<WorkspaceSource>? {
+        let id = signingID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !id.isEmpty else { return nil }
+        for owner in sourceOwners {
+            if owner.ids.contains(id) { return owner.sources }
+            if owner.prefixes.contains(where: { id.hasPrefix($0) }) { return owner.sources }
         }
-        return all.filter { !$0.sources.isDisjoint(with: allowed) }
+        return nil
+    }
+
+    /// Project an app was most recently working in, for GUI agents whose own process
+    /// carries no useful cwd (ChatGPT.app runs its Codex app-server with `cwd=/`).
+    ///
+    /// Weaker evidence than reading a process working directory: it says "this app
+    /// touched this project just now", not "these bytes belong to this project".
+    /// Callers should label it accordingly rather than presenting it as exact.
+    public static func recentlyActiveProject(
+        forSigningIdentifier signingID: String,
+        maxAge: TimeInterval = 900,
+        now: Date = Date(),
+        options: WorkspaceDiscoveryOptions = .default
+    ) -> DiscoveredWorkspace? {
+        let candidates = projects(forSigningIdentifier: signingID, options: options)
+        // `projects` is already ranked active → pinned → sessions → recency.
+        for candidate in candidates {
+            if candidate.isActive { return candidate }
+            if let last = candidate.lastActiveAt, now.timeIntervalSince(last) <= maxAge {
+                return candidate
+            }
+        }
+        return nil
     }
 
     // MARK: - Codex desktop

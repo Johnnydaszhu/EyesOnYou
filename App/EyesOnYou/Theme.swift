@@ -34,6 +34,15 @@ enum EyesOnYouTheme {
     private(set) static var chartDown = Color.fl(light: (0.35, 0.62, 0.48), dark: (0.55, 0.78, 0.62))
     private(set) static var chartUp = Color.fl(light: (0.92, 0.48, 0.20), dark: (1.0, 0.55, 0.28))
 
+    // Categorical palette for the sunburst / pie — derived from the accent set so the
+    // template (and custom accents) reach the chart instead of a fixed rainbow wheel.
+    private static var seriesSeedsLight: [ThemeHSB] = ThemeHSB.series(from: .forest, mono: false, isDark: false)
+    private static var seriesSeedsDark: [ThemeHSB] = ThemeHSB.series(
+        from: ThemeAccentSet.forest.elevatedForDark(),
+        mono: false,
+        isDark: true
+    )
+
     // Ranking / disk values
     private(set) static var diskRead = Color.fl(light: (0.90, 0.58, 0.22), dark: (0.95, 0.68, 0.32))
     private(set) static var diskWrite = Color.fl(light: (0.88, 0.50, 0.18), dark: (0.95, 0.60, 0.28))
@@ -48,7 +57,8 @@ enum EyesOnYouTheme {
     static func routeColor(_ route: String) -> Color {
         switch route.lowercased() {
         case "direct": return routeDirect
-        case "system", "system proxy": return routeSystem
+        // "Follow" is the unruled default: macOS decides, so tint it like the system path.
+        case "system", "system proxy", "follow", "follow system": return routeSystem
         case "socks5", "proxy", "custom proxy": return routeProxy
         case "blocked": return accentRed
         default: return textSecondary
@@ -73,6 +83,47 @@ enum EyesOnYouTheme {
     static func canvasRouteProxy(colorScheme: ColorScheme) -> Color {
         let accents = colorScheme == .dark ? ThemeStore.accents.elevatedForDark() : ThemeStore.accents
         return accents.proxy.color
+    }
+
+    /// Categorical slice color for the sunburst / pie.
+    /// - Parameters:
+    ///   - index: series slot (app rank). Wraps to the same hues, progressively softer.
+    ///   - variant: sibling offset inside one app (destinations) — tonal step, never a new hue.
+    ///   - ring: 0 inner, 1 outer shell.
+    static func seriesColor(index: Int, variant: Int = 0, ring: Int = 0, hovered: Bool = false) -> Color {
+        Color(nsColor: NSColor(name: nil, dynamicProvider: { appearance in
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            let hsb = ThemeHSB.slice(
+                seeds: isDark ? seriesSeedsDark : seriesSeedsLight,
+                index: index,
+                variant: variant,
+                ring: ring,
+                hovered: hovered,
+                isDark: isDark
+            )
+            let rgb = hsb.rgb
+            return NSColor(srgbRed: rgb.r, green: rgb.g, blue: rgb.b, alpha: 1)
+        }))
+    }
+
+    /// Perceived luminance (0…1) of a slice, so in-slice labels can flip to dark text.
+    static func seriesLuminance(
+        index: Int,
+        variant: Int = 0,
+        ring: Int = 0,
+        hovered: Bool = false,
+        isDark: Bool
+    ) -> Double {
+        let hsb = ThemeHSB.slice(
+            seeds: isDark ? seriesSeedsDark : seriesSeedsLight,
+            index: index,
+            variant: variant,
+            ring: ring,
+            hovered: hovered,
+            isDark: isDark
+        )
+        let rgb = hsb.rgb
+        return 0.2126 * Double(rgb.r) + 0.7152 * Double(rgb.g) + 0.0722 * Double(rgb.b)
     }
 
     static func cardShadow(for scheme: ColorScheme) -> (Color, CGFloat, CGFloat) {
@@ -120,6 +171,9 @@ enum EyesOnYouTheme {
         accentRed = Color.fl(rgbLight: accents.danger, rgbDark: darkAccents.danger)
         gold = Color.fl(rgbLight: accents.gold, rgbDark: darkAccents.gold)
 
+        seriesSeedsLight = ThemeHSB.series(from: accents, mono: isMono, isDark: false)
+        seriesSeedsDark = ThemeHSB.series(from: darkAccents, mono: isMono, isDark: true)
+
         if isMono {
             // Only proxy traffic keeps color; charts / disk / direct path stay neutral.
             chartDown = Color.fl(light: (0.48, 0.48, 0.48), dark: (0.58, 0.58, 0.58))
@@ -141,6 +195,124 @@ enum EyesOnYouTheme {
             routeSystem = textSecondary
             routeProxy = accentOrange
         }
+    }
+}
+
+// MARK: - Chart series palette
+
+/// HSB working color for the categorical chart palette. Slices need saturation /
+/// brightness steps off a shared hue, which `ThemeRGB` can't express directly.
+struct ThemeHSB {
+    var h: Double
+    var s: Double
+    var b: Double
+
+    init(h: Double, s: Double, b: Double) {
+        self.h = h
+        self.s = s
+        self.b = b
+    }
+
+    init(_ rgb: ThemeRGB) {
+        let maxV = max(rgb.r, rgb.g, rgb.b)
+        let minV = min(rgb.r, rgb.g, rgb.b)
+        let delta = maxV - minV
+        var hue = 0.0
+        if delta > 0 {
+            if maxV == rgb.r {
+                hue = (rgb.g - rgb.b) / delta
+            } else if maxV == rgb.g {
+                hue = 2 + (rgb.b - rgb.r) / delta
+            } else {
+                hue = 4 + (rgb.r - rgb.g) / delta
+            }
+            hue /= 6
+            if hue < 0 { hue += 1 }
+        }
+        self.init(h: hue, s: maxV == 0 ? 0 : delta / maxV, b: maxV)
+    }
+
+    var rgb: (r: CGFloat, g: CGFloat, b: CGFloat) {
+        let sector = floor(h * 6)
+        let f = h * 6 - sector
+        let p = b * (1 - s)
+        let q = b * (1 - f * s)
+        let t = b * (1 - (1 - f) * s)
+        let triple: (Double, Double, Double)
+        switch Int(sector) % 6 {
+        case 0: triple = (b, t, p)
+        case 1: triple = (q, b, p)
+        case 2: triple = (p, b, t)
+        case 3: triple = (p, q, b)
+        case 4: triple = (t, p, b)
+        default: triple = (b, p, q)
+        }
+        return (CGFloat(triple.0), CGFloat(triple.1), CGFloat(triple.2))
+    }
+
+    /// Seed slots ordered so neighbouring slices land on clearly different hues.
+    static func series(from accents: ThemeAccentSet, mono: Bool, isDark: Bool) -> [ThemeHSB] {
+        if mono {
+            // Grayscale template: slices separate by brightness, and the ramp is
+            // interleaved so adjacent ranks never sit one step apart.
+            let low = isDark ? 0.40 : 0.26
+            let high = isDark ? 0.88 : 0.76
+            let steps = [0.0, 1.0, 0.34, 0.72, 0.16, 0.88, 0.50, 0.60]
+            return steps.map { ThemeHSB(h: 0, s: 0, b: low + (high - low) * $0) }
+        }
+        return [
+            accents.accent,
+            accents.secondary,
+            accents.proxy,
+            accents.tertiary,
+            accents.gold,
+            accents.brand,
+            accents.danger,
+            accents.warning
+        ].map(ThemeHSB.init)
+    }
+
+    /// Resolve one slice: series slot + sibling variant + ring depth + hover.
+    static func slice(
+        seeds: [ThemeHSB],
+        index: Int,
+        variant: Int,
+        ring: Int,
+        hovered: Bool,
+        isDark: Bool
+    ) -> ThemeHSB {
+        guard !seeds.isEmpty else { return ThemeHSB(h: 0, s: 0, b: 0.5) }
+        let safeIndex = max(0, index)
+        var hsb = seeds[safeIndex % seeds.count]
+
+        // Past the first lap, reuse the hues but soften them so ranks stay tellable apart.
+        let cycle = min(3, safeIndex / seeds.count)
+        if cycle > 0 {
+            hsb.s *= 1 - 0.16 * Double(cycle)
+            hsb.b += (isDark ? 0.08 : -0.10) * Double(cycle)
+        }
+
+        // Destinations inside one app: tonal step only, so the app stays recognizable.
+        if variant > 0 {
+            let step = Double(variant % 5)
+            hsb.s *= 1 - 0.09 * step
+            hsb.b += 0.05 * step
+        }
+
+        // Outer ring reads as a lighter shell of its parent slice.
+        if ring > 0 {
+            hsb.s *= 0.68
+            hsb.b += isDark ? 0.06 : 0.12
+        }
+
+        if hovered {
+            hsb.s = min(1, hsb.s * 1.08)
+            hsb.b += 0.10
+        }
+
+        hsb.s = min(1, max(0, hsb.s))
+        hsb.b = min(0.98, max(0.22, hsb.b))
+        return hsb
     }
 }
 

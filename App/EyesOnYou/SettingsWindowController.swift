@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import EyesOnYouCore
 
 /// Owns a dedicated Settings window. More reliable than SwiftUI `Settings` + `showSettingsWindow:`.
 @MainActor
@@ -264,6 +265,53 @@ struct SettingsView: View {
             }
 
             Section {
+                Toggle(l10n.t("settings.browserTabs"), isOn: $model.tracksBrowserTabs)
+                Text(l10n.t("settings.browserTabs.hint"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                // Trust can be revoked in System Settings without returning here.
+                if model.tracksBrowserTabs, !model.isBrowserTabTrackingAuthorized {
+                    Label(l10n.t("settings.browserTabs.permission"), systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
+
+            Section {
+                gigabyteField("settings.alerts.dailyTotal", bytes: Binding(
+                    get: { model.alertThresholds.dailyTotalBytes },
+                    set: { model.alertThresholds.dailyTotalBytes = $0 }
+                ))
+                gigabyteField("settings.alerts.dailyApp", bytes: Binding(
+                    get: { model.alertThresholds.dailyAppBytes },
+                    set: { model.alertThresholds.dailyAppBytes = $0 }
+                ))
+                gigabyteField("settings.alerts.cumulativeApp", bytes: Binding(
+                    get: { model.alertThresholds.cumulativeAppBytes },
+                    set: { model.alertThresholds.cumulativeAppBytes = $0 }
+                ))
+                megabyteField("settings.alerts.burst", bytes: Binding(
+                    get: { model.alertThresholds.burstBytes },
+                    set: { model.alertThresholds.burstBytes = $0 }
+                ))
+                Toggle(l10n.t("settings.alerts.newApp"), isOn: Binding(
+                    get: { model.alertThresholds.notifyOnNewApp },
+                    set: { model.alertThresholds.notifyOnNewApp = $0 }
+                ))
+                Text(l10n.t("settings.alerts.hint"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if model.alertsEnabled, !model.alertCenter.notificationsAuthorized {
+                    Label(l10n.t("settings.alerts.permission"), systemImage: "bell.slash")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            } header: {
+                Text(l10n.t("settings.alerts.header"))
+            }
+            .disabled(!model.alertsEnabled)
+
+            Section {
                 Text(l10n.t("settings.protection.hint"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -271,6 +319,39 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
+    }
+
+    /// Thresholds are stored in bytes but edited in GB — a text field keeps `0`
+    /// (meaning "off") expressible, which a stepper would hide.
+    private func gigabyteField(_ key: String, bytes: Binding<UInt64>) -> some View {
+        unitField(key, bytes: bytes, unit: TrafficAlertThresholds.gigabyte)
+    }
+
+    private func megabyteField(_ key: String, bytes: Binding<UInt64>) -> some View {
+        unitField(key, bytes: bytes, unit: TrafficAlertThresholds.megabyte)
+    }
+
+    private func unitField(_ key: String, bytes: Binding<UInt64>, unit: UInt64) -> some View {
+        let text = Binding<String>(
+            get: {
+                let value = Double(bytes.wrappedValue) / Double(unit)
+                return value == value.rounded()
+                    ? String(Int(value))
+                    : String(format: "%.1f", value)
+            },
+            set: { raw in
+                let cleaned = raw.replacingOccurrences(of: ",", with: ".")
+                guard let value = Double(cleaned), value >= 0 else { return }
+                bytes.wrappedValue = UInt64(value * Double(unit))
+            }
+        )
+        return HStack {
+            Text(l10n.t(key))
+            Spacer()
+            TextField("", text: text)
+                .frame(width: 80)
+                .multilineTextAlignment(.trailing)
+        }
     }
 
     private var rankingPane: some View {

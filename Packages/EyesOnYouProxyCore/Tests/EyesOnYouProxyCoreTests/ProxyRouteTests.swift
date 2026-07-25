@@ -21,4 +21,28 @@ final class ProxyRouteTests: XCTestCase {
         XCTAssertFalse(noClaim.claim)
         XCTAssertEqual(noClaim.decision.action, .direct)
     }
+
+    func testUnruledAppFollowsSystemAndIsStillNotClaimed() {
+        // An app with no policy reports `.inherit` — "macOS decides" — rather than
+        // claiming `.direct`. The transparent proxy must still leave it to the OS:
+        // this is the fail-open guarantee, and reporting must not change enforcement.
+        let unruled = AppIdentityKey(teamIdentifier: "T", signingIdentifier: "com.a.Unruled")
+        let snapshot = PolicyStore().compileSnapshot()
+
+        let result = ProxyRouteEvaluator.shouldClaimFlow(
+            FlowDescriptor(app: unruled),
+            snapshot: snapshot
+        )
+        XCTAssertEqual(result.decision.action, .inherit)
+        XCTAssertFalse(result.claim)
+    }
+
+    func testGroupDefaultStillOverridesTheFollowSystemDefault() {
+        let member = AppIdentityKey(teamIdentifier: "T", signingIdentifier: "com.a.Member")
+        let store = PolicyStore()
+        store.upsert(group: AppGroup(name: "Direct", memberKeys: [member], defaultRoute: .direct))
+
+        let decision = store.compileSnapshot().evaluateRoute(FlowDescriptor(app: member))
+        XCTAssertEqual(decision.action, .direct)
+    }
 }

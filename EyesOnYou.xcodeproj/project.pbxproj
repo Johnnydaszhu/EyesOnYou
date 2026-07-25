@@ -17,10 +17,13 @@
 		385EC91D3E04DB9B906E68A7 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4FE3BCCCC1E44EDC1517019 /* AppModel.swift */; };
 		3E431F2600116FE6D5FFC4E0 /* ThemePalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E9A59128684261C89B2EBBE /* ThemePalette.swift */; };
 		49349A2AE6853CF080834EEF /* SettingsWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDD99A0F47D6C3578B28701A /* SettingsWindowController.swift */; };
+		4C512840FFAE97C1C3DCB72F /* ForegroundWindowSampler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26541805E0941FF1B62972EB /* ForegroundWindowSampler.swift */; };
 		4D82BEAC4D2F7E227DD5844F /* FilterManagerController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4609AF65E8D35D03F0155042 /* FilterManagerController.swift */; };
+		4F17008DA8A9B983726D89DD /* BrowserTabSampler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 671A7BE4F69B3670FE039FFB /* BrowserTabSampler.swift */; };
 		507287A80FCD741DB887F257 /* SunburstChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C912ACCD2973BDEFB9A3C86 /* SunburstChart.swift */; };
 		53D46B10208DCA266A964301 /* GlobalTimeRangeBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7D0362C1496241E30A66CA1 /* GlobalTimeRangeBar.swift */; };
 		62E4B79F0C83E146439E4BA5 /* EyesOnYouNetworkExtension.systemextension in Embed Dependencies */ = {isa = PBXBuildFile; fileRef = 47C3F46F8008E7E80AA71546 /* EyesOnYouNetworkExtension.systemextension */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		671465E2F8D58AA6C60B6C3B /* AlertCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FD16705AA37DFAF5C3151D2 /* AlertCenter.swift */; };
 		6ACF68EAF6A869E8A737CB6B /* GroupManagerViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5B49F5F1651682FE65AFBB /* GroupManagerViews.swift */; };
 		806BCBBEB151B9ECF95D2EFC /* ExtensionRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A65CB4743D80D070A5599214 /* ExtensionRuntime.swift */; };
 		8148AE358C833297522912A6 /* EyesOnYouStorage in Frameworks */ = {isa = PBXBuildFile; productRef = 22DF9C94FC061A30076633C0 /* EyesOnYouStorage */; };
@@ -73,6 +76,7 @@
 /* Begin PBXFileReference section */
 		0C72C2DCBF09C7FB824FFC4A /* FlowTransparentProxyProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlowTransparentProxyProvider.swift; sourceTree = "<group>"; };
 		0FA88181A021E5C7848D45FD /* OverviewTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverviewTabView.swift; sourceTree = "<group>"; };
+		26541805E0941FF1B62972EB /* ForegroundWindowSampler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForegroundWindowSampler.swift; sourceTree = "<group>"; };
 		2C87A984273121A251272FBE /* EyesOnYou.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EyesOnYou.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3D342B481B38BC2ECF1B36E7 /* SystemExtensions.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemExtensions.framework; path = System/Library/Frameworks/SystemExtensions.framework; sourceTree = SDKROOT; };
 		45F99DC22BAB52F4CC9882E6 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -85,15 +89,18 @@
 		5E9A59128684261C89B2EBBE /* ThemePalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemePalette.swift; sourceTree = "<group>"; };
 		5FBFA66B31016007A47A9919 /* L10n.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = L10n.swift; sourceTree = "<group>"; };
 		5FF807FBC32679BB3FC967E2 /* MenuBarPopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarPopoverView.swift; sourceTree = "<group>"; };
+		671A7BE4F69B3670FE039FFB /* BrowserTabSampler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserTabSampler.swift; sourceTree = "<group>"; };
 		69960448DF6DB837B1CDD200 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		6E6383950E80A740A829FAF6 /* EyesOnYouApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EyesOnYouApp.swift; sourceTree = "<group>"; };
 		7C912ACCD2973BDEFB9A3C86 /* SunburstChart.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SunburstChart.swift; sourceTree = "<group>"; };
 		7EEDF548435AE3B919D922B1 /* AppUpdateService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateService.swift; sourceTree = "<group>"; };
+		8FD16705AA37DFAF5C3151D2 /* AlertCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlertCenter.swift; sourceTree = "<group>"; };
 		A65CB4743D80D070A5599214 /* ExtensionRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionRuntime.swift; sourceTree = "<group>"; };
 		B7D0362C1496241E30A66CA1 /* GlobalTimeRangeBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalTimeRangeBar.swift; sourceTree = "<group>"; };
 		BFB7518FC4A69D11F6120F91 /* GlobalSearchBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalSearchBar.swift; sourceTree = "<group>"; };
 		C4FE3BCCCC1E44EDC1517019 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		CDD99A0F47D6C3578B28701A /* SettingsWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowController.swift; sourceTree = "<group>"; };
+		D0101B79CF3CF2C8C06AD862 /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
 		D05D5E8673F9301FAA7D2781 /* FlowFilterDataProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlowFilterDataProvider.swift; sourceTree = "<group>"; };
 		D0C8625CF559A65285817F3D /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
 		DEC21FF42614F5B39AA02DC5 /* AppBrand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppBrand.swift; sourceTree = "<group>"; };
@@ -145,6 +152,7 @@
 			isa = PBXGroup;
 			children = (
 				62D508FEB4A92ABD0ED95612 /* Localization */,
+				8FD16705AA37DFAF5C3151D2 /* AlertCenter.swift */,
 				DEC21FF42614F5B39AA02DC5 /* AppBrand.swift */,
 				F25F2797B0B66C4B98FF4D3F /* AppIconView.swift */,
 				C4FE3BCCCC1E44EDC1517019 /* AppModel.swift */,
@@ -152,8 +160,10 @@
 				7EEDF548435AE3B919D922B1 /* AppUpdateService.swift */,
 				45F99DC22BAB52F4CC9882E6 /* Assets.xcassets */,
 				EE988E436C31D33BBC74FCFE /* BentoLayout.swift */,
+				671A7BE4F69B3670FE039FFB /* BrowserTabSampler.swift */,
 				6E6383950E80A740A829FAF6 /* EyesOnYouApp.swift */,
 				4609AF65E8D35D03F0155042 /* FilterManagerController.swift */,
+				26541805E0941FF1B62972EB /* ForegroundWindowSampler.swift */,
 				BFB7518FC4A69D11F6120F91 /* GlobalSearchBar.swift */,
 				B7D0362C1496241E30A66CA1 /* GlobalTimeRangeBar.swift */,
 				EF5B49F5F1651682FE65AFBB /* GroupManagerViews.swift */,
@@ -190,6 +200,7 @@
 			isa = PBXGroup;
 			children = (
 				9F819288D83CAD4E2170FFC1 /* App */,
+				C58F42348038B9D4275CBA02 /* config */,
 				7E0AC55AC1F6B140D7F06DDC /* NetworkExtension */,
 				72AA9DFD18825E45CDEBB914 /* Packages */,
 				53C7EAE1E77BFBC11A96C402 /* Frameworks */,
@@ -222,6 +233,14 @@
 				5C06EE28E317DC55546F420F /* EyesOnYou */,
 			);
 			path = App;
+			sourceTree = "<group>";
+		};
+		C58F42348038B9D4275CBA02 /* config */ = {
+			isa = PBXGroup;
+			children = (
+				D0101B79CF3CF2C8C06AD862 /* Signing.xcconfig */,
+			);
+			path = config;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -286,11 +305,11 @@
 				TargetAttributes = {
 					0F1C0EBB500E8F99F19395B9 = {
 						DevelopmentTeam = "";
-						ProvisioningStyle = Automatic;
+						ProvisioningStyle = Manual;
 					};
 					345C62488F4A0D9A146332F2 = {
 						DevelopmentTeam = "";
-						ProvisioningStyle = Automatic;
+						ProvisioningStyle = Manual;
 					};
 				};
 			};
@@ -344,14 +363,17 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				671465E2F8D58AA6C60B6C3B /* AlertCenter.swift in Sources */,
 				A256E05E7B8705264894AA4E /* AppBrand.swift in Sources */,
 				B52BCCE0E42295236BAA6904 /* AppIconView.swift in Sources */,
 				385EC91D3E04DB9B906E68A7 /* AppModel.swift in Sources */,
 				13923E3ED5AAD53E2B800CF7 /* AppUpdateService.swift in Sources */,
 				2BC2DA4B0B0D8A4EE89A754F /* AppsRulesProxyHistoryViews.swift in Sources */,
 				1F51DF92A698041F567CCAC6 /* BentoLayout.swift in Sources */,
+				4F17008DA8A9B983726D89DD /* BrowserTabSampler.swift in Sources */,
 				0B8C28D0096EB5DC49122E1E /* EyesOnYouApp.swift in Sources */,
 				4D82BEAC4D2F7E227DD5844F /* FilterManagerController.swift in Sources */,
+				4C512840FFAE97C1C3DCB72F /* ForegroundWindowSampler.swift in Sources */,
 				ADEFD3E4C7B0F929517A89EE /* GlobalSearchBar.swift in Sources */,
 				53D46B10208DCA266A964301 /* GlobalTimeRangeBar.swift in Sources */,
 				6ACF68EAF6A869E8A737CB6B /* GroupManagerViews.swift in Sources */,
@@ -384,7 +406,8 @@
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGNING_REQUIRED = NO;
 				CODE_SIGN_ENTITLEMENTS = NetworkExtension/EyesOnYouNetworkExtension.entitlements;
-				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_IDENTITY = "$(EYESONYOU_CODE_SIGN_IDENTITY:default=-)";
+				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NetworkExtension/Info.plist;
@@ -467,8 +490,10 @@
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGNING_REQUIRED = NO;
 				CODE_SIGN_ENTITLEMENTS = App/EyesOnYou/EyesOnYou.entitlements;
-				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_IDENTITY = "$(EYESONYOU_CODE_SIGN_IDENTITY:default=-)";
+				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_DEBUG_DYLIB = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/EyesOnYou/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -483,13 +508,16 @@
 		};
 		A79B7523C54BE07555506AC6 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = D0101B79CF3CF2C8C06AD862 /* Signing.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGNING_REQUIRED = NO;
 				CODE_SIGN_ENTITLEMENTS = App/EyesOnYou/EyesOnYou.entitlements;
-				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_IDENTITY = "$(EYESONYOU_CODE_SIGN_IDENTITY:default=-)";
+				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_DEBUG_DYLIB = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/EyesOnYou/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -572,11 +600,13 @@
 		};
 		E48CCFD24AF58BCEB476A825 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = D0101B79CF3CF2C8C06AD862 /* Signing.xcconfig */;
 			buildSettings = {
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGNING_REQUIRED = NO;
 				CODE_SIGN_ENTITLEMENTS = NetworkExtension/EyesOnYouNetworkExtension.entitlements;
-				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_IDENTITY = "$(EYESONYOU_CODE_SIGN_IDENTITY:default=-)";
+				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NetworkExtension/Info.plist;

@@ -6,6 +6,7 @@ import EyesOnYouCore
 import EyesOnYouRuleEngine
 import EyesOnYouIPC
 import EyesOnYouProxyCore
+import EyesOnYouStorage
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -45,7 +46,26 @@ final class AppModel: ObservableObject {
     @Published var selectedTab: Tab = .overview
     @Published var filterEnabled: Bool = true
     @Published var proxyEnabled: Bool = true
-    @Published var alertsEnabled: Bool = true
+    @Published var alertsEnabled: Bool = true {
+        didSet {
+            guard alertsEnabled != oldValue else { return }
+            UserDefaults.standard.set(alertsEnabled, forKey: Self.alertsEnabledKey)
+            if alertsEnabled { alertCenter.requestAuthorization() }
+        }
+    }
+
+    /// Budgets that raise an alert. Persisted; `0` disables a check.
+    @Published var alertThresholds: TrafficAlertThresholds = .default {
+        didSet {
+            guard alertThresholds != oldValue else { return }
+            if let data = try? JSONEncoder().encode(alertThresholds) {
+                UserDefaults.standard.set(data, forKey: Self.alertThresholdsKey)
+            }
+        }
+    }
+
+    /// Drives the one-time first-run explanation of foreground window labeling.
+    @Published var showsForegroundLabelingOnboarding = false
     @Published var isRunning: Bool = true
 
     @Published var rateDownBps: Double = 0
@@ -60,7 +80,7 @@ final class AppModel: ObservableObject {
     @Published var proxyShare: Double = 0
     @Published var topApps: [AppTrafficSnapshot] = []
     @Published var liveConnections: [LiveConnection] = []
-    /// Unified ranking rows for Overview bento (traffic + disk + group + status).
+    /// Unified ranking rows for Overview bento (traffic + route + group + status).
     @Published var rankingRows: [AppRankingRow] = []
     /// DaisyDisk-style sunburst root (apps → optional sites).
     @Published var sunburstRoot: SunburstNode = .empty
@@ -69,9 +89,19 @@ final class AppModel: ObservableObject {
     /// Ranking-row hover that temporarily filters the pie to that app's destinations.
     /// Separate from `hoverNodeID` so pie pointer moves don't cancel the preview.
     @Published var rankingHoverFilterID: String? = nil
+    /// Row id the pie pointer is over (see ``setPieHoverRow(_:)``).
+    @Published private(set) var pieHoverRowID: String? = nil
+    /// Dwell before a hovered row swaps the pie into its destinations.
+    private var rankingHoverFilterDwell: Task<Void, Never>? = nil
+    /// Row the dwell above is waiting on, so a row exit only cancels its own dwell.
+    private var rankingHoverFilterPendingID: String? = nil
     /// Drill-down path of node ids; empty = top-level apps.
     @Published var sunburstPath: [String] = []
     @Published var routeMix: RouteMix = RouteMix()
+    /// Live macOS system HTTP/HTTPS/SOCKS/PAC settings (e.g. Shadowrocket “系统代理”).
+    @Published var systemProxy: SystemProxySnapshot = .inactive
+    /// Dominant remote IP of the local system-proxy process (node / uplink), not 127.0.0.1.
+    @Published var systemProxyNodeIP: String? = nil
     @Published var blockedToday: UInt64 = 0
     @Published var allowedConnections: UInt64 = 0
     @Published var sparklineDown: [Double] = []
@@ -83,28 +113,37 @@ final class AppModel: ObservableObject {
     @Published var sparklineRouteDirect: [Double] = []
     @Published var sparklineRouteSystem: [Double] = []
     @Published var sparklineRouteCustom: [Double] = []
-    /// Period trend series for totals card mini charts (upload / download).
+    /// Cumulative traffic trend for the network card (upload / download), rolling samples.
     @Published var periodTrendDown: [Double] = []
     @Published var periodTrendUp: [Double] = []
+    private static let cumulativeTrendLimit = 40
+    /// Identity of the series currently feeding `periodTrend*` (reset on period / app change).
+    private var cumulativeTrendScopeKey: String = ""
 
     /// Selected ranking app; nil = all apps. Filters totals / live / proxy cards with time range.
     @Published var selectedApp: AppIdentityKey? = nil
     /// Show archived apps panel (from ranking search-bar archive icon).
     @Published var isArchivePanelPresented: Bool = false
 
-    /// Overview totals time range (presets + custom).
-    @Published var overviewPeriod: OverviewPeriod = .week {
-        didSet { refreshPublishedState() }
-    }
-    /// Inclusive start for `.custom` (wall clock).
-    @Published var customRangeStart: Date = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date() {
+    /// Overview totals time range (presets + custom). Persisted across launches;
+    /// first run starts on `.today`.
+    @Published var overviewPeriod: OverviewPeriod = AppModel.restoredOverviewPeriod() {
         didSet {
+            UserDefaults.standard.set(overviewPeriod.rawValue, forKey: Self.overviewPeriodKey)
+            refreshPublishedState()
+        }
+    }
+    /// Inclusive start for `.custom` (wall clock). Persisted with the period.
+    @Published var customRangeStart: Date = AppModel.restoredCustomRangeStart() {
+        didSet {
+            UserDefaults.standard.set(customRangeStart.timeIntervalSince1970, forKey: Self.customRangeStartKey)
             if overviewPeriod == .custom { refreshPublishedState() }
         }
     }
-    /// Inclusive end for `.custom`.
-    @Published var customRangeEnd: Date = Date() {
+    /// Inclusive end for `.custom`. Persisted with the period.
+    @Published var customRangeEnd: Date = AppModel.restoredCustomRangeEnd() {
         didSet {
+            UserDefaults.standard.set(customRangeEnd.timeIntervalSince1970, forKey: Self.customRangeEndKey)
             if overviewPeriod == .custom { refreshPublishedState() }
         }
     }
@@ -114,24 +153,22 @@ final class AppModel: ObservableObject {
     /// Network totals for the selected overview period.
     @Published var periodNetworkUp: UInt64 = 0
     @Published var periodNetworkDown: UInt64 = 0
-    /// Disk I/O totals for the selected overview period (demo facade until IOKit path).
-    @Published var periodDiskRead: UInt64 = 0
-    @Published var periodDiskWrite: UInt64 = 0
-
     @Published var rules: [NetworkPolicyRule] = []
     @Published var groups: [AppGroup] = []
-    @Published var proxyProfiles: [ProxyProfile] = []
+    @Published var proxyProfiles: [ProxyProfile] = [] {
+        didSet {
+            if proxyProfiles != oldValue { policyArchiveDirty = true }
+        }
+    }
     @Published var historyRange: HistoryRange = .day
     @Published var historyRows: [AppTrafficSnapshot] = []
 
-    // MARK: Favorites, archive, block & global search
+    // MARK: Favorites, archive & global search
 
     /// Favorited app storage keys (`AppIdentityKey.storageKey`); pinned to ranking top.
     @Published private(set) var favoriteKeys: Set<String> = []
     /// Archived apps — hidden from main ranking (viewable via archive panel).
     @Published private(set) var archivedKeys: Set<String> = []
-    /// Explicitly blocked apps (firewall) — still visible in ranking unless also archived.
-    @Published private(set) var blockedKeys: Set<String> = []
     /// Snapshot of archived ranking rows for the archive panel (includes zero-traffic).
     @Published private(set) var archivedRankingRows: [AppRankingRow] = []
 
@@ -145,15 +182,89 @@ final class AppModel: ObservableObject {
 
     let aggregator = TelemetryAggregator()
     let policyStore = PolicyStore()
+    /// Host-wide interface sampler — fills live rates when NE telemetry is empty.
+    private let hostNetworkSampler = HostNetworkSampler()
+    /// Session accumulation of host interface bytes (fallback period totals).
+    private var hostSessionBytesDown: UInt64 = 0
+    private var hostSessionBytesUp: UInt64 = 0
+    /// Latest `lsof` socket sample (filled off the main thread).
+    private var cachedSocketSnapshot = ActiveSocketSnapshot()
+    private var socketSampleInFlight = false
+    /// Apps that already received a synthetic `recordOpen` from socket fallback.
+    private var socketOpenedApps: Set<String> = []
+    /// Stable flow IDs for socket-fallback deltas (one per app + route).
+    private var socketFlowIDs: [String: UUID] = [:]
+    /// Last observed route per app from socket attribution (direct vs system proxy).
+    private var socketObservedRoute: [String: RouteAction] = [:]
+    /// Cached DIRECT destination index from local proxy clients (Clash / Shadowrocket / …).
+    private var directDestinationIndex = DirectDestinationIndex.empty
+    private var directIndexLoadedAt: Date? = nil
+    private var directIndexLoadInFlight = false
+    /// Set once the local proxy config could not be read, to avoid re-prompting.
+    private var directIndexUnavailable = false
+    /// Maps a socket-holding process to the project it is working in, so agent / IDE
+    /// traffic drills into real sub-projects instead of a static guess.
+    /// SQLite telemetry, shared with the CLI. `nil` when the database could not be
+    /// opened — the app keeps working live, it just cannot persist.
+    private var telemetryStore: TelemetryStore?
+    private var telemetryFlusher: TelemetryFlusher?
+    private var lastFlushAt: Date?
+    private var lastPruneAt: Date?
+    /// Buckets reloaded from disk at launch, reported by `storageSummary`.
+    private var restoredBucketCount = 0
+    /// Last persistence failure, surfaced in Settings rather than swallowed.
+    @Published private(set) var storageError: String?
+    /// Policy generation already written to disk, so edits persist without every
+    /// mutating method having to remember to call `savePolicies()`.
+    private var lastPersistedPolicyGeneration: UInt64?
+    private var policyArchiveDirty = false
+    /// Focused-tab reader for browser drill-down labels (opt-in; see `tracksBrowserTabs`).
+    private let browserTabSampler = BrowserTabSampler()
+    /// Foreground window reader, so apps whose only signal is the window title
+    /// (Claude, GitHub Desktop, Xcode …) still get meaningful sub-rows.
+    private lazy var foregroundSampler = ForegroundWindowSampler(browserSampler: browserTabSampler)
+    private var cancellables: Set<AnyCancellable> = []
+    /// Traffic budget / anomaly detection (see `TrafficAlertEngine`).
+    private let alertEngine: TrafficAlertEngine
+    let alertCenter = AlertCenter()
+    private var lastAlertEvaluation: Date?
+    private let projectResolver = ProjectResolver()
+    private lazy var attributionResolver = LiveAttributionResolver(projectResolver: projectResolver)
+    private var workspacesRefreshedAt: Date? = nil
+    private var workspaceRefreshInFlight = false
+    /// Reverse-DNS cache for proxy egress IPs.
+    private var reverseDNSCache: [String: String] = [:]
     private var tickTimer: Timer?
-    private var demoClock: TimeInterval = 0
-    private let demoMode: Bool
     /// Rolling live rate (down+up) history keyed by `AppIdentityKey.storageKey`.
+    /// Per-app cumulative network totals history for ranking traffic-trend sparklines.
     private var appRateHistory: [String: [Double]] = [:]
     private static let appRateHistoryLimit = 28
     private static let favoritesDefaultsKey = "eyesonyou.favoriteAppKeys"
+    private static let overviewPeriodKey = "eyesonyou.overviewPeriod"
+    private static let customRangeStartKey = "eyesonyou.customRangeStart"
+    private static let customRangeEndKey = "eyesonyou.customRangeEnd"
+    private static let browserTabTrackingKey = "eyesonyou.trackBrowserTabs"
+    private static let alertsEnabledKey = "eyesonyou.alertsEnabled"
+    private static let alertThresholdsKey = "eyesonyou.alertThresholds"
+    private static let alertStateKey = "eyesonyou.alertState"
+    private static let onboardingShownKey = "eyesonyou.foregroundOnboardingShown"
+    /// Seconds between telemetry flushes. Minute buckets are the finest thing
+    /// persisted, so anything under a minute only costs writes.
+    private static let telemetryFlushInterval: TimeInterval = 30
+    private static let telemetryPruneInterval: TimeInterval = 6 * 3600
+
+    /// Shared with the CLI — this app is not sandboxed, so both see one database.
+    static var supportDirectory: URL {
+        let base = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first ?? URL(fileURLWithPath: NSHomeDirectory())
+        return base.appendingPathComponent("EyesOnYou", isDirectory: true)
+    }
+
+    static var telemetryDatabaseURL: URL {
+        supportDirectory.appendingPathComponent("telemetry.sqlite")
+    }
     private static let archivedDefaultsKey = "eyesonyou.archivedAppKeys"
-    private static let blockedDefaultsKey = "eyesonyou.blockedAppKeys"
     /// How many apps to materialize into the ranking table.
     private static let rankingLimit = 64
 
@@ -202,17 +313,6 @@ final class AppModel: ObservableObject {
             }
         }
 
-        /// Scale factor for demo disk I/O relative to a week baseline.
-        var diskScale: Double {
-            switch self {
-            case .hour: return 1.0 / 168.0
-            case .today, .day: return 1.0 / 7.0
-            case .week: return 1
-            case .month, .last30Days: return 4.3
-            case .year: return 52
-            case .custom: return 1
-            }
-        }
 
         /// Demo network multiplier vs live 24h window.
         var networkScale: UInt64 {
@@ -282,6 +382,8 @@ final class AppModel: ObservableObject {
     private static let menuBarStyleKey = "eyesonyou.menuBarDisplayStyle"
     private static let rankingColumnSpacingKey = "eyesonyou.rankingColumnSpacing"
     private static let rankingHiddenColumnsKey = "eyesonyou.rankingHiddenColumns"
+    private static let rankingSortKeyKey = "eyesonyou.rankingSortKey"
+    private static let rankingSortAscendingKey = "eyesonyou.rankingSortAscending"
     private static let appearanceModeKey = "eyesonyou.appearanceMode"
     private static let colorThemeTemplateKey = "eyesonyou.colorThemeTemplate"
     private static let themeAccentsKey = "eyesonyou.themeAccents"
@@ -290,15 +392,11 @@ final class AppModel: ObservableObject {
     enum RankingColumnID: String, CaseIterable, Identifiable, Sendable {
         case down
         case up
-        case diskRead
-        case diskWrite
         case trend
         case lastSeen
         case requests
-        case route
-        case status
-        case group
-        case proxy
+        case egress
+        case online
 
         var id: String { rawValue }
 
@@ -306,17 +404,29 @@ final class AppModel: ObservableObject {
             switch self {
             case .down: return "overview.colDown"
             case .up: return "overview.colUp"
-            case .diskRead: return "overview.colDiskRead"
-            case .diskWrite: return "overview.colDiskWrite"
             case .trend: return "overview.colTrend"
             case .lastSeen: return "overview.colLastSeen"
             case .requests: return "overview.colRequests"
-            case .route: return "overview.colRoute"
-            case .status: return "overview.colStatus"
-            case .group: return "overview.colGroup"
-            case .proxy: return "overview.colProxy"
+            case .egress: return "overview.colEgress"
+            case .online: return "overview.colOnline"
             }
         }
+    }
+
+    /// Column the ranking table is sorted by. `nil` = default order (pins first, then
+    /// measured bytes), which is what the `#` header restores.
+    enum RankingSortKey: String, CaseIterable, Sendable {
+        case name
+        case down
+        case up
+        case trend
+        case lastSeen
+        case requests
+        case egress
+        case online
+
+        /// Names read best A→Z; every measured column reads best biggest-first.
+        var startsAscending: Bool { self == .name }
     }
 
     @Published var menuBarDisplayStyle: MenuBarDisplayStyle = .dualPath {
@@ -330,6 +440,28 @@ final class AppModel: ObservableObject {
             UserDefaults.standard.set(appearanceMode.rawValue, forKey: Self.appearanceModeKey)
             Self.applyAppearance(appearanceMode)
         }
+    }
+
+    /// Label browser traffic rows with the page seen on that host.
+    ///
+    /// Off by default: it is the only feature that reads what the user is looking at.
+    /// Turning it on also needs macOS Accessibility trust — see ``BrowserTabSampler``
+    /// for the host-and-title-only, memory-only contract it keeps.
+    @Published var tracksBrowserTabs: Bool = false {
+        didSet {
+            guard tracksBrowserTabs != oldValue else { return }
+            UserDefaults.standard.set(tracksBrowserTabs, forKey: Self.browserTabTrackingKey)
+            if tracksBrowserTabs {
+                BrowserTabSampler.requestAccessibilityPermission()
+            } else {
+                foregroundSampler.reset()
+            }
+        }
+    }
+
+    /// True once the user has granted Accessibility access; drives the settings hint.
+    var isBrowserTabTrackingAuthorized: Bool {
+        BrowserTabSampler.isAccessibilityTrusted
     }
 
     /// Color template: forest / ocean / ember / violet / mono / custom.
@@ -356,6 +488,11 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Header-click sort column; `nil` keeps the default order. Persisted.
+    @Published private(set) var rankingSortKey: RankingSortKey? = nil
+    /// Direction of ``rankingSortKey`` — `true` ascending. Persisted.
+    @Published private(set) var rankingSortAscending: Bool = false
+
     /// Hidden optional ranking columns (`RankingColumnID.rawValue`); persisted.
     @Published private(set) var hiddenRankingColumns: Set<String> = [] {
         didSet {
@@ -368,6 +505,33 @@ final class AppModel: ObservableObject {
 
     static func clampRankingColumnSpacing(_ value: Double) -> Double {
         min(rankingColumnSpacingRange.upperBound, max(rankingColumnSpacingRange.lowerBound, value.rounded()))
+    }
+
+    // MARK: - Persisted overview period
+
+    /// Last selected overview period, or `.today` on first run / unknown value.
+    ///
+    /// Read from a property initializer so restoring the choice does not fire `didSet`
+    /// and kick off a `refreshPublishedState()` before the telemetry store is open.
+    private static func restoredOverviewPeriod() -> OverviewPeriod {
+        guard let raw = UserDefaults.standard.string(forKey: overviewPeriodKey),
+              let period = OverviewPeriod(rawValue: raw)
+        else { return .today }
+        return period
+    }
+
+    private static func restoredCustomRangeStart() -> Date {
+        if let stored = UserDefaults.standard.object(forKey: customRangeStartKey) as? TimeInterval {
+            return Date(timeIntervalSince1970: stored)
+        }
+        return Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
+    }
+
+    private static func restoredCustomRangeEnd() -> Date {
+        if let stored = UserDefaults.standard.object(forKey: customRangeEndKey) as? TimeInterval {
+            return Date(timeIntervalSince1970: stored)
+        }
+        return Date()
     }
 
     func isRankingColumnVisible(_ column: RankingColumnID) -> Bool {
@@ -398,6 +562,118 @@ final class AppModel: ObservableObject {
 
     var hasHiddenRankingColumns: Bool {
         !hiddenRankingColumns.isEmpty
+    }
+
+    // MARK: - Ranking sort
+
+    /// Header click cycles: default order → the column's natural direction → reversed → default.
+    func cycleRankingSort(_ key: RankingSortKey) {
+        if rankingSortKey != key {
+            rankingSortKey = key
+            rankingSortAscending = key.startsAscending
+        } else if rankingSortAscending == key.startsAscending {
+            rankingSortAscending = !key.startsAscending
+        } else {
+            rankingSortKey = nil
+            rankingSortAscending = false
+        }
+        persistRankingSort()
+    }
+
+    func clearRankingSort() {
+        guard rankingSortKey != nil else { return }
+        rankingSortKey = nil
+        rankingSortAscending = false
+        persistRankingSort()
+    }
+
+    /// `true` ascending / `false` descending while this column drives the sort; `nil` otherwise.
+    func rankingSortDirection(for key: RankingSortKey) -> Bool? {
+        rankingSortKey == key ? rankingSortAscending : nil
+    }
+
+    private func persistRankingSort() {
+        let defaults = UserDefaults.standard
+        if let key = rankingSortKey {
+            defaults.set(key.rawValue, forKey: Self.rankingSortKeyKey)
+            defaults.set(rankingSortAscending, forKey: Self.rankingSortAscendingKey)
+        } else {
+            defaults.removeObject(forKey: Self.rankingSortKeyKey)
+            defaults.removeObject(forKey: Self.rankingSortAscendingKey)
+        }
+    }
+
+    /// Apply the header sort. Pinned apps stay on top so a pin is never lost in a sort.
+    func sortedRankingRows(_ rows: [AppRankingRow]) -> [AppRankingRow] {
+        guard let key = rankingSortKey else { return rows }
+        let ascending = rankingSortAscending
+        return rows.sorted { a, b in
+            let af = favoriteKeys.contains(a.snapshot.app.storageKey)
+            let bf = favoriteKeys.contains(b.snapshot.app.storageKey)
+            if af != bf { return af && !bf }
+            switch Self.compareRankingRows(a, b, key: key) {
+            case .orderedAscending:
+                return ascending
+            case .orderedDescending:
+                return !ascending
+            case .orderedSame:
+                return a.snapshot.displayName
+                    .localizedCaseInsensitiveCompare(b.snapshot.displayName) == .orderedAscending
+            }
+        }
+    }
+
+    private static func compareRankingRows(
+        _ a: AppRankingRow,
+        _ b: AppRankingRow,
+        key: RankingSortKey
+    ) -> ComparisonResult {
+        switch key {
+        case .name:
+            return a.snapshot.displayName.localizedCaseInsensitiveCompare(b.snapshot.displayName)
+        case .down:
+            return order(a.snapshot.totals.bytesDown, b.snapshot.totals.bytesDown)
+        case .up:
+            return order(a.snapshot.totals.bytesUp, b.snapshot.totals.bytesUp)
+        case .trend:
+            return order(trendDelta(a), trendDelta(b))
+        case .lastSeen:
+            // Never-seen rows sort below every measured timestamp.
+            return order(
+                a.lastTrafficAt?.timeIntervalSince1970 ?? -1,
+                b.lastTrafficAt?.timeIntervalSince1970 ?? -1
+            )
+        case .requests:
+            return order(a.snapshot.totals.flowsOpened, b.snapshot.totals.flowsOpened)
+        case .egress:
+            // No bytes in range (`nil` share) sorts below every measured path.
+            return order(a.proxyShare ?? -1, b.proxyShare ?? -1)
+        case .online:
+            let state = order(onlineRank(a), onlineRank(b))
+            if state != .orderedSame { return state }
+            return order(a.snapshot.activeConnections, b.snapshot.activeConnections)
+        }
+    }
+
+    private static func order<T: Comparable>(_ a: T, _ b: T) -> ComparisonResult {
+        if a == b { return .orderedSame }
+        return a < b ? .orderedAscending : .orderedDescending
+    }
+
+    /// Latest measured growth of the cumulative series the trend column draws — the
+    /// sparkline's own last step, not a synthesized rate.
+    private static func trendDelta(_ row: AppRankingRow) -> Double {
+        let series = row.rateSeries
+        guard series.count >= 2 else { return 0 }
+        return max(0, series[series.count - 1] - series[series.count - 2])
+    }
+
+    private static func onlineRank(_ row: AppRankingRow) -> Int {
+        switch row.onlineState {
+        case .active: return 2
+        case .idle: return 1
+        case .noTraffic: return 0
+        }
     }
 
     /// Soft update banner on the main window (nil / false → show nothing in the top bar).
@@ -458,35 +734,73 @@ final class AppModel: ObservableObject {
         /// Unique row id (app storage key at root; `app|dest` when drilled).
         let id: String
         let snapshot: AppTrafficSnapshot
-        let diskRead: UInt64
-        let diskWrite: UInt64
         let groupName: String?
         /// Share of network total (0...1) for pie chart.
         let share: Double
+        /// Fraction of this row's bytes that went through a proxy (0...1);
+        /// `nil` when no bytes were recorded in the period.
+        let proxyShare: Double?
         /// Last wall-clock time this app recorded traffic.
         let lastTrafficAt: Date?
-        /// Mini area-chart series (combined up+down rates or period bytes).
+        /// Cumulative network traffic trend (total bytes over recent ticks).
         let rateSeries: [Double]
 
         init(
             id: String? = nil,
             snapshot: AppTrafficSnapshot,
-            diskRead: UInt64,
-            diskWrite: UInt64,
             groupName: String?,
             share: Double,
+            proxyShare: Double? = nil,
             lastTrafficAt: Date? = nil,
             rateSeries: [Double] = []
         ) {
             self.id = id ?? snapshot.id
             self.snapshot = snapshot
-            self.diskRead = diskRead
-            self.diskWrite = diskWrite
             self.groupName = groupName
             self.share = share
+            self.proxyShare = proxyShare
             self.lastTrafficAt = lastTrafficAt
             self.rateSeries = rateSeries
         }
+
+        /// Where this row's bytes actually left the machine, measured — never an intent.
+        var observedEgress: ObservedEgress {
+            guard let share = proxyShare else { return .noTraffic }
+            if share <= 0.005 { return .direct }
+            if share >= 0.995 { return .proxy }
+            return .mixed(proxyShare: share)
+        }
+
+        /// Whether the app is holding connections right now, from the socket sample.
+        var onlineState: OnlineState {
+            if snapshot.activeConnections > 0 {
+                return .active(connections: snapshot.activeConnections)
+            }
+            return lastTrafficAt == nil ? .noTraffic : .idle
+        }
+    }
+
+    /// Measured egress path for a ranking row. Derived from recorded bytes only:
+    /// there is no "what this app is configured to do" here, by design.
+    enum ObservedEgress: Equatable {
+        /// No bytes recorded in the selected period.
+        case noTraffic
+        /// Every recorded byte left without passing a local proxy client.
+        case direct
+        /// Every recorded byte went through a local proxy client.
+        case proxy
+        /// Both paths carried bytes; the associated value is the proxied fraction.
+        case mixed(proxyShare: Double)
+    }
+
+    /// Live connection state for a ranking row.
+    enum OnlineState: Equatable {
+        /// Holding at least one established socket at this moment.
+        case active(connections: Int)
+        /// Moved bytes in the period but holds nothing right now.
+        case idle
+        /// No traffic recorded in the period at all.
+        case noTraffic
     }
 
     /// Hierarchical node for DaisyDisk-style sunburst.
@@ -494,11 +808,13 @@ final class AppModel: ObservableObject {
         let id: String
         let title: String
         let value: UInt64
-        /// Stable hue seed 0..<1
-        let hue: Double
+        /// Slot in the theme's categorical chart palette (app rank).
+        let colorIndex: Int
+        /// Sibling offset inside one app (destinations) — a tonal step off the same slot.
+        let colorVariant: Int
         var children: [SunburstNode]
 
-        static let empty = SunburstNode(id: "root", title: "Root", value: 0, hue: 0.55, children: [])
+        static let empty = SunburstNode(id: "root", title: "Root", value: 0, colorIndex: 0, colorVariant: 0, children: [])
 
         var hasChildren: Bool { !children.isEmpty }
 
@@ -520,6 +836,38 @@ final class AppModel: ObservableObject {
         if rankingHoverFilterID != id { rankingHoverFilterID = id }
     }
 
+    /// Row hover highlights the matching pie segment immediately; the deeper
+    /// destination preview only takes over after the pointer rests on the row, so
+    /// crossing the table no longer strobes the chart.
+    func scheduleRankingHoverFilter(_ id: String?, delay: TimeInterval = 0.55) {
+        rankingHoverFilterDwell?.cancel()
+        rankingHoverFilterDwell = nil
+        rankingHoverFilterPendingID = id
+        guard let id else {
+            setRankingHoverFilter(nil)
+            return
+        }
+        rankingHoverFilterDwell = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, delay) * 1_000_000_000))
+            guard !Task.isCancelled, let self, self.hoverNodeID == id else { return }
+            self.setRankingHoverFilter(id)
+        }
+    }
+
+    /// Row exit. Scoped to the leaving row so pointer travel between adjacent rows
+    /// does not cancel the row it just entered.
+    func clearRankingHoverFilter(ifMatching id: String) {
+        guard rankingHoverFilterPendingID == id || rankingHoverFilterID == id else { return }
+        scheduleRankingHoverFilter(nil)
+    }
+
+    /// Ranking row the pie pointer is over, so the table can scroll that row into
+    /// view and highlight the same segment. Set by the chart only — never by the table,
+    /// which would make the two cards chase each other.
+    func setPieHoverRow(_ id: String?) {
+        if pieHoverRowID != id { pieHoverRowID = id }
+    }
+
     func drillInto(nodeID: String) {
         // Only drill if that node exists under current view and has children.
         let current = sunburstRoot.node(path: sunburstPath)
@@ -530,6 +878,7 @@ final class AppModel: ObservableObject {
             sunburstPath.append(nodeID)
             hoverNodeID = nil
             rankingHoverFilterID = nil
+            pieHoverRowID = nil
         }
     }
 
@@ -539,6 +888,7 @@ final class AppModel: ObservableObject {
             _ = sunburstPath.popLast()
             hoverNodeID = nil
             rankingHoverFilterID = nil
+            pieHoverRowID = nil
         }
     }
 
@@ -548,11 +898,21 @@ final class AppModel: ObservableObject {
             sunburstPath.removeAll()
             hoverNodeID = nil
             rankingHoverFilterID = nil
+            pieHoverRowID = nil
         }
     }
 
-    init(demoMode: Bool = true) {
-        self.demoMode = demoMode
+    init() {
+        // Alert engine is restored before anything can evaluate, so a restart never
+        // replays budgets the user has already been told about.
+        let restoredAlertState: TrafficAlertState = {
+            guard let data = UserDefaults.standard.data(forKey: Self.alertStateKey),
+                  let decoded = try? JSONDecoder().decode(TrafficAlertState.self, from: data)
+            else { return TrafficAlertState() }
+            return decoded
+        }()
+        alertEngine = TrafficAlertEngine(state: restoredAlertState)
+
         if let raw = UserDefaults.standard.string(forKey: Self.menuBarStyleKey),
            let style = MenuBarDisplayStyle(rawValue: raw) {
             menuBarDisplayStyle = style
@@ -568,22 +928,269 @@ final class AppModel: ObservableObject {
             let valid = Set(RankingColumnID.allCases.map(\.rawValue))
             hiddenRankingColumns = Set(arr.filter { valid.contains($0) })
         }
+        if let raw = UserDefaults.standard.string(forKey: Self.rankingSortKeyKey),
+           let key = RankingSortKey(rawValue: raw) {
+            rankingSortKey = key
+            rankingSortAscending = UserDefaults.standard.bool(forKey: Self.rankingSortAscendingKey)
+        }
         if let raw = UserDefaults.standard.string(forKey: Self.appearanceModeKey),
            let mode = AppearanceMode(rawValue: raw) {
             appearanceMode = mode
         }
+        // Only honour a stored opt-in while Accessibility trust still stands; the user
+        // can revoke it in System Settings without coming back here.
+        // Restore the user's choice as stated, not as currently permitted. ANDing this
+        // with live Accessibility trust silently flipped the switch off whenever the
+        // grant lapsed — after every rebuild, in practice — so the setting appeared to
+        // undo itself. Trust is enforced where sampling happens; the settings row
+        // shows a warning when it is missing.
+        tracksBrowserTabs = UserDefaults.standard.bool(forKey: Self.browserTabTrackingKey)
         Self.applyAppearance(appearanceMode)
         loadColorThemePreferences()
         applyColorTheme()
         loadFavorites()
-        loadArchivedAndBlocked()
-        seedPolicies()
-        if demoMode {
-            seedDemoTraffic()
-        }
+        loadArchived()
+        loadPersistedPolicies()
+        openTelemetryStore()
+        restorePersistedTelemetry()
+        loadAlertPreferences()
         refreshPublishedState()
         startTicker()
         scheduleInitialUpdateCheck()
+    }
+
+    // MARK: - Traffic alerts
+
+    private func loadAlertPreferences() {
+        if UserDefaults.standard.object(forKey: Self.alertsEnabledKey) != nil {
+            alertsEnabled = UserDefaults.standard.bool(forKey: Self.alertsEnabledKey)
+        }
+        if let data = UserDefaults.standard.data(forKey: Self.alertThresholdsKey),
+           let decoded = try? JSONDecoder().decode(TrafficAlertThresholds.self, from: data) {
+            alertThresholds = decoded
+        }
+        alertCenter.refreshAuthorization()
+
+        // Apps already in the catalog are not "new"; without this the first launch
+        // after enabling first-seen alerts would announce everything at once.
+        if let names = try? telemetryStore?.displayNames() {
+            alertEngine.seedKnownApps(Array(names.keys))
+        }
+
+        // Offer the foreground-labeling explanation once, and only when it is not
+        // already on — an existing user should never see it.
+        if !UserDefaults.standard.bool(forKey: Self.onboardingShownKey), !tracksBrowserTabs {
+            showsForegroundLabelingOnboarding = true
+        }
+    }
+
+    /// Record that the first-run explanation was answered, whichever way.
+    func completeForegroundLabelingOnboarding(enable: Bool) {
+        UserDefaults.standard.set(true, forKey: Self.onboardingShownKey)
+        showsForegroundLabelingOnboarding = false
+        if enable {
+            tracksBrowserTabs = true
+        }
+    }
+
+    /// Check budgets. Cheap enough per tick, but the aggregate scan is throttled.
+    private func evaluateAlertsIfDue(now: Date) {
+        guard alertsEnabled else { return }
+        if let last = lastAlertEvaluation, now.timeIntervalSince(last) < 5 { return }
+        lastAlertEvaluation = now
+
+        let dayStart = now.addingTimeInterval(-86_400)
+        let dailyTotals = aggregator.topApps(from: dayStart, to: now, limit: 200,
+                                             includeSitesForBrowsers: false)
+        let dailyByApp = Dictionary(
+            dailyTotals.map { ($0.app, $0.totals.totalBytes) },
+            uniquingKeysWith: { a, _ in a }
+        )
+        let names = Dictionary(
+            dailyTotals.map { ($0.app, $0.displayName) },
+            uniquingKeysWith: { a, _ in a }
+        )
+        let burstStart = now.addingTimeInterval(-alertThresholds.burstWindow)
+        let burstByApp = Dictionary(
+            aggregator.topApps(from: burstStart, to: now, limit: 200,
+                               includeSitesForBrowsers: false)
+                .map { ($0.app, $0.totals.totalBytes) },
+            uniquingKeysWith: { a, _ in a }
+        )
+
+        // Cumulative comes from storage: it is the whole recorded history, which the
+        // in-memory aggregator only holds a window of.
+        var cumulativeByApp: [AppIdentityKey: UInt64] = [:]
+        if alertThresholds.cumulativeAppBytes > 0, let store = telemetryStore {
+            let rows = (try? store.queryTopApps(
+                granularity: .oneDay,
+                from: Date(timeIntervalSince1970: 0),
+                to: now.addingTimeInterval(86_400),
+                limit: 200
+            )) ?? []
+            for row in rows { cumulativeByApp[row.0] = row.2.totalBytes }
+        }
+
+        let input = TrafficAlertInput(
+            now: now,
+            dailyTotalBytes: dailyByApp.values.reduce(0, &+),
+            dailyByApp: dailyByApp,
+            cumulativeByApp: cumulativeByApp,
+            burstByApp: burstByApp,
+            displayNames: names
+        )
+        let alerts = alertEngine.evaluate(input, thresholds: alertThresholds)
+        if !alerts.isEmpty {
+            alertCenter.deliver(alerts, localization: LocalizationStore.shared)
+            persistAlertState()
+        }
+    }
+
+    private func persistAlertState() {
+        if let data = try? JSONEncoder().encode(alertEngine.currentState) {
+            UserDefaults.standard.set(data, forKey: Self.alertStateKey)
+        }
+    }
+
+    // MARK: - Persistence
+
+    /// Open the shared telemetry database, creating it on first launch.
+    ///
+    /// A failure here is not fatal: the app still samples and displays live traffic,
+    /// it just cannot carry it across restarts. `storageError` surfaces that instead
+    /// of failing silently.
+    private func openTelemetryStore() {
+        do {
+            try FileManager.default.createDirectory(
+                at: Self.supportDirectory,
+                withIntermediateDirectories: true
+            )
+            let store = try TelemetryStore(path: Self.telemetryDatabaseURL.path)
+            telemetryStore = store
+            telemetryFlusher = TelemetryFlusher(store: store)
+        } catch {
+            telemetryStore = nil
+            telemetryFlusher = nil
+            storageError = "\(error)"
+        }
+    }
+
+    /// Load recent history back into the aggregator so period totals, charts, and
+    /// project rows survive a restart.
+    private func restorePersistedTelemetry() {
+        guard let store = telemetryStore else { return }
+        let now = Date()
+        do {
+            var restored: [TrafficBucket] = []
+            for granularity in TelemetryFlusher.persistedGranularities {
+                let window = Self.restoreWindow(for: granularity)
+                restored += try store.loadBuckets(
+                    granularity: granularity,
+                    from: now.addingTimeInterval(-window),
+                    // One bucket past `now` so the in-progress bucket comes back too.
+                    to: now.addingTimeInterval(Double(granularity.seconds))
+                )
+            }
+            aggregator.importBuckets(restored)
+            aggregator.importDisplayNames(try store.displayNames())
+            // The flusher must know these bytes are already on disk, or the next
+            // flush would write the restored history a second time.
+            telemetryFlusher?.seed(with: restored)
+            restoredBucketCount = restored.count
+        } catch {
+            storageError = "\(error)"
+        }
+        pruneTelemetry(now: now)
+    }
+
+    /// How far back to reload per granularity — enough for every dashboard range
+    /// without pulling years of day rows into memory.
+    private static func restoreWindow(for granularity: BucketGranularity) -> TimeInterval {
+        switch granularity {
+        case .oneSecond: return 0
+        case .oneMinute: return 3 * 86_400
+        case .oneHour: return 90 * 86_400
+        case .oneDay: return 3 * 365 * 86_400
+        }
+    }
+
+    /// Write everything recorded since the last flush.
+    private func flushTelemetry(now: Date = Date()) {
+        guard let flusher = telemetryFlusher else { return }
+        do {
+            try flusher.flush(aggregator)
+            lastFlushAt = now
+            storageError = nil
+        } catch {
+            storageError = "\(error)"
+        }
+    }
+
+    /// Apply retention so the database cannot grow without bound.
+    private func pruneTelemetry(now: Date) {
+        guard let store = telemetryStore else { return }
+        do {
+            try store.prune(granularity: .oneMinute, olderThan: now.addingTimeInterval(-7 * 86_400))
+            try store.prune(granularity: .oneHour, olderThan: now.addingTimeInterval(-365 * 86_400))
+            try store.pruneOrphanedApps()
+            telemetryFlusher?.forgetWatermarks(endedBefore: now.addingTimeInterval(-2 * 86_400))
+            alertEngine.pruneState(now: now)
+            persistAlertState()
+            lastPruneAt = now
+        } catch {
+            storageError = "\(error)"
+        }
+    }
+
+    /// Flush before the app exits so the final minute is not lost.
+    func persistBeforeTermination() {
+        flushTelemetry()
+        savePoliciesIfChanged()
+    }
+
+    private func loadPersistedPolicies() {
+        do {
+            guard let archive = try PolicyArchiveStore.load() else {
+                lastPersistedPolicyGeneration = policyStore.currentGeneration
+                return
+            }
+            archive.apply(to: policyStore)
+            proxyProfiles = archive.proxyProfiles
+        } catch {
+            storageError = "\(error)"
+        }
+        lastPersistedPolicyGeneration = policyStore.currentGeneration
+        policyArchiveDirty = false
+    }
+
+    /// Persist configuration when it actually changed.
+    ///
+    /// Driven by `PolicyStore.currentGeneration` rather than by each call site, so a
+    /// new mutating method cannot silently stop saving.
+    private func savePoliciesIfChanged() {
+        let generation = policyStore.currentGeneration
+        guard policyArchiveDirty || lastPersistedPolicyGeneration != generation else { return }
+        let archive = PolicyArchive.capture(from: policyStore, proxyProfiles: proxyProfiles)
+        // Nothing configured and nothing ever saved — no reason to create a file.
+        if archive.isEmpty, lastPersistedPolicyGeneration == nil || !policyArchiveDirty {
+            lastPersistedPolicyGeneration = generation
+            policyArchiveDirty = false
+            return
+        }
+        do {
+            try PolicyArchiveStore.save(archive)
+            lastPersistedPolicyGeneration = generation
+            policyArchiveDirty = false
+        } catch {
+            storageError = "\(error)"
+        }
+    }
+
+    /// Persist user configuration. Cheap and rare — called on every policy edit.
+    /// Force a configuration write regardless of generation (used by tests / imports).
+    func savePolicies() {
+        policyArchiveDirty = true
+        savePoliciesIfChanged()
     }
 
     // MARK: - App updates (GitHub Releases)
@@ -854,14 +1461,10 @@ final class AppModel: ObservableObject {
         }
     }
 
-    // MARK: - Block / archive
+    // MARK: - Archive
 
     func isArchived(_ app: AppIdentityKey) -> Bool {
         archivedKeys.contains(app.storageKey)
-    }
-
-    func isBlocked(_ app: AppIdentityKey) -> Bool {
-        blockedKeys.contains(app.storageKey) || resolveFirewall(for: app) == .block
     }
 
     func toggleArchive(_ app: AppIdentityKey) {
@@ -871,81 +1474,39 @@ final class AppModel: ObservableObject {
         } else {
             archivedKeys.insert(key)
         }
-        persistArchivedAndBlocked()
+        persistArchived()
         refreshPublishedState()
     }
 
-    func toggleBlock(_ app: AppIdentityKey) {
-        setBlocked(app, blocked: !blockedKeys.contains(app.storageKey))
-    }
-
-    /// Explicit allow / block for ranking status menu.
-    func setBlocked(_ app: AppIdentityKey, blocked: Bool) {
-        let key = app.storageKey
-        if blocked {
-            guard !blockedKeys.contains(key) else { return }
-            blockedKeys.insert(key)
-            let rule = NetworkPolicyRule(
-                priority: 50_000,
-                app: .exact(app),
-                destination: .any,
-                firewall: .block,
-                route: .inherit,
-                note: "UI block"
-            )
-            policyStore.upsert(rule: rule)
-        } else {
-            guard blockedKeys.contains(key) else {
-                // Still clear any UI block rules if firewall resolved via other means.
-                removeBlockRules(for: app)
-                refreshPublishedState()
-                return
-            }
-            blockedKeys.remove(key)
-            removeBlockRules(for: app)
-        }
-        persistArchivedAndBlocked()
-        refreshPublishedState()
-    }
-
-    private func removeBlockRules(for app: AppIdentityKey) {
-        for rule in policyStore.allRules() where rule.note == "UI block" {
-            if case .exact(let key) = rule.app, key == app {
-                policyStore.removeRule(id: rule.id)
-            }
-        }
-    }
-
-    private func loadArchivedAndBlocked() {
+    private func loadArchived() {
         if let arr = UserDefaults.standard.array(forKey: Self.archivedDefaultsKey) as? [String] {
             archivedKeys = Set(arr)
         }
-        if let arr = UserDefaults.standard.array(forKey: Self.blockedDefaultsKey) as? [String] {
-            blockedKeys = Set(arr)
-        }
     }
 
-    private func persistArchivedAndBlocked() {
+    private func persistArchived() {
         UserDefaults.standard.set(Array(archivedKeys).sorted(), forKey: Self.archivedDefaultsKey)
-        UserDefaults.standard.set(Array(blockedKeys).sorted(), forKey: Self.blockedDefaultsKey)
     }
 
     // MARK: - Combined ranking filter
 
     /// Parsed ranking search: free-text tokens are AND; field tokens filter columns.
-    /// Examples: `chrome route:direct`, `status:block group:Media`, `proxy:on 收藏`
+    ///
+    /// Both field tokens filter on *measured* state, matching what the table shows:
+    /// `egress:` on the observed path, `status:` on live connections.
+    /// Examples: `chrome egress:direct`, `status:online`, `egress:proxy 收藏`
     struct RankingQuery: Equatable {
         var texts: [String] = []
-        var routes: Set<String> = []      // direct / system / socks5 / proxy
-        var statuses: Set<String> = []    // allow / block
-        var groups: [String] = []
-        var proxyOn: Bool? = nil
+        /// direct / proxy / mixed — measured egress, not a rule.
+        var egress: Set<String> = []
+        /// online / idle — live connection state.
+        var statuses: Set<String> = []
         var favoritesOnly = false
         var archivedOnly = false
 
         var isEmpty: Bool {
-            texts.isEmpty && routes.isEmpty && statuses.isEmpty
-                && groups.isEmpty && proxyOn == nil && !favoritesOnly && !archivedOnly
+            texts.isEmpty && egress.isEmpty && statuses.isEmpty
+                && !favoritesOnly && !archivedOnly
         }
 
         static func parse(_ raw: String) -> RankingQuery {
@@ -956,27 +1517,19 @@ final class AppModel: ObservableObject {
                 .filter { !$0.isEmpty }
             for part in parts {
                 let lower = part.lowercased()
-                if lower.hasPrefix("route:") || lower.hasPrefix("路由:") {
+                // `route:` / `proxy:` kept as aliases so older muscle memory still works.
+                if lower.hasPrefix("egress:") || lower.hasPrefix("出口:")
+                    || lower.hasPrefix("route:") || lower.hasPrefix("路由:")
+                    || lower.hasPrefix("proxy:") || lower.hasPrefix("代理:") {
                     let v = String(part.split(separator: ":", maxSplits: 1).last ?? "")
                         .trimmingCharacters(in: .whitespaces)
                         .lowercased()
-                    q.routes.formUnion(Self.normalizeRouteTokens(v))
+                    q.egress.formUnion(Self.normalizeEgressTokens(v))
                 } else if lower.hasPrefix("status:") || lower.hasPrefix("状态:") {
                     let v = String(part.split(separator: ":", maxSplits: 1).last ?? "")
                         .trimmingCharacters(in: .whitespaces)
                         .lowercased()
                     q.statuses.formUnion(Self.normalizeStatusTokens(v))
-                } else if lower.hasPrefix("group:") || lower.hasPrefix("分组:") {
-                    let v = String(part.split(separator: ":", maxSplits: 1).last ?? "")
-                        .trimmingCharacters(in: .whitespaces)
-                        .lowercased()
-                    if !v.isEmpty { q.groups.append(v) }
-                } else if lower.hasPrefix("proxy:") || lower.hasPrefix("代理:") {
-                    let v = String(part.split(separator: ":", maxSplits: 1).last ?? "")
-                        .trimmingCharacters(in: .whitespaces)
-                        .lowercased()
-                    if ["on", "1", "true", "yes", "开", "开启"].contains(v) { q.proxyOn = true }
-                    if ["off", "0", "false", "no", "关", "关闭"].contains(v) { q.proxyOn = false }
                 } else if ["fav", "favorite", "favorites", "★", "收藏", "star"].contains(lower) {
                     q.favoritesOnly = true
                 } else if ["archived", "archive", "归档"].contains(lower) {
@@ -988,56 +1541,58 @@ final class AppModel: ObservableObject {
             return q
         }
 
-        private static func normalizeRouteTokens(_ v: String) -> Set<String> {
+        private static func normalizeEgressTokens(_ v: String) -> Set<String> {
             switch v {
-            case "direct", "直连": return ["direct"]
-            case "system", "系统", "systemproxy", "系统代理": return ["system"]
-            case "socks5", "proxy", "代理", "custom", "自定义", "自定义代理": return ["socks5", "proxy"]
-            default: return [v]
+            case "direct", "直连", "直連", "off", "0", "false", "no", "关", "关闭":
+                return ["direct"]
+            case "proxy", "代理", "socks5", "system", "系统", "系統", "systemproxy",
+                 "系统代理", "custom", "自定义", "自定义代理", "on", "1", "true", "yes", "开", "开启":
+                return ["proxy"]
+            case "mixed", "混合", "both":
+                return ["mixed"]
+            default:
+                return [v]
             }
         }
 
         private static func normalizeStatusTokens(_ v: String) -> Set<String> {
             switch v {
-            case "block", "blocked", "拦截", "屏蔽", "deny": return ["block"]
-            case "allow", "allowed", "允许", "放行": return ["allow"]
-            default: return [v]
+            case "online", "active", "在线", "在線", "活跃", "活躍", "connected":
+                return ["online"]
+            case "idle", "offline", "空闲", "空閒", "离线", "離線":
+                return ["idle"]
+            default:
+                return [v]
             }
         }
 
-        func matches(row: AppRankingRow, isFavorite: Bool, isBlocked: Bool, isArchived: Bool) -> Bool {
+        func matches(row: AppRankingRow, isFavorite: Bool, isArchived: Bool) -> Bool {
             let snap = row.snapshot
             if favoritesOnly && !isFavorite { return false }
             if archivedOnly && !isArchived { return false }
-            if !routes.isEmpty {
-                let label = snap.route.chipLabel.lowercased()
-                let hit = routes.contains { token in
-                    label.contains(token) || token == "direct" && label == "direct"
-                        || token == "system" && (label == "system" || label.contains("system"))
-                        || (token == "socks5" || token == "proxy") && (label.contains("socks") || label == "proxy")
+            if !egress.isEmpty {
+                let hit: Bool
+                switch row.observedEgress {
+                case .direct: hit = egress.contains("direct")
+                case .proxy: hit = egress.contains("proxy")
+                // Mixed rows carry bytes on both paths, so either filter should find them.
+                case .mixed: hit = !egress.isDisjoint(with: ["mixed", "direct", "proxy"])
+                case .noTraffic: hit = false
                 }
                 if !hit { return false }
             }
             if !statuses.isEmpty {
-                let blocked = isBlocked || snap.firewallStatus == .block
-                let wantBlock = statuses.contains("block")
-                let wantAllow = statuses.contains("allow")
-                if wantBlock && !wantAllow && !blocked { return false }
-                if wantAllow && !wantBlock && blocked { return false }
-            }
-            if let proxyOn {
-                let on = ProxyToggleLogic.isProxyEnabled(snap.route)
-                if on != proxyOn { return false }
-            }
-            if !groups.isEmpty {
-                let g = (row.groupName ?? "").lowercased()
-                if !groups.contains(where: { g.contains($0) }) { return false }
+                let online: Bool
+                if case .active = row.onlineState { online = true } else { online = false }
+                let wantOnline = statuses.contains("online")
+                let wantIdle = statuses.contains("idle")
+                if wantOnline && !wantIdle && !online { return false }
+                if wantIdle && !wantOnline && online { return false }
             }
             for t in texts {
                 let name = snap.displayName.lowercased()
                 let sid = snap.app.signingIdentifier.lowercased()
-                let g = (row.groupName ?? "").lowercased()
-                if !(name.contains(t) || sid.contains(t) || g.contains(t)) {
+                if !(name.contains(t) || sid.contains(t)) {
                     return false
                 }
             }
@@ -1052,13 +1607,12 @@ final class AppModel: ObservableObject {
             parsed.matches(
                 row: row,
                 isFavorite: isFavorite(row.snapshot.app),
-                isBlocked: isBlocked(row.snapshot.app),
                 isArchived: isArchived(row.snapshot.app)
             )
         }
     }
 
-    /// Rows shown in ranking: active or archived panel, then combined filter.
+    /// Rows shown in ranking: active or archived panel, combined filter, then header sort.
     var displayedRankingRows: [AppRankingRow] {
         let base: [AppRankingRow]
         let parsed = RankingQuery.parse(rankingFilterQuery)
@@ -1067,7 +1621,7 @@ final class AppModel: ObservableObject {
         } else {
             base = visibleRankingRows
         }
-        return filteredRankingRows(base)
+        return sortedRankingRows(filteredRankingRows(base))
     }
 
     var selectedRankingRow: AppRankingRow? {
@@ -1127,8 +1681,7 @@ final class AppModel: ObservableObject {
         favoriteKeys.remove(app.storageKey)
         persistFavorites()
         archivedKeys.remove(app.storageKey)
-        blockedKeys.remove(app.storageKey)
-        persistArchivedAndBlocked()
+        persistArchived()
         if selectedApp == app {
             selectedApp = nil
         }
@@ -1224,19 +1777,6 @@ final class AppModel: ObservableObject {
             }
         }
 
-        for group in groups {
-            if group.name.lowercased().contains(needle) {
-                hits.append(SearchHit(
-                    id: "group:\(group.id.uuidString)",
-                    kind: .group,
-                    title: group.name,
-                    subtitle: "\(group.memberKeys.count) apps",
-                    appKey: nil,
-                    destination: .overview
-                ))
-            }
-        }
-
         for rule in rules {
             let note = (rule.note ?? "").lowercased()
             let dest: String = {
@@ -1296,11 +1836,8 @@ final class AppModel: ObservableObject {
             pFrac /= sum
         }
 
-        // Slight path bias on up vs down so columns aren't identical twins.
-        let downDirectBias = demoMode ? (0.97 + sin(demoClock / 7) * 0.03) : 1.0
-        let upDirectBias = demoMode ? (1.03 + cos(demoClock / 9) * 0.03) : 1.0
-        let dDownShare = min(1, max(0, dFrac * downDirectBias))
-        let dUpShare = min(1, max(0, dFrac * upDirectBias))
+        let dDownShare = min(1, max(0, dFrac))
+        let dUpShare = min(1, max(0, dFrac))
 
         directDownBps = rateDownBps * dDownShare
         proxyDownBps = max(0, rateDownBps - directDownBps)
@@ -1358,6 +1895,9 @@ final class AppModel: ObservableObject {
         if routeMix.systemProxyPercent > 0 || hasSystemProxyRoute {
             return .configured
         }
+        if systemProxy.isEnabled, routeMix.directPercent < 100 {
+            return .configured
+        }
         // Selective proxy on, but resolved routes are direct (or inherit→direct).
         return .direct
     }
@@ -1370,13 +1910,6 @@ final class AppModel: ObservableObject {
     func setProxyEnabled(_ enabled: Bool) {
         proxyEnabled = enabled
         isRunning = filterEnabled || enabled
-    }
-
-    func assignRoute(app: AppIdentityKey, route: RouteAction) {
-        policyStore.assignRoute(app: app, route: route)
-        rules = policyStore.allRules()
-        groups = policyStore.allGroups()
-        recomputeRouteLabels()
     }
 
     // MARK: - Groups
@@ -1442,13 +1975,6 @@ final class AppModel: ObservableObject {
 
     /// Toggle selective proxy for an app using the **resolved** route (rules + groups),
     /// not the raw assignment (which may be `.inherit` while UI shows Proxy).
-    func toggleAppProxy(_ snapshot: AppTrafficSnapshot) {
-        let profileID = proxyProfiles.first?.id ?? UUID()
-        let resolved = resolveRoute(for: snapshot.app)
-        let next = ProxyToggleLogic.nextRoute(resolved: resolved, profileID: profileID)
-        assignRoute(app: snapshot.app, route: next)
-    }
-
     func openDashboard() {
         selectedTab = .overview
         NSApp.activate(ignoringOtherApps: true)
@@ -1475,11 +2001,20 @@ final class AppModel: ObservableObject {
     }
 
     private func onTick() {
-        demoClock += 1
-        if demoMode {
-            injectDemoDelta()
-        }
         refreshPublishedState()
+        persistIfDue(now: Date())
+    }
+
+    private func persistIfDue(now: Date) {
+        savePoliciesIfChanged()
+        evaluateAlertsIfDue(now: now)
+        if lastFlushAt == nil || now.timeIntervalSince(lastFlushAt!) >= Self.telemetryFlushInterval {
+            flushTelemetry(now: now)
+        }
+        if let pruned = lastPruneAt, now.timeIntervalSince(pruned) < Self.telemetryPruneInterval {
+            return
+        }
+        pruneTelemetry(now: now)
     }
 
     private func refreshPublishedState() {
@@ -1494,31 +2029,39 @@ final class AppModel: ObservableObject {
         // Resolve selected app identity early (may be nil).
         let selectedIdentity = selectedApp
 
+        // OS system proxy first — drives route chips + socket attribution.
+        systemProxy = SystemProxyReader.current()
+        if !systemProxy.isEnabled {
+            systemProxyNodeIP = nil
+        }
+
+        let hostRates = hostNetworkSampler.sampleRates(now: now)
+        // Accumulate host deltas for period totals when NE has nothing to show.
+        hostSessionBytesDown &+= hostRates.deltaIn
+        hostSessionBytesUp &+= hostRates.deltaOut
+
+        // Without NE telemetry, discover apps via ESTABLISHED sockets and
+        // split host interface bytes across them by connection weight.
+        // Read the foreground window first: this tick's bytes for whichever app is in
+        // front are attributed to the page/document actually on screen.
+        if tracksBrowserTabs {
+            foregroundSampler.sample(now: now)
+        }
+        ingestActiveSocketFallback(hostRates: hostRates, at: now)
+
         let rates = aggregator.liveRateBps(for: selectedIdentity)
-        // Blend live rates with demo floor so UI stays lively in demo mode
-        if demoMode {
-            if let selectedIdentity,
-               let snap = rankingRows.first(where: { $0.snapshot.app == selectedIdentity })
-                ?? archivedRankingRows.first(where: { $0.snapshot.app == selectedIdentity }) {
-                rateDownBps = max(snap.snapshot.rateDownBps, rates.down)
-                rateUpBps = max(snap.snapshot.rateUpBps, rates.up)
-                // Soft floor so selected app still animates a little in demo.
-                if rateDownBps < 1_000 {
-                    rateDownBps = 120_000 + sin(demoClock / 4) * 20_000
-                }
-                if rateUpBps < 1_000 {
-                    rateUpBps = 28_000 + cos(demoClock / 5) * 6_000
-                }
-            } else if selectedIdentity != nil {
-                rateDownBps = rates.down
-                rateUpBps = rates.up
-            } else {
-                rateDownBps = max(rates.down, 1_550_000 + sin(demoClock / 4) * 200_000)
-                rateUpBps = max(rates.up, 280_000 + cos(demoClock / 5) * 40_000)
-            }
-        } else {
+
+        if rates.down > 0 || rates.up > 0 {
+            // Prefer aggregator rates (NE or socket-fallback attribution).
             rateDownBps = rates.down
             rateUpBps = rates.up
+        } else if selectedIdentity == nil {
+            // Idle socket sample: still show raw host interface rates.
+            rateDownBps = hostRates.downBps
+            rateUpBps = hostRates.upBps
+        } else {
+            rateDownBps = 0
+            rateUpBps = 0
         }
 
         sparklineDown.append(rateDownBps)
@@ -1530,75 +2073,33 @@ final class AppModel: ObservableObject {
 
         // Period network totals for active range (optionally scoped to selected app).
         let periodTotals = aggregator.totals(for: selectedIdentity, from: periodFrom, to: periodTo)
-        if demoMode {
-            // Scale seeded demo traffic so longer ranges look larger than the live window.
-            let live = aggregator.totals(for: selectedIdentity, from: dayFrom, to: now)
-            var scale = overviewPeriod.networkScale
-            if overviewPeriod == .custom {
-                let hours = max(1, periodTo.timeIntervalSince(periodFrom) / 3600)
-                scale = UInt64(max(1, hours / 24))
-            }
-            periodNetworkUp = max(periodTotals.bytesUp, live.bytesUp) &* scale
-            periodNetworkDown = max(periodTotals.bytesDown, live.bytesDown) &* scale
-            // Disk I/O: demo facade (real path would use IOKit / endpoint stats later).
-            let weekRead: UInt64 = 42_000_000_000   // ~42 GB
-            let weekWrite: UInt64 = 18_500_000_000  // ~18.5 GB
-            var ds = overviewPeriod.diskScale
-            if overviewPeriod == .custom {
-                let days = max(0.05, periodTo.timeIntervalSince(periodFrom) / 86_400)
-                ds = days / 7.0
-            }
-            var diskR = UInt64(Double(weekRead) * ds)
-            var diskW = UInt64(Double(weekWrite) * ds)
-            if let selectedIdentity {
-                // Share of global disk by this app's network share in the period.
-                let allNet = aggregator.totals(for: nil, from: periodFrom, to: periodTo)
-                let appNet = max(1, periodTotals.totalBytes)
-                let allBytes = max(1, allNet.totalBytes)
-                let share = min(1.0, Double(appNet) / Double(allBytes))
-                let bias = demoDiskBias(for: selectedIdentity)
-                diskR = UInt64(Double(diskR) * share * bias)
-                diskW = UInt64(Double(diskW) * share * (2.0 - bias))
-            }
-            periodDiskRead = diskR
-            periodDiskWrite = diskW
-        } else {
+        if periodTotals.bytesUp > 0 || periodTotals.bytesDown > 0 {
             periodNetworkUp = periodTotals.bytesUp
             periodNetworkDown = periodTotals.bytesDown
-            periodDiskRead = 0
-            periodDiskWrite = 0
+        } else if selectedIdentity == nil {
+            // Fallback: session host interface totals while NE telemetry is empty.
+            periodNetworkUp = hostSessionBytesUp
+            periodNetworkDown = hostSessionBytesDown
+        } else {
+            periodNetworkUp = 0
+            periodNetworkDown = 0
         }
 
-        // Period trend series for totals mini charts.
-        let series = aggregator.byteSeries(
-            for: selectedIdentity,
-            from: periodFrom,
-            to: periodTo,
-            points: 28
-        )
-        if series.down.contains(where: { $0 > 0 }) || series.up.contains(where: { $0 > 0 }) {
-            periodTrendDown = series.down
-            periodTrendUp = series.up
-        } else if demoMode {
-            // Synthesize a gentle trend from current period totals so charts aren't flat.
-            let baseDown = Double(max(1, periodNetworkDown)) / 28.0
-            let baseUp = Double(max(1, periodNetworkUp)) / 28.0
-            let clock = demoClock
-            var downTrend: [Double] = []
-            var upTrend: [Double] = []
-            downTrend.reserveCapacity(28)
-            upTrend.reserveCapacity(28)
-            for i in 0..<28 {
-                let waveDown = 0.5 + 0.5 * sin(Double(i) / 4.0 + clock / 9)
-                let waveUp = 0.5 + 0.5 * cos(Double(i) / 5.0 + clock / 11)
-                downTrend.append(baseDown * (0.55 + 0.45 * waveDown))
-                upTrend.append(baseUp * (0.55 + 0.45 * waveUp))
-            }
-            periodTrendDown = downTrend
-            periodTrendUp = upTrend
-        } else {
-            periodTrendDown = series.down
-            periodTrendUp = series.up
+        // Cumulative trend: append running period totals each tick so the area chart moves.
+        // Scope ignores `periodTo` (usually `now`) so the series is not reset every tick.
+        let scopeKey = cumulativeTrendKey(app: selectedIdentity, from: periodFrom)
+        if scopeKey != cumulativeTrendScopeKey {
+            cumulativeTrendScopeKey = scopeKey
+            periodTrendDown = []
+            periodTrendUp = []
+        }
+
+        // Running cumulative totals — chart rises as traffic accrues in this period.
+        periodTrendDown.append(Double(periodNetworkDown))
+        periodTrendUp.append(Double(periodNetworkUp))
+        if periodTrendDown.count > Self.cumulativeTrendLimit {
+            periodTrendDown.removeFirst(periodTrendDown.count - Self.cumulativeTrendLimit)
+            periodTrendUp.removeFirst(periodTrendUp.count - Self.cumulativeTrendLimit)
         }
 
         var tops = aggregator.topApps(
@@ -1653,8 +2154,8 @@ final class AppModel: ObservableObject {
         }
 
         let dayTotals = aggregator.totals(for: selectedIdentity, from: dayFrom, to: now)
-        blockedToday = dayTotals.flowsBlocked > 0 ? dayTotals.flowsBlocked : (demoMode && selectedIdentity == nil ? 1_248 : dayTotals.flowsBlocked)
-        allowedConnections = dayTotals.flowsOpened > 0 ? dayTotals.flowsOpened : (demoMode && selectedIdentity == nil ? 12_853 : dayTotals.flowsOpened)
+        blockedToday = dayTotals.flowsBlocked
+        allowedConnections = dayTotals.flowsOpened
 
         let activeRuleCount = policyStore.compileSnapshot().activeRuleCount + groups.count
         let periodRouteShare = aggregator.routeByteShare(
@@ -1666,14 +2167,13 @@ final class AppModel: ObservableObject {
             share: periodRouteShare,
             selectedRoute: selectedIdentity.flatMap { id in tops.first(where: { $0.app == id })?.route },
             proxyEnabled: proxyEnabled,
+            systemProxyEnabled: systemProxy.isEnabled,
             blockedFallback: blockedToday,
-            activeRules: activeRuleCount,
-            demoMode: demoMode,
-            demoClock: demoClock
+            activeRules: activeRuleCount
         )
         recomputePathRates()
 
-        // Build ranking rows with group + proportional demo disk share.
+        // Build ranking rows with group + per-app proxy share.
         // Share is relative to the *active* (non-archived) set so pie + rank stay consistent.
         let activeTops = tops.filter { !archivedKeys.contains($0.app.storageKey) }
         var archivedTops = tops.filter { archivedKeys.contains($0.app.storageKey) }
@@ -1701,47 +2201,28 @@ final class AppModel: ObservableObject {
             )
         }
         let netTotal = max(1, activeTops.reduce(UInt64(0)) { $0 &+ $1.totals.totalBytes })
-        let diskR = selectedIdentity == nil ? periodDiskRead : {
-            // When filtered, ranking disk columns still use global period disk for proportions.
-            let weekRead: UInt64 = 42_000_000_000
-            var ds = overviewPeriod.diskScale
-            if overviewPeriod == .custom {
-                let days = max(0.05, periodTo.timeIntervalSince(periodFrom) / 86_400)
-                ds = days / 7.0
-            }
-            return demoMode ? UInt64(Double(weekRead) * ds) : periodDiskRead
-        }()
-        let diskW = selectedIdentity == nil ? periodDiskWrite : {
-            let weekWrite: UInt64 = 18_500_000_000
-            var ds = overviewPeriod.diskScale
-            if overviewPeriod == .custom {
-                let days = max(0.05, periodTo.timeIntervalSince(periodFrom) / 86_400)
-                ds = days / 7.0
-            }
-            return demoMode ? UInt64(Double(weekWrite) * ds) : periodDiskWrite
-        }()
+        // Real per-app route split from recorded buckets (same range as the ranking).
+        let routeShares = aggregator.routeByteShareByApp(from: periodFrom, to: periodTo)
 
-        updateAppRateHistory(from: activeTops + archivedTops)
+        updateAppTrafficHistory(from: activeTops + archivedTops)
 
         func makeRows(from snaps: [AppTrafficSnapshot], shareBase: UInt64) -> [AppRankingRow] {
             snaps.map { snap -> AppRankingRow in
                 let share = Double(snap.totals.totalBytes) / Double(max(1, shareBase))
-                let groupName = groups.first(where: { $0.memberKeys.contains(snap.app) })?.name
-                let bias = demoDiskBias(for: snap.app)
+                let proxyShare: Double? = routeShares[snap.app].flatMap { split in
+                    let total = split.direct &+ split.proxied
+                    guard total > 0 else { return nil }
+                    return Double(split.proxied) / Double(total)
+                }
                 let lastAt = aggregator.lastTrafficAt(for: snap.app)
                     ?? ((snap.rateDownBps + snap.rateUpBps) > 1 ? now : nil)
                 return AppRankingRow(
                     snapshot: snap,
-                    diskRead: UInt64(Double(diskR) * share * bias),
-                    diskWrite: UInt64(Double(diskW) * share * (2.0 - bias)),
-                    groupName: groupName,
+                    groupName: nil,
                     share: min(1, share),
+                    proxyShare: proxyShare,
                     lastTrafficAt: lastAt,
-                    rateSeries: displayRateSeries(
-                        for: snap,
-                        periodFrom: periodFrom,
-                        periodTo: periodTo
-                    )
+                    rateSeries: appRateHistory[snap.app.storageKey] ?? []
                 )
             }
         }
@@ -1782,25 +2263,23 @@ final class AppModel: ObservableObject {
     }
 
     private static func buildSunburst(from rows: [AppRankingRow]) -> SunburstNode {
-        let paletteCount = 12.0
         let children: [SunburstNode] = rows.enumerated().map { index, row in
-            let hue = (Double(index) / paletteCount).truncatingRemainder(dividingBy: 1.0)
             let appID = row.snapshot.id
             // Drill children: websites (Chrome), projects (VS Code / Cursor / ChatGPT Codex / Claude)…
             let siteChildren: [SunburstNode]
             if !row.snapshot.sites.isEmpty {
                 let siteTotal = max(1, row.snapshot.sites.reduce(UInt64(0)) { $0 &+ $1.totals.totalBytes })
                 siteChildren = row.snapshot.sites.enumerated().map { sIdx, site in
-                    let siteHue = (hue + 0.03 * Double(sIdx)).truncatingRemainder(dividingBy: 1.0)
                     let siteValue = max(
                         1,
                         UInt64(Double(row.snapshot.totals.totalBytes) * Double(site.totals.totalBytes) / Double(siteTotal))
                     )
                     return SunburstNode(
                         id: "\(appID)|\(site.destinationKey)",
-                        title: site.hostname,
+                        title: Self.localizedSpecialDestination(site.destinationKey) ?? site.hostname,
                         value: siteValue,
-                        hue: siteHue,
+                        colorIndex: index,
+                        colorVariant: sIdx + 1,
                         children: []
                     )
                 }
@@ -1811,12 +2290,13 @@ final class AppModel: ObservableObject {
                 id: appID,
                 title: row.snapshot.displayName,
                 value: max(1, row.snapshot.totals.totalBytes),
-                hue: hue,
+                colorIndex: index,
+                colorVariant: 0,
                 children: siteChildren
             )
         }
         let total = children.reduce(UInt64(0)) { $0 &+ $1.value }
-        return SunburstNode(id: "root", title: "Root", value: total, hue: 0.55, children: children)
+        return SunburstNode(id: "root", title: "Root", value: total, colorIndex: 0, colorVariant: 0, children: children)
     }
 
     /// Ranking rows for the current drill level (apps at root; sites/projects when drilled).
@@ -1830,12 +2310,20 @@ final class AppModel: ObservableObject {
         let siteTotal = max(1, sites.reduce(UInt64(0)) { $0 &+ $1.totals.totalBytes })
         return sites.map { site in
             let share = Double(site.totals.totalBytes) / Double(siteTotal)
-            let scaledSeries = parent.rateSeries.map { $0 * share }
+            let scaledTraffic = parent.rateSeries.map { $0 * share }
+            // Path segments are the split itself: proxy-node bytes are 100% proxied,
+            // rule-direct bytes 0%. Individual sites carry no per-site route data.
+            let segmentProxyShare: Double?
+            switch site.destinationKey {
+            case DestinationKey.viaProxyNode: segmentProxyShare = 1
+            case DestinationKey.directByRule: segmentProxyShare = 0
+            default: segmentProxyShare = nil
+            }
             return AppRankingRow(
                 id: "\(parent.id)|\(site.destinationKey)",
                 snapshot: AppTrafficSnapshot(
                     app: parent.snapshot.app,
-                    displayName: site.hostname,
+                    displayName: drillDownTitle(for: site, isBrowser: parent.snapshot.isBrowser),
                     totals: site.totals,
                     rateUpBps: 0,
                     rateDownBps: 0,
@@ -1845,23 +2333,54 @@ final class AppModel: ObservableObject {
                     isBrowser: parent.snapshot.isBrowser,
                     sites: []
                 ),
-                diskRead: UInt64(Double(parent.diskRead) * share),
-                diskWrite: UInt64(Double(parent.diskWrite) * share),
-                groupName: parent.groupName,
+                groupName: nil,
                 share: share,
+                proxyShare: segmentProxyShare,
                 lastTrafficAt: site.totals.totalBytes > 0 ? parent.lastTrafficAt : nil,
-                rateSeries: scaledSeries
+                rateSeries: scaledTraffic
             )
         }
     }
 
-    /// Append one live (down+up) sample per visible app each tick.
-    private func updateAppRateHistory(from snaps: [AppTrafficSnapshot]) {
+    /// Label for one drill-down segment.
+    ///
+    /// Project segments already carry a meaningful name. Browser hosts get the page
+    /// last seen there appended — only when tab tracking is on and that host has been
+    /// visited in the foreground, so the host itself is never replaced by a guess.
+    private func drillDownTitle(for site: SiteTrafficSnapshot, isBrowser: Bool) -> String {
+        if let special = Self.localizedSpecialDestination(site.destinationKey) {
+            return special
+        }
+        let host = site.hostname
+        guard tracksBrowserTabs, isBrowser else { return host }
+        guard let title = browserTabSampler.title(forHost: host), title != host else {
+            return host
+        }
+        let trimmed = title.count > 60 ? String(title.prefix(60)) + "…" : title
+        return "\(host) · \(trimmed)"
+    }
+
+    /// Localized title for non-site destination keys (`unknown`, `path:` segments).
+    static func localizedSpecialDestination(_ key: String) -> String? {
+        switch key {
+        case DestinationKey.unknown:
+            return LocalizationStore.shared.t("destination.unknown")
+        case DestinationKey.viaProxyNode:
+            return LocalizationStore.shared.t("destination.pathProxy")
+        case DestinationKey.directByRule:
+            return LocalizationStore.shared.t("destination.pathDirect")
+        default:
+            return nil
+        }
+    }
+
+    /// Append cumulative network totals so ranking sparklines diverge per app.
+    private func updateAppTrafficHistory(from snaps: [AppTrafficSnapshot]) {
         let activeKeys = Set(snaps.map(\.app.storageKey))
         for snap in snaps {
             let key = snap.app.storageKey
             var series = appRateHistory[key] ?? []
-            series.append(snap.rateDownBps + snap.rateUpBps)
+            series.append(Double(snap.totals.totalBytes))
             if series.count > Self.appRateHistoryLimit {
                 series.removeFirst(series.count - Self.appRateHistoryLimit)
             }
@@ -1870,50 +2389,27 @@ final class AppModel: ObservableObject {
         appRateHistory = appRateHistory.filter { activeKeys.contains($0.key) || archivedKeys.contains($0.key) }
     }
 
-    /// Prefer live sparkline; when idle, show period byte shape so the cell isn't empty.
-    private func displayRateSeries(
-        for snap: AppTrafficSnapshot,
-        periodFrom: Date,
-        periodTo: Date
-    ) -> [Double] {
-        let live = appRateHistory[snap.app.storageKey] ?? []
-        if (live.max() ?? 0) > 1 {
-            return live
-        }
-        guard snap.totals.totalBytes > 0 else { return live }
-        let bytes = aggregator.byteSeries(
-            for: snap.app,
-            from: periodFrom,
-            to: periodTo,
-            points: Self.appRateHistoryLimit
-        )
-        let combined = zip(bytes.down, bytes.up).map { $0 + $1 }
-        if (combined.max() ?? 0) > 0 {
-            return combined
-        }
-        return live
-    }
-
     var drilledAppTitle: String? {
         guard let id = sunburstPath.first else { return nil }
         return rankingRows.first(where: { $0.id == id })?.snapshot.displayName
     }
 
-    /// Deterministic 0.7...1.3 multiplier so demo disk columns vary by app.
-    private func demoDiskBias(for app: AppIdentityKey) -> Double {
-        let h = abs(app.signingIdentifier.hashValue % 100)
-        return 0.7 + Double(h) / 200.0
+    private func cumulativeTrendKey(app: AppIdentityKey?, from: Date) -> String {
+        let appKey = app?.storageKey ?? "*"
+        // Bucket start to the minute so rolling windows don't thrash the series.
+        let startBucket = Int(from.timeIntervalSince1970) / 60
+        return "\(overviewPeriod.rawValue)|\(appKey)|\(startBucket)"
     }
 
     /// Build proxy-routing card mix from period-scoped byte shares (time range + optional app).
+    /// When no flow bytes yet, fall back to selected app route or live macOS system proxy.
     private static func makeRouteMix(
         share: (direct: UInt64, systemProxy: UInt64, customProxy: UInt64, blockedFlows: UInt64),
         selectedRoute: RouteAction?,
         proxyEnabled: Bool,
+        systemProxyEnabled: Bool,
         blockedFallback: UInt64,
-        activeRules: Int,
-        demoMode: Bool,
-        demoClock: TimeInterval
+        activeRules: Int
     ) -> RouteMix {
         let blocked = share.blockedFlows > 0 ? share.blockedFlows : blockedFallback
 
@@ -1941,10 +2437,20 @@ final class AppModel: ObservableObject {
             )
         }
 
-        // No bytes in range: if an app is selected, show its resolved route; else demo blend.
+        // No bytes in range: if an app is selected, show its resolved route.
         if let selectedRoute {
             switch selectedRoute {
-            case .direct, .inherit:
+            case .inherit:
+                // No rule for this app — macOS decides, so mirror the OS setting
+                // instead of claiming the traffic bypasses the proxy.
+                return RouteMix(
+                    directPercent: systemProxyEnabled ? 0 : 100,
+                    systemProxyPercent: systemProxyEnabled ? 100 : 0,
+                    customProxyPercent: 0,
+                    blockedCount: blocked,
+                    activeRules: activeRules
+                )
+            case .direct:
                 return RouteMix(
                     directPercent: 100,
                     systemProxyPercent: 0,
@@ -1971,23 +2477,13 @@ final class AppModel: ObservableObject {
             }
         }
 
-        if demoMode {
-            let wobble = sin(demoClock / 11) * 4
-            let direct = max(5, min(90, 62 + wobble))
-            let system = max(5, min(40, 25 - wobble * 0.5))
-            let custom = max(0, 100 - direct - system)
-            return RouteMix(
-                directPercent: direct,
-                systemProxyPercent: system,
-                customProxyPercent: custom,
-                blockedCount: blocked,
-                activeRules: activeRules
-            )
-        }
-
+        // Nothing measured yet. With a system proxy configured, unruled traffic goes
+        // through it by default, so show that rather than asserting 100% direct.
+        // Once real byte shares arrive they replace this entirely — Clash /
+        // Shadowrocket DIRECT rules do produce genuine direct egress.
         return RouteMix(
-            directPercent: 100,
-            systemProxyPercent: 0,
+            directPercent: systemProxyEnabled ? 0 : 100,
+            systemProxyPercent: systemProxyEnabled ? 100 : 0,
             customProxyPercent: 0,
             blockedCount: blocked,
             activeRules: activeRules
@@ -1995,8 +2491,8 @@ final class AppModel: ObservableObject {
     }
 
     private func resolveFirewall(for app: AppIdentityKey) -> FirewallAction {
-        if blockedKeys.contains(app.storageKey) { return .block }
-        // Prefer explicit UI/policy block rules.
+        // Block rules can still arrive from the CLI / policy archive; the app UI no
+        // longer writes them.
         for rule in policyStore.allRules() where rule.enabled && rule.firewall == .block {
             switch rule.app {
             case .exact(let key) where key == app:
@@ -2015,94 +2511,525 @@ final class AppModel: ObservableObject {
     }
 
     private func resolveRoute(for app: AppIdentityKey) -> RouteAction {
+        if let observed = socketObservedRoute[app.storageKey] {
+            return observed
+        }
         let snap = policyStore.compileSnapshot()
         return snap.evaluateRoute(FlowDescriptor(app: app)).action
     }
 
-    private func recomputeRouteLabels() {
-        refreshPublishedState()
-    }
+    // MARK: - Socket fallback (app identity without Network Extension)
 
-    // MARK: - Seed data
-
-    private func seedPolicies() {
-        let socksProfile = ProxyProfile(
-            name: "Office SOCKS5",
-            kind: .socks5,
-            host: "127.0.0.1",
-            port: 1080
-        )
-        proxyProfiles = [socksProfile]
-
-        let chrome = AppIdentityKey(teamIdentifier: "EQHXZ8M8AV", signingIdentifier: "com.google.Chrome")
-        let claude = AppIdentityKey(teamIdentifier: "TEAM2", signingIdentifier: "com.anthropic.claude")
-        let discord = AppIdentityKey(teamIdentifier: "53Q6R32WPB", signingIdentifier: "com.hnc.Discord")
-        let telegram = AppIdentityKey(teamIdentifier: "6N38VWS5BX", signingIdentifier: "ru.keepcoder.Telegram")
-        let slack = AppIdentityKey(teamIdentifier: "BQR82RBBHL", signingIdentifier: "com.tinyspeck.slackmacgap")
-
-        policyStore.assignRoute(app: claude, route: .proxy(profileID: socksProfile.id))
-        policyStore.assignRoute(app: telegram, route: .proxy(profileID: socksProfile.id))
-        policyStore.assignRoute(app: discord, route: .systemProxy)
-        policyStore.assignRoute(app: slack, route: .systemProxy)
-        policyStore.assignRoute(app: chrome, route: .direct)
-
-        let mediaGroup = AppGroup(
-            name: "Media",
-            memberKeys: [
-                AppIdentityKey(teamIdentifier: "2FNC3A47ZF", signingIdentifier: "com.spotify.client")
-            ],
-            defaultRoute: .direct
-        )
-        policyStore.upsert(group: mediaGroup)
-
-        let blockRule = NetworkPolicyRule(
-            priority: 100,
-            app: .any,
-            destination: .hostnameSuffix("metrics.example.com"),
-            firewall: .block,
-            route: .direct,
-            note: "Block analytics endpoint"
-        )
-        policyStore.upsert(rule: blockRule)
-
-        let allowAPI = NetworkPolicyRule(
-            priority: 50,
-            app: .exact(claude),
-            destination: .hostnameExact("api.anthropic.com"),
-            firewall: .allow,
-            route: .proxy(profileID: socksProfile.id),
-            note: "Claude via SOCKS5"
-        )
-        policyStore.upsert(rule: allowAPI)
-    }
-
-    private func seedDemoTraffic() {
-        // Browsers keep illustrative hostnames; VS Code / Cursor / ChatGPT(Codex) / Claude
-        // drill into real local workspaces discovered from disk (CodexMonitor-style cwd roots).
-        DemoTrafficSeeder.seed(into: aggregator) { app in
-            resolveRoute(for: app)
+    /// Reload local proxy DIRECT rules off the main thread.
+    ///
+    /// This reads another app's container (`~/Library/Containers/…`), which macOS
+    /// gates behind TCC: the first read can block until the user answers a consent
+    /// prompt — indefinitely if no one is at the keyboard. Doing it inline froze the
+    /// whole app inside `init`, so it now runs on a background queue and publishes
+    /// back when it finishes.
+    private func refreshDirectIndexIfNeeded(now: Date) {
+        if let loaded = directIndexLoadedAt, now.timeIntervalSince(loaded) < 120 {
+            return
+        }
+        // One refused or unanswered consent prompt is enough: retrying would ask the
+        // user again on every refresh.
+        if directIndexUnavailable { return }
+        if directIndexLoadInFlight { return }
+        directIndexLoadInFlight = true
+        // Stamp the attempt immediately so a slow read is not retried every tick.
+        directIndexLoadedAt = now
+        DispatchQueue.global(qos: .utility).async {
+            let index = LocalProxyConfigReader.loadDirectIndex(timeout: 3)
+            Task { @MainActor in
+                if let index {
+                    self.directDestinationIndex = index
+                } else {
+                    // Blocked on a consent prompt nobody answered. Route classification
+                    // falls back to socket evidence alone rather than stalling.
+                    self.directIndexUnavailable = true
+                }
+                self.directIndexLoadedAt = Date()
+                self.directIndexLoadInFlight = false
+            }
         }
     }
 
-    private func injectDemoDelta() {
-        guard let top = topApps.first ?? rankingRows.first?.snapshot else { return }
-        let flowID = UUID()
+    /// Re-read local IDE / agent workspaces so project titles track renames and new
+    /// checkouts. Discovery walks the filesystem, so it stays off the main thread.
+    private func refreshWorkspacesIfNeeded(now: Date) {
+        if let refreshed = workspacesRefreshedAt, now.timeIntervalSince(refreshed) < 300 {
+            return
+        }
+        if workspaceRefreshInFlight { return }
+        workspaceRefreshInFlight = true
+        DispatchQueue.global(qos: .utility).async { [projectResolver] in
+            let workspaces = WorkspaceDiscovery.discover(options: WorkspaceDiscoveryOptions(limit: 0))
+            projectResolver.updateWorkspaces(workspaces)
+            Task { @MainActor in
+                self.attributionResolver.invalidate()
+                self.workspacesRefreshedAt = Date()
+                self.workspaceRefreshInFlight = false
+            }
+        }
+    }
+
+    private func scheduleSocketSampleIfNeeded() {
+        if socketSampleInFlight { return }
+        socketSampleInFlight = true
+        let port = systemProxy.httpPort ?? systemProxy.httpsPort ?? systemProxy.socksPort
+        let index = directDestinationIndex
+        let dnsCache = reverseDNSCache
+        DispatchQueue.global(qos: .utility).async {
+            // Collect connections first so we can reverse-DNS proxy egress IPs.
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+            process.arguments = ["-nP", "-iTCP", "-sTCP:ESTABLISHED"]
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = Pipe()
+            var text = ""
+            do {
+                try process.run()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                text = String(data: data, encoding: .utf8) ?? ""
+            } catch {
+                text = ""
+            }
+
+            let connections = ActiveAppSocketSampler.parse(lsofOutput: text)
+            var resolved = dnsCache
+
+            // Resolve every peer we might label, not just proxy egress: without this a
+            // browser or sync daemon drills down into a list of bare IP addresses.
+            var pending: [String] = []
+            for conn in connections {
+                let host = conn.remoteHost
+                guard resolved[host] == nil,
+                      DirectDestinationIndex.parseIPv4(host) != nil,
+                      !RemoteDestination.isProxyPlaceholderAddress(host)
+                else { continue }
+                pending.append(host)
+            }
+            // Bounded per sample; the cache carries results forward.
+            for ip in Set(pending).prefix(48) {
+                if let name = ReverseDNS.lookup(ip) {
+                    resolved[ip] = name
+                }
+            }
+
+            let snapshot = ActiveAppSocketSampler.summarize(
+                connections,
+                proxyPort: port,
+                directIndex: index,
+                resolvedHosts: resolved
+            )
+            Task { @MainActor in
+                self.reverseDNSCache = resolved
+                self.cachedSocketSnapshot = snapshot
+                self.systemProxyNodeIP = snapshot.primaryProxyNodeIP
+                self.socketSampleInFlight = false
+            }
+        }
+    }
+
+    /// Attribute host interface byte deltas to apps that hold ESTABLISHED sockets.
+    ///
+    /// Observed route semantics (first principles):
+    /// - `.systemProxy` = egress via local proxy client toward a proxy node (翻墙)
+    /// - `.direct` = not via a proxy node (true bypass, or client rule DIRECT)
+    /// - weak TUN / unattributed evidence → do not force `.direct`
+    private func ingestActiveSocketFallback(hostRates: HostNetworkSampler.Rates, at: Date) {
+        refreshDirectIndexIfNeeded(now: at)
+        refreshWorkspacesIfNeeded(now: at)
+        scheduleSocketSampleIfNeeded()
+        let snapshot = cachedSocketSnapshot
+        let samples = snapshot.processes.filter { !$0.isProxyProcess }
+        guard !samples.isEmpty || snapshot.proxyDirectEgress > 0 || snapshot.proxyRemoteEgress > 0 else {
+            return
+        }
+
+        let selfPID = ProcessInfo.processInfo.processIdentifier
+        let selfBundle = Bundle.main.bundleIdentifier
+        let tunnelActive = HostNetworkSampler.hasActiveTunnelInterface()
+        let localProxyActive = snapshot.hasLocalProxyClient
+            || snapshot.proxyDirectEgress + snapshot.proxyRemoteEgress > 0
+        let weakBypassEvidence = localProxyActive || tunnelActive
+
+        struct Row {
+            var key: AppIdentityKey
+            var name: String
+            var viaProxy: Int
+            var direct: Int
+            var hosts: [String]
+            /// Connection weight per `project:<Name>` drill key. One app can hold
+            /// sockets for several projects at once (three editor windows, two agent
+            /// sessions), so bytes are split by how many sockets each project owns.
+            var projectWeights: [String: Int]
+        }
+
+        var merged: [String: Row] = [:]
+        for attributed in attributionResolver.attribute(samples, now: at) {
+            if attributed.pid == selfPID { continue }
+            let identity = resolveSocketAppIdentity(attributed)
+            let signing = identity.signingIdentifier
+            if let selfBundle, signing == selfBundle { continue }
+
+            let key = AppIdentityKey(teamIdentifier: nil, signingIdentifier: signing)
+            let sk = key.storageKey
+            let displayName = identity.displayName
+            let projectKey = attributed.projectDestinationKey
+            // Weight by sockets held; a process with none still marks the project active.
+            let projectWeight = max(1, attributed.weightedConnections)
+
+            if var existing = merged[sk] {
+                existing.viaProxy += attributed.viaProxyConnections
+                existing.direct += attributed.directConnections
+                mergeHosts(attributed.remoteHosts, into: &existing.hosts)
+                // Prefer a real product name over truncated lsof COMMAND leftovers.
+                if existing.name == attributed.command || existing.name.hasPrefix("proc.") {
+                    existing.name = displayName
+                }
+                if let projectKey {
+                    existing.projectWeights[projectKey, default: 0] += projectWeight
+                }
+                merged[sk] = existing
+            } else {
+                merged[sk] = Row(
+                    key: key,
+                    name: displayName,
+                    viaProxy: attributed.viaProxyConnections,
+                    direct: attributed.directConnections,
+                    hosts: Array(attributed.remoteHosts.prefix(8)),
+                    projectWeights: projectKey.map { [$0: projectWeight] } ?? [:]
+                )
+            }
+        }
+
+        // Timing-style foreground attribution: while a browser is frontmost, bytes
+        // its sockets move are labeled with the page the user is on. An explicit
+        // approximation (background tabs transfer too), gated behind the opt-in
+        // toggle, and bounded so a stale read cannot keep claiming traffic.
+        /// The destination for a segment with no visible peer: the foreground page or
+        /// window when this row *is* the frontmost app, else the given path label.
+        func destinationFallback(for item: Row, path: String?) -> String? {
+            if tracksBrowserTabs,
+               let foreground = foregroundSampler.destinationKey(
+                   forSigningID: item.key.signingIdentifier,
+                   now: at
+               ) {
+                return foreground
+            }
+            return path
+        }
+
+        let rows = Array(merged.values)
+        let bypassWeight = rows.reduce(0) { $0 + $1.direct }
+        let clientViaWeight = rows.reduce(0) { $0 + $1.viaProxy }
+        let proxyDirect = snapshot.proxyDirectEgress
+        let proxyRemote = snapshot.proxyRemoteEgress
+
+        // Host NIC bytes ≈ proxy-process egress + true bypass apps.
+        // Client→127.0.0.1 does not hit the NIC, so don't weight by viaProxy for bytes.
+        let useProxyEgressSplit = (proxyDirect + proxyRemote) > 0
+        let bytePoolDirect: Int
+        let bytePoolProxy: Int
+        let bytePoolBypass: Int
+        if useProxyEgressSplit {
+            bytePoolDirect = proxyDirect
+            bytePoolProxy = proxyRemote
+            bytePoolBypass = weakBypassEvidence ? 0 : bypassWeight
+        } else {
+            bytePoolDirect = bypassWeight
+            bytePoolProxy = clientViaWeight
+            bytePoolBypass = 0
+        }
+        let byteTotal = bytePoolDirect + bytePoolProxy + bytePoolBypass
+        guard byteTotal > 0 || !rows.isEmpty else { return }
+
+        let totalDown = hostRates.deltaIn
+        let totalUp = hostRates.deltaOut
+
+        // Per-app score: prefer proxy-node (翻墙) vs rule/true direct from observed egress.
+        var routeScore: [String: (direct: Int, proxy: Int)] = [:]
+
+        // Seed route badges before the first non-zero host delta.
+        //
+        // Deliberately opened without a destination: a seed carries no bytes, and
+        // naming a host here would register a 0-byte segment that shows up in the
+        // drill-down as a site the app never actually used.
+        for item in rows {
+            let key = item.key.storageKey
+            if item.viaProxy > 0 {
+                let route: RouteAction = proxyRemote >= proxyDirect ? .systemProxy : .direct
+                // When both egress pools are zero, lean proxy if the app entered the local client.
+                let seeded: RouteAction = {
+                    if proxyDirect + proxyRemote == 0 { return .systemProxy }
+                    return route
+                }()
+                socketObservedRoute[key] = seeded
+                ensureSocketOpen(app: item.key, name: item.name, host: nil, route: seeded, at: at)
+                if case .systemProxy = seeded {
+                    routeScore[key] = (direct: 0, proxy: item.viaProxy)
+                } else {
+                    routeScore[key] = (direct: item.viaProxy, proxy: 0)
+                }
+            } else if item.direct > 0 {
+                if weakBypassEvidence {
+                    // TUN / local proxy active but this app was not seen on the proxy port —
+                    // do not claim Direct (may still be tunneled).
+                    socketObservedRoute.removeValue(forKey: key)
+                } else {
+                    socketObservedRoute[key] = .direct
+                    ensureSocketOpen(app: item.key, name: item.name, host: nil, route: .direct, at: at)
+                    routeScore[key] = (direct: item.direct, proxy: 0)
+                }
+            }
+        }
+
+        guard totalDown > 0 || totalUp > 0, byteTotal > 0 else {
+            applyObservedRouteScores(routeScore)
+            return
+        }
+
+        let directBytesDown = UInt64((Double(totalDown) * Double(bytePoolDirect) / Double(byteTotal)).rounded())
+        let directBytesUp = UInt64((Double(totalUp) * Double(bytePoolDirect) / Double(byteTotal)).rounded())
+        let proxyBytesDown = UInt64((Double(totalDown) * Double(bytePoolProxy) / Double(byteTotal)).rounded())
+        let proxyBytesUp = UInt64((Double(totalUp) * Double(bytePoolProxy) / Double(byteTotal)).rounded())
+        let bypassBytesDown = UInt64((Double(totalDown) * Double(bytePoolBypass) / Double(byteTotal)).rounded())
+        let bypassBytesUp = UInt64((Double(totalUp) * Double(bytePoolBypass) / Double(byteTotal)).rounded())
+
+        // Distribute proxy-process DIRECT egress across clients that talk to the local proxy.
+        if clientViaWeight > 0, directBytesDown > 0 || directBytesUp > 0 {
+            for item in rows where item.viaProxy > 0 {
+                let share = Double(item.viaProxy) / Double(clientViaWeight)
+                let down = UInt64((Double(directBytesDown) * share).rounded())
+                let up = UInt64((Double(directBytesUp) * share).rounded())
+                // These bytes exited via the proxy's DIRECT rules (e.g. bilibili).
+                // The client's own socket peers are unrelated to this path, and the
+                // proxy's egress hosts belong to the proxy, not any one client — so
+                // the honest label is the path itself.
+                recordSocketDelta(
+                    app: item.key,
+                    name: item.name,
+                    hosts: [],
+                    projects: item.projectWeights,
+                    fallbackDestination: destinationFallback(for: item, path: DestinationKey.directByRule),
+                    down: down,
+                    up: up,
+                    route: .direct,
+                    at: at
+                )
+                let sk = item.key.storageKey
+                var score = routeScore[sk] ?? (direct: 0, proxy: 0)
+                score.direct += Int(min(UInt64(Int.max), down &+ up))
+                routeScore[sk] = score
+            }
+        }
+
+        if clientViaWeight > 0, proxyBytesDown > 0 || proxyBytesUp > 0 {
+            for item in rows where item.viaProxy > 0 {
+                let share = Double(item.viaProxy) / Double(clientViaWeight)
+                let down = UInt64((Double(proxyBytesDown) * share).rounded())
+                let up = UInt64((Double(proxyBytesUp) * share).rounded())
+                recordSocketDelta(
+                    app: item.key,
+                    name: item.name,
+                    hosts: [],
+                    projects: item.projectWeights,
+                    fallbackDestination: destinationFallback(for: item, path: DestinationKey.viaProxyNode),
+                    down: down,
+                    up: up,
+                    route: .systemProxy,
+                    at: at
+                )
+                let sk = item.key.storageKey
+                var score = routeScore[sk] ?? (direct: 0, proxy: 0)
+                score.proxy += Int(min(UInt64(Int.max), down &+ up))
+                routeScore[sk] = score
+            }
+        }
+
+        // True bypass only when we are confident traffic did not go through a tunnel / local client.
+        if !weakBypassEvidence, bypassWeight > 0,
+           bypassBytesDown > 0 || bypassBytesUp > 0
+            || (!useProxyEgressSplit && (directBytesDown > 0 || directBytesUp > 0)) {
+            let downPool = useProxyEgressSplit ? bypassBytesDown : directBytesDown
+            let upPool = useProxyEgressSplit ? bypassBytesUp : directBytesUp
+            for item in rows where item.direct > 0 {
+                let share = Double(item.direct) / Double(bypassWeight)
+                let down = UInt64((Double(downPool) * share).rounded())
+                let up = UInt64((Double(upPool) * share).rounded())
+                recordSocketDelta(
+                    app: item.key,
+                    name: item.name,
+                    hosts: item.hosts,
+                    projects: item.projectWeights,
+                    fallbackDestination: destinationFallback(for: item, path: nil),
+                    down: down,
+                    up: up,
+                    route: .direct,
+                    at: at
+                )
+                let sk = item.key.storageKey
+                var score = routeScore[sk] ?? (direct: 0, proxy: 0)
+                score.direct += Int(min(UInt64(Int.max), down &+ up))
+                routeScore[sk] = score
+            }
+        }
+
+        applyObservedRouteScores(routeScore)
+    }
+
+    /// Pick Direct vs Proxy (systemProxy bucket) from per-app observed byte scores.
+    private func applyObservedRouteScores(_ scores: [String: (direct: Int, proxy: Int)]) {
+        for (key, score) in scores {
+            if score.proxy > score.direct {
+                socketObservedRoute[key] = .systemProxy
+            } else if score.direct > score.proxy {
+                socketObservedRoute[key] = .direct
+            } else if score.proxy > 0 {
+                // Tie with any proxy-node evidence → 翻墙.
+                socketObservedRoute[key] = .systemProxy
+            }
+        }
+    }
+
+    private struct SocketAppIdentity {
+        var signingIdentifier: String
+        var displayName: String
+    }
+
+    /// Upgrade a core attribution with AppKit-only knowledge.
+    ///
+    /// `LiveAttributionResolver` works from executable paths, which is all the core
+    /// package can see. A GUI process whose path yields no bundle can still be named
+    /// through `NSRunningApplication`, so try that before settling for `proc.<name>`.
+    private func resolveSocketAppIdentity(_ attributed: AttributedProcess) -> SocketAppIdentity {
+        let signing = attributed.app.signingIdentifier
+        if !signing.hasPrefix("proc.") {
+            let name = AppIconCache.shared.displayName(
+                forSigningID: signing,
+                fallback: attributed.displayName
+            )
+            return SocketAppIdentity(signingIdentifier: signing, displayName: name)
+        }
+
+        let running = NSRunningApplication(processIdentifier: attributed.pid)
+        if let bundleID = running?.bundleIdentifier, !bundleID.isEmpty {
+            let canonical = ProcessAppIdentity.canonicalSigningID(bundleID)
+            let localized = running?.localizedName ?? attributed.displayName
+            return SocketAppIdentity(
+                signingIdentifier: canonical,
+                displayName: AppIconCache.shared.displayName(
+                    forSigningID: canonical,
+                    fallback: localized
+                )
+            )
+        }
+
+        let name = AppIconCache.shared.displayName(
+            forSigningID: signing,
+            fallback: attributed.displayName
+        )
+        return SocketAppIdentity(signingIdentifier: signing, displayName: name)
+    }
+
+    private func mergeHosts(_ incoming: [String], into hosts: inout [String]) {
+        for host in incoming {
+            let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !hosts.contains(trimmed), hosts.count < 8 else { continue }
+            hosts.append(trimmed)
+        }
+    }
+
+    private func ensureSocketOpen(
+        app: AppIdentityKey,
+        name: String,
+        host: String?,
+        route: RouteAction,
+        at: Date
+    ) {
+        let key = app.storageKey + "|" + route.chipLabel
+        if socketOpenedApps.contains(key) { return }
         let flow = FlowDescriptor(
-            id: flowID,
-            app: top.app,
-            remoteHostname: "live.example.com",
-            remotePort: 443
+            id: socketFlowID(for: app, route: route),
+            app: app,
+            remoteHostname: host,
+            remotePort: 443,
+            openedAt: at
         )
-        // Only occasional new connection entries
-        if Int(demoClock) % 5 == 0 {
-            aggregator.recordOpen(flow, displayName: top.displayName, route: top.route)
-        }
-        aggregator.recordDelta(
-            flowID: flowID,
-            app: top.app,
-            up: UInt64.random(in: 8_000...40_000),
-            down: UInt64.random(in: 40_000...200_000),
-            route: top.route
-        )
+        aggregator.recordOpen(flow, displayName: name, route: route)
+        socketOpenedApps.insert(key)
     }
+
+    /// Split an app's byte delta across its drill-down segments.
+    ///
+    /// Projects win over hostnames when both are known: an agent talks to the same
+    /// API endpoint all day, so "which project" is the dimension that carries meaning.
+    /// Segments are weighted by the sockets each one holds rather than split evenly.
+    private func recordSocketDelta(
+        app: AppIdentityKey,
+        name: String,
+        hosts: [String],
+        projects: [String: Int] = [:],
+        fallbackDestination: String? = nil,
+        down: UInt64,
+        up: UInt64,
+        route: RouteAction,
+        at: Date
+    ) {
+        guard down > 0 || up > 0 else { return }
+
+        let segments: [(label: String?, weight: UInt64)]
+        if !projects.isEmpty {
+            // Sort for a stable split when weights tie.
+            segments = projects
+                .sorted { ($0.value, $1.key) > ($1.value, $0.key) }
+                .map { (label: Optional($0.key), weight: UInt64(max(1, $0.value))) }
+        } else if hosts.isEmpty {
+            // No visible peer: a `path:` label at least says how the bytes left.
+            segments = [(label: fallbackDestination, weight: 1)]
+        } else {
+            segments = hosts.map { (label: Optional($0), weight: UInt64(1)) }
+        }
+
+        let totalWeight = segments.reduce(UInt64(0)) { $0 &+ $1.weight }
+        guard totalWeight > 0 else { return }
+
+        var remainingDown = down
+        var remainingUp = up
+        for (index, segment) in segments.enumerated() {
+            let isLast = index == segments.count - 1
+            // Multiply first: a byte delta can be smaller than the weight total.
+            let partDown = isLast ? remainingDown : min(remainingDown, down * segment.weight / totalWeight)
+            let partUp = isLast ? remainingUp : min(remainingUp, up * segment.weight / totalWeight)
+            remainingDown -= partDown
+            remainingUp -= partUp
+            let host = segment.label
+            guard partDown > 0 || partUp > 0 else { continue }
+            ensureSocketOpen(app: app, name: name, host: host, route: route, at: at)
+            let dest = DestinationKey.make(hostname: host, address: nil)
+            aggregator.recordDelta(
+                flowID: socketFlowID(for: app, route: route),
+                app: app,
+                up: partUp,
+                down: partDown,
+                at: at,
+                route: route,
+                destinationKey: dest
+            )
+        }
+    }
+
+    private func socketFlowID(for app: AppIdentityKey, route: RouteAction = .direct) -> UUID {
+        let key = app.storageKey + "|" + route.chipLabel
+        if let existing = socketFlowIDs[key] {
+            return existing
+        }
+        let id = UUID()
+        socketFlowIDs[key] = id
+        return id
+    }
+
 }

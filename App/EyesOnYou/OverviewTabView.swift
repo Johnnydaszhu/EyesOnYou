@@ -9,8 +9,8 @@ struct OverviewTabView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var l10n: LocalizationStore
     @FocusState private var rankingSearchFocused: Bool
-    @State private var isGroupManagerPresented = false
     @State private var spacingDragOrigin: Double? = nil
+    @State private var isSystemProxyEndpointRevealed = false
 
     var body: some View {
         GeometryReader { geo in
@@ -29,16 +29,15 @@ struct OverviewTabView: View {
         let gap = m.gap
 
         if m.isThreeUpMetrics {
-            // Shared 3-column grid — col1 width locks totals ↔ pie gutter.
-            // Trailing cells expand so right edges stay flush.
+            // Live → cumulative network → proxy; col1 width locks left card ↔ pie.
             let col1 = m.columnWidth(in: w, columns: 3)
             let metricsH = m.metricsRowHeight
 
             VStack(spacing: gap) {
                 HStack(spacing: gap) {
-                    totalsCard(m)
-                        .frame(width: col1, height: metricsH)
                     liveTrafficCard(m)
+                        .frame(width: col1, height: metricsH)
+                    networkTrafficCard(m)
                         .frame(maxWidth: .infinity)
                         .frame(height: metricsH)
                     proxyRoutingCard(m)
@@ -58,7 +57,7 @@ struct OverviewTabView: View {
             }
             .frame(width: w, height: h, alignment: .topLeading)
         } else if m.isTwoUpMetrics {
-            // Shared 2-column grid — pie under totals, ranking under live.
+            // Live | cumulative on row 1; proxy strip; pie under live.
             let col1 = m.columnWidth(in: w, columns: 2)
             let metricsH = m.metricsRowHeight
             let proxyH = metricsH * 0.85
@@ -66,9 +65,9 @@ struct OverviewTabView: View {
 
             VStack(spacing: gap) {
                 HStack(spacing: gap) {
-                    totalsCard(m)
-                        .frame(width: col1, height: metricsH)
                     liveTrafficCard(m)
+                        .frame(width: col1, height: metricsH)
+                    networkTrafficCard(m)
                         .frame(maxWidth: .infinity)
                         .frame(height: metricsH)
                 }
@@ -88,12 +87,12 @@ struct OverviewTabView: View {
             }
             .frame(width: w, height: h, alignment: .topLeading)
         } else {
-            // compact / tiny — single column stack
+            // compact / tiny — live, cumulative network, proxy, pie, ranking
             VStack(spacing: gap) {
-                totalsCard(m)
+                liveTrafficCard(m)
                     .frame(maxWidth: .infinity)
                     .frame(height: m.metricsRowHeight * 0.72)
-                liveTrafficCard(m)
+                networkTrafficCard(m)
                     .frame(maxWidth: .infinity)
                     .frame(height: m.metricsRowHeight * 0.72)
                 proxyRoutingCard(m)
@@ -116,16 +115,19 @@ struct OverviewTabView: View {
         title: String,
         systemImage: String,
         scale: CGFloat = 1,
+        showsTitle: Bool = true,
         @ViewBuilder body: () -> Body
     ) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            Label(title, systemImage: systemImage)
-                .font(.system(size: 10 * scale, weight: .semibold))
-                .foregroundStyle(EyesOnYouTheme.textSecondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .frame(height: 16 * scale, alignment: .leading)
+            if showsTitle {
+                Label(title, systemImage: systemImage)
+                    .font(.system(size: 10 * scale, weight: .semibold))
+                    .foregroundStyle(EyesOnYouTheme.textSecondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(height: 16 * scale, alignment: .leading)
+            }
 
             body()
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -134,101 +136,77 @@ struct OverviewTabView: View {
         .flowCard()
     }
 
-    // MARK: - Totals
+    // MARK: - Network traffic (cumulative period trend)
 
-    private func totalsCard(_ m: BentoMetrics) -> some View {
-        bentoCard(title: totalsCardTitle, systemImage: "chart.bar.fill", scale: m.typeScale) {
-            ViewThatFits(in: .vertical) {
-                totalsBody(m, compact: false)
-                totalsBody(m, compact: true)
+    private var hasNetworkTrendSamples: Bool {
+        model.periodTrendDown.contains(where: { $0 > 0 })
+            || model.periodTrendUp.contains(where: { $0 > 0 })
+            || model.periodNetworkDown > 0
+            || model.periodNetworkUp > 0
+    }
+
+    /// Cumulative download / upload for the selected period — same chart chrome as live.
+    private func networkTrafficCard(_ m: BentoMetrics) -> some View {
+        let metaH = 36 * m.typeScale
+        let footerH = 18 * m.typeScale
+        return bentoCard(title: networkTrafficCardTitle, systemImage: "chart.xyaxis.line", scale: m.typeScale) {
+            VStack(spacing: 8 * m.typeScale) {
+                HStack(spacing: 16) {
+                    rateInline(
+                        m,
+                        icon: "arrow.down",
+                        tint: EyesOnYouTheme.chartDown,
+                        title: l10n.t("overview.netDown"),
+                        value: ByteFormat.string(for: model.periodNetworkDown)
+                    )
+                    rateInline(
+                        m,
+                        icon: "arrow.up",
+                        tint: EyesOnYouTheme.chartUp,
+                        title: l10n.t("overview.netUp"),
+                        value: ByteFormat.string(for: model.periodNetworkUp)
+                    )
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(height: metaH, alignment: .center)
+
+                ZStack {
+                    AreaChartView(down: model.periodTrendDown, up: model.periodTrendUp)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .opacity(hasNetworkTrendSamples ? 1 : 0.28)
+                    if !hasNetworkTrendSamples {
+                        Text(l10n.t("overview.networkTrafficEmpty"))
+                            .font(.system(size: 11 * m.typeScale))
+                            .foregroundStyle(EyesOnYouTheme.textSecondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 12)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                Color.clear
+                    .frame(height: footerH)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .padding(.top, 6 * m.typeScale)
-            .clipped()
+            .padding(.top, 8 * m.typeScale)
         }
     }
 
-    private var totalsCardTitle: String {
+    private var networkTrafficCardTitle: String {
         if let name = model.selectedAppDisplayName {
-            return "\(l10n.t("overview.totals")) · \(name)"
+            return "\(l10n.t("overview.networkTraffic")) · \(name)"
         }
-        return l10n.t("overview.totals")
-    }
-
-    private func totalsBody(_ m: BentoMetrics, compact: Bool) -> some View {
-        VStack(alignment: .leading, spacing: compact ? 3 : 4) {
-            Text(l10n.t("overview.networkTraffic"))
-                .font(.system(size: 10 * m.typeScale, weight: .semibold))
-                .foregroundStyle(EyesOnYouTheme.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            trendMetricRow(
-                m,
-                icon: "arrow.down",
-                iconColor: EyesOnYouTheme.chartDown,
-                title: l10n.t("overview.netDown"),
-                value: ByteFormat.string(for: model.periodNetworkDown),
-                trend: model.periodTrendDown,
-                tint: EyesOnYouTheme.chartDown,
-                compact: compact
-            )
-            trendMetricRow(
-                m,
-                icon: "arrow.up",
-                iconColor: EyesOnYouTheme.chartUp,
-                title: l10n.t("overview.netUp"),
-                value: ByteFormat.string(for: model.periodNetworkUp),
-                trend: model.periodTrendUp,
-                tint: EyesOnYouTheme.chartUp,
-                compact: compact
-            )
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-
-    /// Icon + label/value on the left (intrinsic), mini area chart fills remaining width.
-    private func trendMetricRow(
-        _ m: BentoMetrics,
-        icon: String,
-        iconColor: Color,
-        title: String,
-        value: String,
-        trend: [Double],
-        tint: Color,
-        compact: Bool
-    ) -> some View {
-        let chartH: CGFloat = (compact ? 22 : 28) * m.typeScale
-        return HStack(alignment: .center, spacing: 8) {
-            Image(systemName: icon)
-                .font(.system(size: (compact ? 11 : 12) * m.typeScale, weight: .bold))
-                .foregroundStyle(iconColor)
-                .frame(width: 14 * m.typeScale)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.system(size: 10 * m.typeScale))
-                    .foregroundStyle(EyesOnYouTheme.textSecondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                Text(value)
-                    .font(.system(size: m.valueFontSize * (compact ? 0.85 : 0.95), weight: .semibold, design: .rounded))
-                    .foregroundStyle(EyesOnYouTheme.textPrimary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.55)
-                    .monospacedDigit()
-            }
-            .fixedSize(horizontal: true, vertical: false)
-            .layoutPriority(1)
-
-            MiniAreaChartView(values: trend, tint: tint)
-                .frame(minWidth: 72, maxWidth: .infinity)
-                .frame(height: chartH)
-                .layoutPriority(0)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        return l10n.t("overview.networkTraffic")
     }
 
     // MARK: - Live traffic (area chart)
+
+    private var hasLiveTrafficSamples: Bool {
+        model.rateDownBps > 1 || model.rateUpBps > 1
+            || model.sparklineDown.contains(where: { $0 > 1 })
+            || model.sparklineUp.contains(where: { $0 > 1 })
+    }
 
     private func liveTrafficCard(_ m: BentoMetrics) -> some View {
         let metaH = 36 * m.typeScale
@@ -255,8 +233,19 @@ struct OverviewTabView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .frame(height: metaH, alignment: .center)
 
-                AreaChartView(down: model.sparklineDown, up: model.sparklineUp)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                ZStack {
+                    AreaChartView(down: model.sparklineDown, up: model.sparklineUp)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .opacity(hasLiveTrafficSamples ? 1 : 0.28)
+                    if !hasLiveTrafficSamples {
+                        Text(l10n.t("overview.liveTrafficEmpty"))
+                            .font(.system(size: 11 * m.typeScale))
+                            .foregroundStyle(EyesOnYouTheme.textSecondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 12)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 // Spacer matching proxy card footer so chart bottoms align.
                 Color.clear
@@ -301,6 +290,17 @@ struct OverviewTabView: View {
 
     // MARK: - Proxy routing
 
+    /// True when path mix comes from observed bytes, a local proxy client, or an app selection.
+    private var hasRouteTrafficSamples: Bool {
+        if model.selectedApp != nil { return true }
+        if model.systemProxy.isEnabled { return true }
+        if model.systemProxyNodeIP != nil { return true }
+        if model.rankingRows.contains(where: { $0.snapshot.totals.totalBytes > 0 }) { return true }
+        // Proxy off → 100% direct is the real fail-open policy, not a placeholder.
+        if !model.proxyEnabled { return true }
+        return model.routeMix.systemProxyPercent > 0 || model.routeMix.customProxyPercent > 0
+    }
+
     private func proxyRoutingCard(_ m: BentoMetrics) -> some View {
         let metaH = 36 * m.typeScale
         let footerH = 18 * m.typeScale
@@ -330,23 +330,63 @@ struct OverviewTabView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .frame(height: metaH, alignment: .center)
 
-                RouteMixAreaChartView(
-                    direct: model.sparklineRouteDirect,
-                    system: model.sparklineRouteSystem,
-                    custom: model.sparklineRouteCustom
-                )
+                ZStack {
+                    RouteMixAreaChartView(
+                        direct: model.sparklineRouteDirect,
+                        system: model.sparklineRouteSystem,
+                        custom: model.sparklineRouteCustom
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .opacity(hasRouteTrafficSamples ? 1 : 0.28)
+                    if !hasRouteTrafficSamples {
+                        Text(l10n.t("overview.proxyRoutingEmpty"))
+                            .font(.system(size: 11 * m.typeScale))
+                            .foregroundStyle(EyesOnYouTheme.textSecondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 12)
+                    }
+                }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 HStack(spacing: 6) {
-                    Text(l10n.t("overview.activeRules"))
-                        .font(.system(size: 11 * m.typeScale))
-                        .foregroundStyle(EyesOnYouTheme.textSecondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-                    Text("\(model.routeMix.activeRules)")
-                        .font(.system(size: 13 * m.typeScale, weight: .bold, design: .rounded))
-                        .foregroundStyle(EyesOnYouTheme.textPrimary)
-                        .monospacedDigit()
+                    if let nodeIP = model.systemProxyNodeIP {
+                        Text(l10n.t("overview.systemProxyEndpoint.ipLabel"))
+                            .font(.system(size: 11 * m.typeScale))
+                            .foregroundStyle(EyesOnYouTheme.textSecondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                        Text(isSystemProxyEndpointRevealed ? nodeIP : String(repeating: "•", count: min(nodeIP.count, 11)))
+                            .font(.system(size: 11 * m.typeScale, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(EyesOnYouTheme.routeSystem)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.55)
+                            .help(isSystemProxyEndpointRevealed ? nodeIP : l10n.t("overview.systemProxyEndpoint.hidden"))
+                        Button {
+                            isSystemProxyEndpointRevealed.toggle()
+                        } label: {
+                            Image(systemName: isSystemProxyEndpointRevealed ? "eye.slash" : "eye")
+                                .font(.system(size: 11 * m.typeScale, weight: .semibold))
+                                .foregroundStyle(EyesOnYouTheme.textSecondary)
+                                .frame(width: 18, height: 18)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .help(
+                            isSystemProxyEndpointRevealed
+                                ? l10n.t("overview.systemProxyEndpoint.hide")
+                                : l10n.t("overview.systemProxyEndpoint.show")
+                        )
+                    } else {
+                        Text(l10n.t("overview.activeRules"))
+                            .font(.system(size: 11 * m.typeScale))
+                            .foregroundStyle(EyesOnYouTheme.textSecondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                        Text("\(model.routeMix.activeRules)")
+                            .font(.system(size: 13 * m.typeScale, weight: .bold, design: .rounded))
+                            .foregroundStyle(EyesOnYouTheme.textPrimary)
+                            .monospacedDigit()
+                    }
                     Spacer(minLength: 0)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -419,7 +459,18 @@ struct OverviewTabView: View {
 
     // MARK: - Fused ranking table
 
+    /// Card shell: measures its own content width so the table can spread columns
+    /// across it instead of hugging the left edge.
     private func rankingTable(_ m: BentoMetrics) -> some View {
+        GeometryReader { geo in
+            rankingTableBody(m, available: geo.size.width)
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .flowCard()
+    }
+
+    private func rankingTableBody(_ m: BentoMetrics, available: CGFloat) -> some View {
         let rows = model.displayedRankingRows
         let colInset: CGFloat = 2
 
@@ -453,12 +504,11 @@ struct OverviewTabView: View {
                 Spacer(minLength: 8)
                 rankingSearchField(m)
                 rankingColumnsButton(m)
-                groupsManageButton(m)
                 archiveToggleButton(m)
             }
 
             // Adaptive header — same metrics as rows for strict column lock.
-            let cols = makeRankingColumns(m, rows: rows)
+            let cols = makeRankingColumns(m, rows: rows, available: max(0, available - colInset * 2))
             rankingHeader(m, cols: cols)
                 .padding(.horizontal, colInset)
 
@@ -492,7 +542,8 @@ struct OverviewTabView: View {
             }
 
             // Only this list scrolls — page chrome stays fixed.
-            ScrollView(.vertical, showsIndicators: true) {
+            ScrollViewReader { scroller in
+                ScrollView(.vertical, showsIndicators: true) {
                 LazyVStack(spacing: 0) {
                     if rows.isEmpty {
                         Text(
@@ -522,37 +573,19 @@ struct OverviewTabView: View {
                     }
                 }
                 .padding(.horizontal, colInset)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Hovering a pie segment brings its row into view, so the highlight
+                // the chart just lit up is actually on screen.
+                .onChange(of: model.pieHoverRowID) { hovered in
+                    guard let hovered, rows.contains(where: { $0.id == hovered }) else { return }
+                    withAnimation(.easeOut(duration: 0.22)) {
+                        scroller.scrollTo(hovered, anchor: .center)
+                    }
+                }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .flowCard()
-        .sheet(isPresented: $isGroupManagerPresented) {
-            GroupManagerSheet()
-                .environmentObject(model)
-                .environmentObject(l10n)
-        }
-    }
-
-    private func groupsManageButton(_ m: BentoMetrics) -> some View {
-        Button {
-            isGroupManagerPresented = true
-        } label: {
-            Image(systemName: "folder.badge.gearshape")
-                .font(.system(size: 13 * m.typeScale, weight: .semibold))
-                .foregroundStyle(EyesOnYouTheme.textSecondary)
-                .frame(width: 28, height: 28)
-                .background {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.white.opacity(0.04))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.8)
-                        )
-                }
-        }
-        .buttonStyle(.plain)
-        .help(l10n.t("groups.manage.help"))
     }
 
     private func rankingColumnsButton(_ m: BentoMetrics) -> some View {
@@ -614,12 +647,8 @@ struct OverviewTabView: View {
 
     private func isColumnAvailable(_ column: AppModel.RankingColumnID, m: BentoMetrics) -> Bool {
         switch column {
-        case .diskRead, .diskWrite:
-            return m.showDiskColumns
-        case .route, .status:
-            return m.showRouteStatusColumns
-        case .group, .proxy:
-            return m.showGroupProxyColumns
+        case .egress, .online:
+            return m.showTagColumns
         case .down, .up, .trend, .lastSeen, .requests:
             return true
         }
@@ -754,48 +783,55 @@ struct OverviewTabView: View {
 
     private func rankingHeader(_ m: BentoMetrics, cols: RankingColumnMetrics) -> some View {
         HStack(spacing: cols.gap) {
-            Text("#").frame(width: cols.index, alignment: .leading)
-            Text(l10n.t("overview.colApp"))
-                .frame(width: cols.app, alignment: .leading)
+            // `#` is the default order — clicking it drops any column sort.
+            Text("#")
+                .frame(width: cols.index, alignment: .leading)
+                .foregroundStyle(
+                    model.rankingSortKey == nil
+                        ? EyesOnYouTheme.textSecondary
+                        : EyesOnYouTheme.accentBlue
+                )
+                .contentShape(Rectangle())
+                .onHover { inside in
+                    if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+                }
+                .onTapGesture { model.clearRankingSort() }
+                .help(l10n.t("ranking.sort.reset.help"))
+            headerCell(
+                l10n.t("overview.colApp"),
+                width: cols.app,
+                align: .leading,
+                column: nil,
+                sort: .name,
+                m: m
+            )
             if cols.down > 0 {
-                headerCell(l10n.t("overview.colDown"), width: cols.down, align: .trailing, column: .down, m: m)
+                headerCell(l10n.t("overview.colDown"), width: cols.down, align: .trailing, column: .down, sort: .down, m: m)
             }
             if cols.up > 0 {
-                headerCell(l10n.t("overview.colUp"), width: cols.up, align: .trailing, column: .up, m: m)
-            }
-            if cols.diskRead > 0 {
-                headerCell(l10n.t("overview.colDiskRead"), width: cols.diskRead, align: .trailing, column: .diskRead, m: m)
-            }
-            if cols.diskWrite > 0 {
-                headerCell(l10n.t("overview.colDiskWrite"), width: cols.diskWrite, align: .trailing, column: .diskWrite, m: m)
+                headerCell(l10n.t("overview.colUp"), width: cols.up, align: .trailing, column: .up, sort: .up, m: m)
             }
             if cols.trend > 0 {
-                headerCell(l10n.t("overview.colTrend"), width: cols.trend, align: .leading, column: .trend, m: m)
+                headerCell(l10n.t("overview.colTrend"), width: cols.trend, align: .leading, column: .trend, sort: .trend, m: m)
             }
             if cols.lastSeen > 0 {
-                headerCell(l10n.t("overview.colLastSeen"), width: cols.lastSeen, align: .trailing, column: .lastSeen, m: m)
+                headerCell(l10n.t("overview.colLastSeen"), width: cols.lastSeen, align: .trailing, column: .lastSeen, sort: .lastSeen, m: m)
             }
             if cols.requests > 0 {
-                headerCell(l10n.t("overview.colRequests"), width: cols.requests, align: .trailing, column: .requests, m: m)
+                headerCell(l10n.t("overview.colRequests"), width: cols.requests, align: .trailing, column: .requests, sort: .requests, m: m)
             }
 
-            // Draggable divider between metrics and tag columns (route / status / group).
+            // Draggable divider between metrics and tag columns (egress / online).
             if cols.handle > 0 {
                 rankingSpacingDragHandle(m)
                     .frame(width: cols.handle)
             }
 
-            if cols.route > 0 {
-                headerCell(l10n.t("overview.colRoute"), width: cols.route, align: .leading, column: .route, m: m)
+            if cols.egress > 0 {
+                headerCell(l10n.t("overview.colEgress"), width: cols.egress, align: .leading, column: .egress, sort: .egress, m: m)
             }
-            if cols.status > 0 {
-                headerCell(l10n.t("overview.colStatus"), width: cols.status, align: .leading, column: .status, m: m)
-            }
-            if cols.group > 0 {
-                headerCell(l10n.t("overview.colGroup"), width: cols.group, align: .leading, column: .group, m: m)
-            }
-            if cols.proxy > 0 {
-                headerCell(l10n.t("overview.colProxy"), width: cols.proxy, align: .center, column: .proxy, m: m)
+            if cols.online > 0 {
+                headerCell(l10n.t("overview.colOnline"), width: cols.online, align: .leading, column: .online, sort: .online, m: m)
             }
             Spacer(minLength: 0)
         }
@@ -806,29 +842,58 @@ struct OverviewTabView: View {
         }
     }
 
+    /// Header label. Clicking re-sorts by that column: natural direction, then
+    /// reversed, then back to the default ranking order.
     private func headerCell(
         _ title: String,
         width: CGFloat,
         align: Alignment,
-        column: AppModel.RankingColumnID,
+        column: AppModel.RankingColumnID?,
+        sort: AppModel.RankingSortKey,
         m: BentoMetrics
     ) -> some View {
-        Text(title)
-            .lineLimit(1)
-            .minimumScaleFactor(0.55)
-            .allowsTightening(true)
-            .frame(width: width, alignment: align)
-            .contentShape(Rectangle())
-            .contextMenu {
+        let direction = model.rankingSortDirection(for: sort)
+        let active = direction != nil
+        return HStack(spacing: 2) {
+            if align == .trailing { Spacer(minLength: 0) }
+            Text(title)
+                .lineLimit(1)
+                .minimumScaleFactor(0.55)
+                .allowsTightening(true)
+            Image(systemName: direction == true ? "chevron.up" : "chevron.down")
+                .font(.system(size: max(6, m.rankingHeaderFont - 3), weight: .bold))
+                .opacity(active ? 1 : 0)
+            if align != .trailing { Spacer(minLength: 0) }
+        }
+        .foregroundStyle(active ? EyesOnYouTheme.accentBlue : EyesOnYouTheme.textSecondary)
+        .frame(width: width, alignment: align)
+        .contentShape(Rectangle())
+        .onHover { inside in
+            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
+        .onTapGesture {
+            model.cycleRankingSort(sort)
+        }
+        .contextMenu {
+            if let column {
                 Button {
                     model.setRankingColumnHidden(column, hidden: true)
                 } label: {
                     Label(l10n.t("ranking.hideColumn"), systemImage: "eye.slash")
                 }
                 Divider()
-                rankingColumnsMenu(m)
             }
-            .help(l10n.t("ranking.hideColumn.help"))
+            if model.rankingSortKey != nil {
+                Button {
+                    model.clearRankingSort()
+                } label: {
+                    Label(l10n.t("ranking.sort.reset"), systemImage: "arrow.up.arrow.down")
+                }
+                Divider()
+            }
+            rankingColumnsMenu(m)
+        }
+        .help(l10n.t("ranking.sort.help"))
     }
 
     /// Single-line numeric / label cell sized to the shared column width.
@@ -849,48 +914,59 @@ struct OverviewTabView: View {
             .frame(width: width, alignment: align)
     }
 
+    /// Measured egress, rendered as text: `Direct`, `Proxy`, `Proxy 62%`, or an em
+    /// dash when the app moved no bytes in range. Never a rule — always what happened.
+    static func egressLabel(_ egress: AppModel.ObservedEgress, l10n: LocalizationStore) -> String {
+        switch egress {
+        case .noTraffic:
+            return "—"
+        case .direct:
+            return l10n.t("overview.routeDirect")
+        case .proxy:
+            return l10n.t("overview.egressProxy")
+        case .mixed(let share):
+            return "\(l10n.t("overview.egressProxy")) \(Int((share * 100).rounded()))%"
+        }
+    }
+
+    /// Widest egress label the column has to fit, so the width never jitters per tick.
+    static func egressWidthSamples(_ l10n: LocalizationStore) -> [String] {
+        [
+            l10n.t("overview.routeDirect"),
+            "\(l10n.t("overview.egressProxy")) 100%"
+        ]
+    }
+
     /// Content-hugging column widths from visible rows; app/service names are capped.
     private func makeRankingColumns(
         _ m: BentoMetrics,
-        rows: [AppModel.AppRankingRow]
+        rows: [AppModel.AppRankingRow],
+        available: CGFloat
     ) -> RankingColumnMetrics {
         RankingColumnMetrics(
             m: m,
             spacing: model.rankingColumnSpacing,
+            available: available,
             rows: rows,
             showDown: model.isRankingColumnVisible(.down),
             showUp: model.isRankingColumnVisible(.up),
-            showDisk: m.showDiskColumns && (
-                model.isRankingColumnVisible(.diskRead) || model.isRankingColumnVisible(.diskWrite)
-            ),
-            showDiskRead: model.isRankingColumnVisible(.diskRead),
-            showDiskWrite: model.isRankingColumnVisible(.diskWrite),
             showTrend: model.isRankingColumnVisible(.trend),
             showLastSeen: model.isRankingColumnVisible(.lastSeen),
             showRequests: model.isRankingColumnVisible(.requests),
-            showRoute: m.showRouteStatusColumns && model.isRankingColumnVisible(.route),
-            showStatus: m.showRouteStatusColumns && model.isRankingColumnVisible(.status),
-            showGroup: m.showGroupProxyColumns && model.isRankingColumnVisible(.group),
-            showProxy: m.showGroupProxyColumns && model.isRankingColumnVisible(.proxy),
+            showEgress: m.showTagColumns && model.isRankingColumnVisible(.egress),
+            showOnline: m.showTagColumns && model.isRankingColumnVisible(.online),
             headerFont: m.rankingHeaderFont,
             bodyFont: m.rankingRowFont,
             appHeader: l10n.t("overview.colApp"),
             downHeader: l10n.t("overview.colDown"),
             upHeader: l10n.t("overview.colUp"),
-            diskReadHeader: l10n.t("overview.colDiskRead"),
-            diskWriteHeader: l10n.t("overview.colDiskWrite"),
             trendHeader: l10n.t("overview.colTrend"),
             lastSeenHeader: l10n.t("overview.colLastSeen"),
             requestsHeader: l10n.t("overview.colRequests"),
-            routeHeader: l10n.t("overview.colRoute"),
-            statusHeader: l10n.t("overview.colStatus"),
-            groupHeader: l10n.t("overview.colGroup"),
-            proxyHeader: l10n.t("overview.colProxy"),
-            ungroupedLabel: l10n.t("overview.ungrouped"),
-            allowedLabel: l10n.t("overview.allowed"),
-            blockedLabel: l10n.t("overview.blocked"),
-            groupName: { app in model.group(containing: app)?.name },
-            routeLabel: { label in l10n.routeChip(label) },
+            egressHeader: l10n.t("overview.colEgress"),
+            onlineHeader: l10n.t("overview.colOnline"),
+            egressSamples: Self.egressWidthSamples(l10n),
+            onlineSamples: [l10n.t("overview.onlineActive"), l10n.t("overview.onlineIdle")],
             lastSeenLabel: { date in l10n.relativeTrafficTime(date) }
         )
     }
@@ -912,7 +988,6 @@ struct OverviewTabView: View {
         drilled: Bool
     ) -> some View {
         let app = row.snapshot
-        let statusBlocked = model.isBlocked(app.app) || app.firewallStatus == .block
         let hoverID = drilled ? "\(app.app.storageKey)|\(app.displayName)" : row.id
         let isSelected = !drilled && model.selectedApp == app.app
         let highlighted = isSelected
@@ -954,11 +1029,6 @@ struct OverviewTabView: View {
                                 .font(.system(size: 8 * m.typeScale))
                                 .foregroundStyle(EyesOnYouTheme.gold)
                         }
-                        if !drilled, statusBlocked {
-                            Image(systemName: "hand.raised.fill")
-                                .font(.system(size: 8 * m.typeScale))
-                                .foregroundStyle(EyesOnYouTheme.accentRed)
-                        }
                     }
                     if !drilled && !app.sites.isEmpty {
                         Text(childCountLabel(app))
@@ -987,29 +1057,14 @@ struct OverviewTabView: View {
             if cols.up > 0 {
                 adaptiveCell(ByteFormat.string(for: app.totals.bytesUp), width: cols.up)
             }
-            if cols.diskRead > 0 {
-                adaptiveCell(
-                    ByteFormat.string(for: row.diskRead),
-                    width: cols.diskRead,
-                    color: EyesOnYouTheme.diskRead
-                )
-            }
-            if cols.diskWrite > 0 {
-                adaptiveCell(
-                    ByteFormat.string(for: row.diskWrite),
-                    width: cols.diskWrite,
-                    color: EyesOnYouTheme.diskWrite
-                )
-            }
-
             if cols.trend > 0 {
                 RankingMiniAreaChart(
                     values: row.rateSeries,
+                    scaleMax: cols.trafficTrendScaleMax,
                     tint: rankingTrendTint(for: row)
                 )
                 .frame(width: cols.trend, height: max(16, 20 * m.typeScale))
             }
-
             if cols.lastSeen > 0 {
                 adaptiveCell(
                     l10n.relativeTrafficTime(row.lastTrafficAt),
@@ -1030,25 +1085,11 @@ struct OverviewTabView: View {
                     .frame(width: cols.handle, height: 1)
             }
 
-            if cols.route > 0 {
-                rankingRoutePicker(m, app: app.app, route: app.route, width: cols.route, fontSize: badgeFont)
+            if cols.egress > 0 {
+                egressCell(row: row, width: cols.egress, fontSize: badgeFont)
             }
-            if cols.status > 0 {
-                rankingStatusPicker(m, app: app.app, blocked: statusBlocked, width: cols.status)
-            }
-
-            if cols.group > 0 {
-                rankingGroupPicker(m, app: app.app, width: cols.group)
-            }
-            if cols.proxy > 0 {
-                Toggle("", isOn: Binding(
-                    get: { ProxyToggleLogic.isProxyEnabled(app.route) },
-                    set: { _ in model.toggleAppProxy(app) }
-                ))
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-                .labelsHidden()
-                .frame(width: cols.proxy, alignment: .center)
+            if cols.online > 0 {
+                onlineCell(row: row, width: cols.online, fontSize: badgeFont)
             }
 
             Spacer(minLength: 0)
@@ -1073,17 +1114,17 @@ struct OverviewTabView: View {
         .contentShape(Rectangle())
         .onHover { inside in
             if inside {
+                // Highlight the matching pie segment now; only swap the pie into this
+                // app's destinations once the pointer actually rests here.
                 model.setHoverNode(row.id)
                 if !drilled {
-                    model.setRankingHoverFilter(row.id)
+                    model.scheduleRankingHoverFilter(row.id)
                 }
             } else {
                 if model.hoverNodeID == row.id {
                     model.setHoverNode(nil)
                 }
-                if model.rankingHoverFilterID == row.id {
-                    model.setRankingHoverFilter(nil)
-                }
+                model.clearRankingHoverFilter(ifMatching: row.id)
             }
         }
         .contextMenu {
@@ -1105,7 +1146,6 @@ struct OverviewTabView: View {
     ) -> some View {
         let isFiltered = model.selectedApp == app
         let isFavorite = model.isFavorite(app)
-        let isBlocked = model.isBlocked(app)
         let isArchived = model.isArchived(app)
 
         Button {
@@ -1140,16 +1180,6 @@ struct OverviewTabView: View {
         .help(l10n.t(isFavorite ? "favorite.unpin.help" : "favorite.pin.help"))
 
         Button {
-            model.toggleBlock(app)
-        } label: {
-            Label(
-                isBlocked ? l10n.t("ranking.unblock") : l10n.t("ranking.block"),
-                systemImage: isBlocked ? "hand.raised.slash" : "hand.raised"
-            )
-        }
-        .help(l10n.t(isBlocked ? "ranking.unblock.help" : "ranking.block.help"))
-
-        Button {
             model.toggleArchive(app)
         } label: {
             Label(
@@ -1158,22 +1188,6 @@ struct OverviewTabView: View {
             )
         }
         .help(l10n.t(isArchived ? "ranking.unarchive.help" : "ranking.archive.actionHelp"))
-
-        Divider()
-
-        Menu {
-            groupAssignmentMenu(for: app)
-        } label: {
-            Label(l10n.t("groups.assign"), systemImage: "folder")
-        }
-        .help(l10n.t("groups.assign.help"))
-
-        Button {
-            isGroupManagerPresented = true
-        } label: {
-            Label(l10n.t("groups.manage"), systemImage: "folder.badge.gearshape")
-        }
-        .help(l10n.t("groups.manage.help"))
 
         Divider()
 
@@ -1192,213 +1206,74 @@ struct OverviewTabView: View {
         .help(l10n.t("ranking.delete.help"))
     }
 
-    @ViewBuilder
-    private func groupAssignmentMenu(for app: AppIdentityKey) -> some View {
-        let current = model.group(containing: app)
-        Button {
-            model.setAppGroup(app, groupID: nil)
-        } label: {
-            HStack {
-                Text(l10n.t("overview.ungrouped"))
-                if current == nil {
-                    Image(systemName: "checkmark")
-                }
-            }
-        }
-        if !model.groups.isEmpty {
-            Divider()
-            ForEach(model.groups) { group in
-                Button {
-                    model.setAppGroup(app, groupID: group.id)
-                } label: {
-                    HStack {
-                        Text(group.name)
-                        if current?.id == group.id {
-                            Image(systemName: "checkmark")
-                        }
-                    }
-                }
-            }
-        }
-        Divider()
-        Button {
-            isGroupManagerPresented = true
-        } label: {
-            Label(l10n.t("groups.createNew"), systemImage: "plus")
-        }
-    }
-
-    private func rankingRoutePicker(
-        _ m: BentoMetrics,
-        app: AppIdentityKey,
-        route: RouteAction,
+    /// Measured egress. Read-only on purpose: the table states what traffic did,
+    /// it does not offer to change it.
+    private func egressCell(
+        row: AppModel.AppRankingRow,
         width: CGFloat,
         fontSize: CGFloat
     ) -> some View {
-        Menu {
-            routeAssignmentMenu(for: app, current: route)
-        } label: {
-            HStack(spacing: 3) {
-                RouteBadge(
-                    label: route.chipLabel,
-                    fontSize: fontSize,
-                    horizontalPadding: 6,
-                    verticalPadding: 2,
-                    minScale: 0.5
-                )
-                .layoutPriority(0)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(EyesOnYouTheme.textSecondary)
-                    .layoutPriority(1)
-            }
-            .padding(.horizontal, 2)
-            .padding(.vertical, 1)
+        let egress = row.observedEgress
+        let tint: Color
+        switch egress {
+        case .noTraffic: tint = EyesOnYouTheme.textSecondary
+        case .direct: tint = EyesOnYouTheme.routeDirect
+        case .proxy, .mixed: tint = EyesOnYouTheme.routeProxy
+        }
+        return Text(Self.egressLabel(egress, l10n: l10n))
+            .font(.system(size: fontSize, weight: .medium))
+            .foregroundStyle(tint)
+            .lineLimit(1)
+            .minimumScaleFactor(0.5)
+            .truncationMode(.tail)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
             .background {
                 RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(EyesOnYouTheme.routeColor(route.chipLabel).opacity(0.08))
+                    .fill(tint.opacity(egress == .noTraffic ? 0 : 0.10))
             }
-            .frame(maxWidth: width, alignment: .leading)
-            .contentShape(Rectangle())
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .frame(width: width, alignment: .leading)
-        .help(l10n.t("ranking.route.help"))
+            .frame(width: width, alignment: .leading)
+            .help(l10n.t("ranking.egress.help"))
     }
 
-    @ViewBuilder
-    private func routeAssignmentMenu(for app: AppIdentityKey, current: RouteAction) -> some View {
-        Button {
-            model.assignRoute(app: app, route: .direct)
-        } label: {
-            routeMenuLabel(l10n.t("overview.routeDirect"), selected: {
-                if case .direct = current { return true }
-                return false
-            }())
-        }
-        Button {
-            model.assignRoute(app: app, route: .systemProxy)
-        } label: {
-            routeMenuLabel(l10n.t("overview.routeSystemProxy"), selected: {
-                if case .systemProxy = current { return true }
-                return false
-            }())
-        }
-        Button {
-            let profileID = model.proxyProfiles.first?.id ?? UUID()
-            model.assignRoute(app: app, route: .proxy(profileID: profileID))
-        } label: {
-            routeMenuLabel(l10n.t("overview.routeCustomProxy"), selected: {
-                if case .proxy = current { return true }
-                return false
-            }())
-        }
-        Button {
-            model.assignRoute(app: app, route: .inherit)
-        } label: {
-            routeMenuLabel(l10n.t("route.inherit"), selected: {
-                if case .inherit = current { return true }
-                return false
-            }())
-        }
-    }
-
-    private func routeMenuLabel(_ title: String, selected: Bool) -> some View {
-        HStack {
-            Text(title)
-            if selected {
-                Image(systemName: "checkmark")
-            }
-        }
-    }
-
-    private func rankingStatusPicker(
-        _ m: BentoMetrics,
-        app: AppIdentityKey,
-        blocked: Bool,
-        width: CGFloat
+    /// Live connection state — whether the app is holding sockets right now.
+    private func onlineCell(
+        row: AppModel.AppRankingRow,
+        width: CGFloat,
+        fontSize: CGFloat
     ) -> some View {
-        Menu {
-            Button {
-                model.setBlocked(app, blocked: false)
-            } label: {
-                HStack {
-                    Text(l10n.t("overview.allowed"))
-                    if !blocked { Image(systemName: "checkmark") }
-                }
-            }
-            Button {
-                model.setBlocked(app, blocked: true)
-            } label: {
-                HStack {
-                    Text(l10n.t("overview.blocked"))
-                    if blocked { Image(systemName: "checkmark") }
-                }
-            }
-        } label: {
-            HStack(spacing: 4) {
+        let state = row.onlineState
+        let tint: Color
+        let title: String
+        switch state {
+        case .active:
+            tint = EyesOnYouTheme.accentGreen
+            title = l10n.t("overview.onlineActive")
+        case .idle:
+            tint = EyesOnYouTheme.textSecondary
+            title = l10n.t("overview.onlineIdle")
+        case .noTraffic:
+            tint = EyesOnYouTheme.textSecondary
+            title = "—"
+        }
+        return HStack(spacing: 4) {
+            if state != .noTraffic {
                 Circle()
-                    .fill(blocked ? EyesOnYouTheme.accentRed : EyesOnYouTheme.accentGreen)
+                    .fill(tint)
                     .frame(width: 6, height: 6)
                     .layoutPriority(1)
-                Text(blocked ? l10n.t("overview.blocked") : l10n.t("overview.allowed"))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .layoutPriority(0)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(EyesOnYouTheme.textSecondary)
-                    .layoutPriority(1)
             }
-            .padding(.horizontal, 4)
-            .padding(.vertical, 2)
-            .background {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill((blocked ? EyesOnYouTheme.accentRed : EyesOnYouTheme.accentGreen).opacity(0.10))
-            }
-            .frame(maxWidth: width, alignment: .leading)
-            .contentShape(Rectangle())
-            .foregroundStyle(blocked ? EyesOnYouTheme.accentRed : EyesOnYouTheme.accentGreen)
+            Text(title)
+                .font(.system(size: fontSize, weight: .medium))
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
+                .truncationMode(.tail)
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
+        .foregroundStyle(tint)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 2)
         .frame(width: width, alignment: .leading)
-        .help(l10n.t("ranking.status.help"))
-    }
-
-    private func rankingGroupPicker(_ m: BentoMetrics, app: AppIdentityKey, width: CGFloat) -> some View {
-        let current = model.group(containing: app)
-        return Menu {
-            groupAssignmentMenu(for: app)
-        } label: {
-            HStack(spacing: 3) {
-                Text(current?.name ?? l10n.t("overview.ungrouped"))
-                    .font(.system(size: m.rankingRowFont))
-                    .foregroundStyle(
-                        current == nil ? EyesOnYouTheme.textSecondary : EyesOnYouTheme.textPrimary
-                    )
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .layoutPriority(0)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(EyesOnYouTheme.textSecondary)
-                    .layoutPriority(1)
-            }
-            .padding(.horizontal, 4)
-            .padding(.vertical, 2)
-            .background {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.primary.opacity(current == nil ? 0.03 : 0.06))
-            }
-            .frame(maxWidth: width, alignment: .leading)
-            .contentShape(Rectangle())
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .frame(width: width, alignment: .leading)
-        .help(l10n.t("groups.assign.help"))
+        .help(l10n.t("ranking.online.help"))
     }
 
     private func isRowHighlighted(_ rowID: String) -> Bool {
@@ -1408,15 +1283,16 @@ struct OverviewTabView: View {
         return false
     }
 
+    /// Tint the sparkline by the path the bytes actually took, so it agrees with the
+    /// egress column instead of with a rule nobody set.
     private func rankingTrendTint(for row: AppModel.AppRankingRow) -> Color {
-        if model.isBlocked(row.snapshot.app) || row.snapshot.firewallStatus == .block {
-            return EyesOnYouTheme.accentRed
-        }
-        switch row.snapshot.route {
-        case .proxy, .systemProxy:
+        switch row.observedEgress {
+        case .proxy, .mixed:
             return EyesOnYouTheme.routeProxy
-        case .direct, .inherit:
+        case .direct:
             return EyesOnYouTheme.routeDirect
+        case .noTraffic:
+            return EyesOnYouTheme.textSecondary
         }
     }
 
@@ -1463,87 +1339,76 @@ private struct RankingColumnMetrics {
     let appNameMax: CGFloat
     let down: CGFloat
     let up: CGFloat
-    let diskRead: CGFloat
-    let diskWrite: CGFloat
     let trend: CGFloat
     let lastSeen: CGFloat
     let requests: CGFloat
     let handle: CGFloat
-    let route: CGFloat
-    let status: CGFloat
-    let group: CGFloat
-    let proxy: CGFloat
+    let egress: CGFloat
+    let online: CGFloat
+    /// Shared Y-max so cumulative sparklines compare across apps.
+    let trafficTrendScaleMax: Double
 
     init(
         m: BentoMetrics,
         spacing: Double,
+        available: CGFloat,
         rows: [AppModel.AppRankingRow],
         showDown: Bool,
         showUp: Bool,
-        showDisk: Bool,
-        showDiskRead: Bool,
-        showDiskWrite: Bool,
         showTrend: Bool,
         showLastSeen: Bool,
         showRequests: Bool,
-        showRoute: Bool,
-        showStatus: Bool,
-        showGroup: Bool,
-        showProxy: Bool,
+        showEgress: Bool,
+        showOnline: Bool,
         headerFont: CGFloat,
         bodyFont: CGFloat,
         appHeader: String,
         downHeader: String,
         upHeader: String,
-        diskReadHeader: String,
-        diskWriteHeader: String,
         trendHeader: String,
         lastSeenHeader: String,
         requestsHeader: String,
-        routeHeader: String,
-        statusHeader: String,
-        groupHeader: String,
-        proxyHeader: String,
-        ungroupedLabel: String,
-        allowedLabel: String,
-        blockedLabel: String,
-        groupName: (AppIdentityKey) -> String?,
-        routeLabel: (String) -> String,
+        egressHeader: String,
+        onlineHeader: String,
+        egressSamples: [String],
+        onlineSamples: [String],
         lastSeenLabel: (Date?) -> String
     ) {
         let s = m.typeScale
-        gap = CGFloat(spacing)
-        let showTags = showRoute || showStatus || showGroup || showProxy
-        handle = showTags ? max(8, gap) : 0
-        // Sparkline keeps a compact fixed visual width.
-        trend = showTrend ? max(40, ceil(48 * s)) : 0
-        // Mini switch + header.
-        proxy = showProxy
+        var gapW = CGFloat(spacing)
+        let showTags = showEgress || showOnline
+        let handleW: CGFloat = showTags ? max(8, gapW) : 0
+        // Sparkline keeps a compact minimum visual width (at least header label).
+        var trendW = showTrend
             ? max(
-                RankingTextMeasure.width(proxyHeader, size: headerFont, weight: .medium),
-                ceil(34 * s)
+                40,
+                ceil(48 * s),
+                RankingTextMeasure.width(trendHeader, size: headerFont, weight: .medium)
+                    + Self.sortIndicator
             )
             : 0
+        trafficTrendScaleMax = max(rows.compactMap { $0.rateSeries.max() }.max() ?? 0, 1)
 
-        index = max(
+        let indexW = max(
             RankingTextMeasure.width("#", size: headerFont, weight: .medium),
             RankingTextMeasure.width("99", size: bodyFont),
             16
         )
 
-        // App / service display names: hug content up to a hard cap.
-        appNameMax = ceil(160 * s)
+        // App / service display names: hug content up to a cap that grows with slack.
+        var appNameCap = ceil(160 * s)
         let favSlot = ceil(14 * s)
         let icon = ceil(16 * s)
         let appChrome = favSlot + 5 + icon + 5
         let longestName = rows.map(\.snapshot.displayName).max(by: {
             RankingTextMeasure.width($0, size: bodyFont) < RankingTextMeasure.width($1, size: bodyFont)
         }) ?? ""
-        let nameW = min(appNameMax, RankingTextMeasure.width(longestName, size: bodyFont))
+        let nameW = min(appNameCap, RankingTextMeasure.width(longestName, size: bodyFont))
         let headerAppW = RankingTextMeasure.width(appHeader, size: headerFont, weight: .medium)
-        app = max(appChrome + nameW, headerAppW, 72)
+            + Self.sortIndicator
+        var appW = max(appChrome + nameW, headerAppW, 72)
 
-        down = showDown
+        let downW = showDown
             ? Self.hug(
                 header: downHeader,
                 samples: rows.map { ByteFormat.string(for: $0.snapshot.totals.bytesDown) },
@@ -1551,7 +1416,7 @@ private struct RankingColumnMetrics {
                 bodyFont: bodyFont
             )
             : 0
-        up = showUp
+        let upW = showUp
             ? Self.hug(
                 header: upHeader,
                 samples: rows.map { ByteFormat.string(for: $0.snapshot.totals.bytesUp) },
@@ -1559,28 +1424,8 @@ private struct RankingColumnMetrics {
                 bodyFont: bodyFont
             )
             : 0
-        if showDisk, showDiskRead {
-            diskRead = Self.hug(
-                header: diskReadHeader,
-                samples: rows.map { ByteFormat.string(for: $0.diskRead) },
-                headerFont: headerFont,
-                bodyFont: bodyFont
-            )
-        } else {
-            diskRead = 0
-        }
-        if showDisk, showDiskWrite {
-            diskWrite = Self.hug(
-                header: diskWriteHeader,
-                samples: rows.map { ByteFormat.string(for: $0.diskWrite) },
-                headerFont: headerFont,
-                bodyFont: bodyFont
-            )
-        } else {
-            diskWrite = 0
-        }
 
-        lastSeen = showLastSeen
+        let lastSeenW = showLastSeen
             ? Self.hug(
                 header: lastSeenHeader,
                 samples: rows.map { lastSeenLabel($0.lastTrafficAt) },
@@ -1588,7 +1433,7 @@ private struct RankingColumnMetrics {
                 bodyFont: bodyFont
             )
             : 0
-        requests = showRequests
+        let requestsW = showRequests
             ? Self.hug(
                 header: requestsHeader,
                 samples: rows.map { "\($0.snapshot.totals.flowsOpened)" },
@@ -1597,43 +1442,75 @@ private struct RankingColumnMetrics {
             )
             : 0
 
-        if showRoute {
-            route = Self.hug(
-                header: routeHeader,
-                samples: rows.map { routeLabel($0.snapshot.route.chipLabel) },
+        // Widths come from the widest possible label, not the current rows, so the
+        // column does not resize every tick as apps switch path or go idle.
+        let egressW = showEgress
+            ? Self.hug(
+                header: egressHeader,
+                samples: egressSamples,
                 headerFont: headerFont,
                 bodyFont: bodyFont,
-                extra: 22 // capsule padding + chevron
+                extra: 12 // capsule padding
             )
-        } else {
-            route = 0
-        }
-        if showStatus {
-            status = Self.hug(
-                header: statusHeader,
-                samples: [allowedLabel, blockedLabel],
+            : 0
+        let onlineW = showOnline
+            ? Self.hug(
+                header: onlineHeader,
+                samples: onlineSamples,
                 headerFont: headerFont,
                 bodyFont: bodyFont,
-                extra: 22 // status dot + chevron
+                extra: 18 // status dot + padding
             )
-        } else {
-            status = 0
+            : 0
+
+        // Spread whatever the card has left over instead of parking it all on the
+        // right edge: longer names first, then a wider sparkline, then even gaps.
+        let widths = [indexW, appW, downW, upW, trendW, lastSeenW, requestsW, handleW, egressW, onlineW]
+        let occupied = widths.filter { $0 > 0 }
+        // One gap per column: the inter-column gaps plus the row's trailing spacer.
+        let gapUnits = CGFloat(occupied.count)
+        let natural = occupied.reduce(0, +) + gapW * gapUnits
+        var slack = max(0, available - natural - 2)
+        if slack > 1 {
+            let nameGrowth = min(slack * 0.42, 150)
+            appW += nameGrowth
+            appNameCap += nameGrowth
+            slack -= nameGrowth
+
+            if trendW > 0 {
+                let trendGrowth = min(slack * 0.5, 140)
+                trendW += trendGrowth
+                slack -= trendGrowth
+            }
+
+            if gapUnits > 0 {
+                // Cap per-gap growth so columns stay grouped rather than scattered.
+                let perGap = min(slack / gapUnits, 22)
+                gapW += perGap
+                slack -= perGap * gapUnits
+            }
+
+            // Anything still unclaimed goes to the name column, which can always use it.
+            appW += slack
+            appNameCap += slack
         }
 
-        if showGroup {
-            var groupSamples = rows.map { groupName($0.snapshot.app) ?? ungroupedLabel }
-            groupSamples.append(ungroupedLabel)
-            group = Self.hug(
-                header: groupHeader,
-                samples: groupSamples,
-                headerFont: headerFont,
-                bodyFont: bodyFont,
-                extra: 14 // chevron + tight gap
-            )
-        } else {
-            group = 0
-        }
+        gap = gapW
+        index = indexW
+        app = appW
+        appNameMax = appNameCap
+        down = downW
+        up = upW
+        trend = trendW
+        lastSeen = lastSeenW
+        requests = requestsW
+        handle = handleW
+        egress = egressW
+        online = onlineW
     }
+
+    /// Room reserved next to every sortable header label for its direction chevron.
+    private static let sortIndicator: CGFloat = 11
 
     private static func hug(
         header: String,
@@ -1642,7 +1519,7 @@ private struct RankingColumnMetrics {
         bodyFont: CGFloat,
         extra: CGFloat = 0
     ) -> CGFloat {
-        let hw = RankingTextMeasure.width(header, size: headerFont, weight: .medium)
+        let hw = RankingTextMeasure.width(header, size: headerFont, weight: .medium) + sortIndicator
         let sw = samples.map { RankingTextMeasure.width($0, size: bodyFont) }.max() ?? 0
         return ceil(max(hw, sw) + extra + 2)
     }
@@ -1659,6 +1536,7 @@ private enum RankingTextMeasure {
 /// Compact single-series area chart for ranking rows.
 private struct RankingMiniAreaChart: View {
     let values: [Double]
+    var scaleMax: Double = 1
     var tint: Color = EyesOnYouTheme.chartDown
 
     var body: some View {
@@ -1667,7 +1545,7 @@ private struct RankingMiniAreaChart: View {
             if let only = values.first { return [only, only] }
             return [0, 0]
         }()
-        MiniAreaChartView(values: series, tint: tint)
+        MiniAreaChartView(values: series, scaleMax: scaleMax, tint: tint)
             .opacity((series.max() ?? 0) > 0 ? 1 : 0.28)
             .accessibilityHidden(true)
     }
@@ -1678,6 +1556,8 @@ private struct RankingMiniAreaChart: View {
 /// Single-series mini area chart for totals card trend rows.
 struct MiniAreaChartView: View {
     let values: [Double]
+    /// When > 0, use a shared Y scale (ranking rows); otherwise auto-scale to series max.
+    var scaleMax: Double = 0
     var tint: Color = EyesOnYouTheme.chartDown
     @Environment(\.colorScheme) private var colorScheme
 
@@ -1685,7 +1565,8 @@ struct MiniAreaChartView: View {
         GeometryReader { geo in
             let w = max(geo.size.width, 1)
             let h = max(geo.size.height, 1)
-            let maxV = max(values.max() ?? 1, 1)
+            let localMax = values.max() ?? 1
+            let maxV = max(scaleMax > 0 ? scaleMax : localMax, 1)
             let top = tint.opacity(colorScheme == .light ? 0.30 : 0.42)
             let bot = tint.opacity(0.04)
 

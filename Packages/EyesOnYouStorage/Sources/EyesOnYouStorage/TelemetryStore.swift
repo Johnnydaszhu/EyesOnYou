@@ -98,7 +98,10 @@ public final class TelemetryStore: @unchecked Sendable {
 
     public func upsertApp(_ app: AppIdentityKey, displayName: String?, at: Date = Date()) throws -> Int64 {
         lock.lock(); defer { lock.unlock() }
-        if let cached = appIDCache[app] { return cached }
+        // Only short-circuit when there is no name to record: the row may have been
+        // created by a counter write that had no name yet, and skipping the UPDATE
+        // would leave the catalog showing bundle identifiers forever.
+        if let cached = appIDCache[app], displayName == nil { return cached }
 
         let ms = Int64(at.timeIntervalSince1970 * 1000)
         let team = app.teamIdentifier ?? ""
@@ -152,7 +155,176 @@ public final class TelemetryStore: @unchecked Sendable {
         }
     }
 
+    /// Delete buckets older than `cutoff` at one granularity.
+    ///
+    /// Retention differs per granularity: minute rows are only useful for recent
+    /// charts, day rows are the long-term record.
+    @discardableResult
+    public func prune(granularity: BucketGranularity, olderThan cutoff: Date) throws -> Int {
+        lock.lock(); defer { lock.unlock() }
+        let cutoffMs = Int64(cutoff.timeIntervalSince1970 * 1000)
+        try exec("""
+        DELETE FROM traffic_buckets
+        WHERE granularity_sec = \(granularity.seconds)
+          AND bucket_start_ms < \(cutoffMs);
+        """)
+        return Int(sqlite3_changes(db))
+    }
+
+    /// Drop app rows that no longer have any traffic, so a one-off process does not
+    /// linger in the catalog forever.
+    @discardableResult
+    public func pruneOrphanedApps() throws -> Int {
+        lock.lock(); defer { lock.unlock() }
+        try exec("""
+        DELETE FROM apps
+        WHERE app_id NOT IN (SELECT DISTINCT app_id FROM traffic_buckets);
+        """)
+        appIDCache.removeAll(keepingCapacity: true)
+        return Int(sqlite3_changes(db))
+    }
+
     // MARK: - Reads
+
+    /// Every stored bucket in a range, for restoring an aggregator on launch.
+    public func loadBuckets(
+        granularity: BucketGranularity,
+        from: Date,
+        to: Date
+    ) throws -> [TrafficBucket] {
+        let fromMs = Int64(from.timeIntervalSince1970 * 1000)
+        let toMs = Int64(to.timeIntervalSince1970 * 1000)
+
+        let sql = """
+        SELECT a.team_id, a.signing_id, b.bucket_start_ms, b.destination_key,
+               b.transport, b.route_kind,
+               b.bytes_up, b.bytes_down, b.flows_opened, b.flows_closed, b.flows_blocked
+        FROM traffic_buckets b
+        JOIN apps a ON a.app_id = b.app_id
+        WHERE b.granularity_sec = \(granularity.seconds)
+          AND b.bucket_start_ms >= \(fromMs)
+          AND b.bucket_start_ms < \(toMs);
+        """
+
+        lock.lock(); defer { lock.unlock() }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw TelemetryStoreError.prepareFailed(lastError())
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        var results: [TrafficBucket] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let team = String(cString: sqlite3_column_text(stmt, 0))
+            let signing = String(cString: sqlite3_column_text(stmt, 1))
+            let key = TrafficBucketKey(
+                granularity: granularity,
+                bucketStartMs: sqlite3_column_int64(stmt, 2),
+                app: AppIdentityKey(
+                    teamIdentifier: team.isEmpty ? nil : team,
+                    signingIdentifier: signing
+                ),
+                destinationKey: String(cString: sqlite3_column_text(stmt, 3)),
+                routeKind: RouteKind(rawValue: UInt8(sqlite3_column_int(stmt, 5))) ?? .unknown,
+                transport: TransportProtocol(rawValue: UInt8(sqlite3_column_int(stmt, 4))) ?? .tcp
+            )
+            let totals = TrafficTotals(
+                bytesUp: UInt64(sqlite3_column_int64(stmt, 6)),
+                bytesDown: UInt64(sqlite3_column_int64(stmt, 7)),
+                flowsOpened: UInt64(sqlite3_column_int64(stmt, 8)),
+                flowsClosed: UInt64(sqlite3_column_int64(stmt, 9)),
+                flowsBlocked: UInt64(sqlite3_column_int64(stmt, 10))
+            )
+            results.append(TrafficBucket(key: key, totals: totals))
+        }
+        return results
+    }
+
+    /// Display names recorded for known apps.
+    public func displayNames() throws -> [AppIdentityKey: String] {
+        lock.lock(); defer { lock.unlock() }
+        var stmt: OpaquePointer?
+        let sql = "SELECT team_id, signing_id, display_name FROM apps WHERE display_name IS NOT NULL;"
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw TelemetryStoreError.prepareFailed(lastError())
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        var names: [AppIdentityKey: String] = [:]
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let team = String(cString: sqlite3_column_text(stmt, 0))
+            let signing = String(cString: sqlite3_column_text(stmt, 1))
+            guard let raw = sqlite3_column_text(stmt, 2) else { continue }
+            names[
+                AppIdentityKey(teamIdentifier: team.isEmpty ? nil : team, signingIdentifier: signing)
+            ] = String(cString: raw)
+        }
+        return names
+    }
+
+    /// Destinations (sites and `project:` segments) for one app, biggest first.
+    public func queryTopDestinations(
+        app: AppIdentityKey,
+        granularity: BucketGranularity,
+        from: Date,
+        to: Date,
+        limit: Int = 50
+    ) throws -> [(destinationKey: String, totals: TrafficTotals)] {
+        let appID = try upsertApp(app, displayName: nil)
+        let fromMs = Int64(from.timeIntervalSince1970 * 1000)
+        let toMs = Int64(to.timeIntervalSince1970 * 1000)
+
+        let sql = """
+        SELECT destination_key,
+               COALESCE(SUM(bytes_up),0), COALESCE(SUM(bytes_down),0),
+               COALESCE(SUM(flows_opened),0), COALESCE(SUM(flows_closed),0),
+               COALESCE(SUM(flows_blocked),0)
+        FROM traffic_buckets
+        WHERE granularity_sec = \(granularity.seconds)
+          AND app_id = \(appID)
+          AND bucket_start_ms >= \(fromMs)
+          AND bucket_start_ms < \(toMs)
+        GROUP BY destination_key
+        ORDER BY (COALESCE(SUM(bytes_up),0) + COALESCE(SUM(bytes_down),0)) DESC
+        LIMIT \(limit);
+        """
+
+        lock.lock(); defer { lock.unlock() }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            throw TelemetryStoreError.prepareFailed(lastError())
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        var results: [(String, TrafficTotals)] = []
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let dest = String(cString: sqlite3_column_text(stmt, 0))
+            results.append((dest, TrafficTotals(
+                bytesUp: UInt64(sqlite3_column_int64(stmt, 1)),
+                bytesDown: UInt64(sqlite3_column_int64(stmt, 2)),
+                flowsOpened: UInt64(sqlite3_column_int64(stmt, 3)),
+                flowsClosed: UInt64(sqlite3_column_int64(stmt, 4)),
+                flowsBlocked: UInt64(sqlite3_column_int64(stmt, 5))
+            )))
+        }
+        return results
+    }
+
+    /// Row count and time span, for `status` and diagnostics.
+    public func statistics() throws -> (buckets: Int, apps: Int, earliest: Date?, latest: Date?) {
+        lock.lock(); defer { lock.unlock() }
+        let buckets = Int(try queryInt64("SELECT COUNT(*) FROM traffic_buckets;"))
+        let apps = Int(try queryInt64("SELECT COUNT(*) FROM apps;"))
+        guard buckets > 0 else { return (buckets, apps, nil, nil) }
+        let earliest = try queryInt64("SELECT MIN(bucket_start_ms) FROM traffic_buckets;")
+        let latest = try queryInt64("SELECT MAX(bucket_start_ms) FROM traffic_buckets;")
+        return (
+            buckets,
+            apps,
+            Date(timeIntervalSince1970: Double(earliest) / 1000),
+            Date(timeIntervalSince1970: Double(latest) / 1000)
+        )
+    }
 
     public func queryTotals(
         app: AppIdentityKey?,

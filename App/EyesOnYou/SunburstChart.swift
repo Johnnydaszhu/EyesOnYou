@@ -70,7 +70,8 @@ private struct TopShareItem: Identifiable {
     let title: String
     let value: UInt64
     let share: Double
-    let hue: Double
+    let colorIndex: Int
+    let colorVariant: Int
 }
 
 // MARK: - Chart
@@ -80,15 +81,27 @@ struct SunburstChart: View {
     @EnvironmentObject private var l10n: LocalizationStore
     @Environment(\.colorScheme) private var colorScheme
 
-    private let innerHole: CGFloat = 0.30
-    private let ring0Inner: CGFloat = 0.34
-    private let ring0Outer: CGFloat = 0.62
-    private let ring1Inner: CGFloat = 0.66
-    private let ring1Outer: CGFloat = 0.94
+    /// Radius of the center disc, as a fraction of the chart's half-size — the same
+    /// scale `RingSlice` uses, so the band can start exactly where the disc ends
+    /// instead of being covered by it (which is what hid the wedge labels).
+    private let discRatio: CGFloat = 0.54
+    /// One band per level. The chart shows the level you are on — apps at root, that
+    /// app's destinations after a drill — never both at once: stacking children around
+    /// their parents turned the ring into hairlines and made a child's share read as
+    /// the top app's.
+    private let bandInner: CGFloat = 0.58
+    private let bandOuter: CGFloat = 0.96
     private let gapDegrees: Double = 0.6
     private let topShareLimit = 5
+    /// Wedges kept at full detail; the rest fold into one aggregate wedge.
+    private let wedgeLimit = 14
+    /// Shares below this are too thin to read, so they fold into the aggregate too.
+    private let minWedgeShare = 0.008
+    private static let aggregateWedgeID = "__eyesonyou.otherWedge__"
 
     var body: some View {
+        // Slice colors come from the theme palette — re-resolve them when it changes.
+        let _ = model.themeRevision
         let softFilter = softFilteredRoot()
         let current = softFilter?.node ?? model.sunburstRoot.node(path: model.sunburstPath)
         let isSoftFiltered = softFilter != nil
@@ -163,6 +176,9 @@ struct SunburstChart: View {
                             && model.hoverNodeID != nil
                             && !isRelated(hover: model.hoverNodeID, slice: slice)
                         let ratios = ringRatios(ring: slice.ring)
+                        // Pull the hovered wedge out of the ring so the segment the
+                        // ranking table just highlighted is unmistakable.
+                        let pull = explodeOffset(slice: slice, size: size, active: isHovered)
 
                         RingSlice(
                             start: slice.start,
@@ -170,7 +186,7 @@ struct SunburstChart: View {
                             innerRatio: ratios.inner,
                             outerRatio: ratios.outer
                         )
-                        .fill(color(for: slice.node, ring: slice.ring, hovered: isHovered))
+                        .fill(wedgeColor(slice, hovered: isHovered))
                         .opacity(dimmed ? 0.22 : 1)
                         .overlay(
                             RingSlice(
@@ -180,23 +196,26 @@ struct SunburstChart: View {
                                 outerRatio: ratios.outer
                             )
                             .stroke(
-                                Color.primary.opacity(colorScheme == .light ? 0.12 : 0.35),
-                                lineWidth: isHovered ? 1.6 : 0.6
+                                isHovered
+                                    ? EyesOnYouTheme.brandGreen.opacity(0.85)
+                                    : Color.primary.opacity(colorScheme == .light ? 0.12 : 0.35),
+                                lineWidth: isHovered ? 1.8 : 0.6
                             )
                         )
                         .shadow(
-                            color: isHovered
-                                ? color(for: slice.node, ring: slice.ring, hovered: true).opacity(0.45)
-                                : .clear,
+                            color: isHovered ? wedgeColor(slice, hovered: true).opacity(0.45) : .clear,
                             radius: isHovered ? 8 : 0
                         )
-                        .scaleEffect(isHovered ? 1.025 : 1.0)
-                        .animation(.easeOut(duration: 0.15), value: model.hoverNodeID)
+                        .scaleEffect(isHovered ? 1.03 : 1.0)
+                        .offset(x: pull.width, y: pull.height)
+                        .animation(.spring(response: 0.28, dampingFraction: 0.72), value: model.hoverNodeID)
 
-                        // In-slice label for large enough arcs (inner ring).
-                        if slice.ring == 0, slice.share >= 0.08, (slice.end - slice.start) >= 18 {
+                        // In-wedge label once the arc is wide enough to hold it.
+                        if slice.share >= 0.07, (slice.end - slice.start) >= 16 {
                             sliceCallout(slice: slice, size: size, emphasized: isHovered)
+                                .offset(x: pull.width, y: pull.height)
                                 .opacity(dimmed ? 0.15 : (isHovered ? 1 : 0.9))
+                                .animation(.spring(response: 0.28, dampingFraction: 0.72), value: model.hoverNodeID)
                         }
                     }
 
@@ -204,7 +223,7 @@ struct SunburstChart: View {
                     Circle()
                         .fill(.ultraThinMaterial)
                         .overlay(Circle().fill(Color.primary.opacity(0.04)))
-                        .frame(width: size * innerHole * 2, height: size * innerHole * 2)
+                        .frame(width: size * discRatio, height: size * discRatio)
                         .overlay(
                             Circle().strokeBorder(
                                 LinearGradient(
@@ -284,24 +303,33 @@ struct SunburstChart: View {
                                 : (model.sunburstPath.isEmpty ? "" : l10n.t("sunburst.centerBack"))
                         )
 
-                    // Hit layer
+                    // Hit layer. Pointer tracking has to be a hover phase: a drag gesture
+                    // only reports while a button is held, so plain mouse moves over the
+                    // rings never reached the chart. Geometry is the square ring box, not
+                    // the reader's full rect, or every angle lands one wedge off.
                     Color.clear
                         .contentShape(Rectangle())
+                        .onContinuousHover(coordinateSpace: .local) { phase in
+                            switch phase {
+                            case .active(let location):
+                                handlePointer(
+                                    at: location,
+                                    in: CGSize(width: size, height: size),
+                                    slices: slices
+                                )
+                            case .ended:
+                                model.setHoverNode(nil)
+                                model.setPieHoverRow(nil)
+                            }
+                        }
                         .gesture(
                             DragGesture(minimumDistance: 0)
-                                .onChanged { value in
-                                    handlePointer(
-                                        at: value.location,
-                                        in: geo.size,
-                                        slices: slices
-                                    )
-                                }
                                 .onEnded { value in
                                     handleClick(
                                         at: value.location,
-                                        in: geo.size,
+                                        in: CGSize(width: size, height: size),
                                         slices: slices,
-                                        current: current
+                                        softFilterAppID: softFilter?.appID
                                     )
                                 }
                         )
@@ -311,6 +339,7 @@ struct SunburstChart: View {
                 .onHover { inside in
                     if !inside {
                         model.setHoverNode(nil)
+                        model.setPieHoverRow(nil)
                     }
                 }
             }
@@ -339,7 +368,8 @@ struct SunburstChart: View {
                 id: focused.id,
                 title: focused.title,
                 value: focused.value,
-                hue: focused.hue,
+                colorIndex: focused.colorIndex,
+                colorVariant: focused.colorVariant,
                 children: focused.children
             )
         )
@@ -359,7 +389,13 @@ struct SunburstChart: View {
                 let dimmed = !softFiltered && model.hoverNodeID != nil && !active
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(Color(hue: item.hue, saturation: 0.7, brightness: active ? 0.95 : 0.78))
+                        .fill(
+                            EyesOnYouTheme.seriesColor(
+                                index: item.colorIndex,
+                                variant: item.colorVariant,
+                                hovered: active
+                            )
+                        )
                         .frame(width: 7, height: 7)
                     Text(item.title)
                         .font(.system(size: 10, weight: active ? .semibold : .medium))
@@ -386,8 +422,10 @@ struct SunburstChart: View {
                     if softFiltered { return }
                     if inside {
                         model.setHoverNode(item.id)
+                        model.setPieHoverRow(item.id)
                     } else if model.hoverNodeID == item.id {
                         model.setHoverNode(nil)
+                        model.setPieHoverRow(nil)
                     }
                 }
                 .onTapGesture {
@@ -412,7 +450,8 @@ struct SunburstChart: View {
                 title: node.title,
                 value: node.value,
                 share: Double(node.value) / Double(total),
-                hue: node.hue
+                colorIndex: node.colorIndex,
+                colorVariant: node.colorVariant
             )
         }
     }
@@ -426,14 +465,9 @@ struct SunburstChart: View {
     }
 
     private func isSliceHovered(_ slice: LaidOutSlice) -> Bool {
-        guard let hover = model.hoverNodeID else { return false }
-        if hover == slice.id { return true }
-        if slice.parentID == hover { return true }
-        if hover.hasPrefix(slice.id + "|") { return true }
-        if let parent = slice.parentID, hover.hasPrefix(parent + "|"), slice.id == hover {
-            return true
-        }
-        return false
+        guard let hover = model.hoverNodeID, !isAggregate(slice.id) else { return false }
+        // A drilled row hover carries `app|dest`; at root that still belongs to the app wedge.
+        return hover == slice.id || hover.hasPrefix(slice.id + "|")
     }
 
     // MARK: - Slice callout
@@ -446,19 +480,54 @@ struct SunburstChart: View {
         let r = size / 2 * radiusRatio
         let x = cos(rad) * r
         let y = sin(rad) * r
+        // Themed slices can be pale (mono, light accents) — flip the label instead of
+        // leaving white-on-white. Resolve against the app appearance, not the ambient one.
+        let scheme = model.appearanceMode.preferredColorScheme ?? colorScheme
+        let onLightSlice = isAggregate(slice.id)
+            ? false
+            : EyesOnYouTheme.seriesLuminance(
+                index: slice.node.colorIndex,
+                variant: slice.node.colorVariant,
+                ring: slice.ring,
+                hovered: emphasized,
+                isDark: scheme == .dark
+            ) > 0.62
+        // Radial room inside the band decides how many lines the name can take.
+        let bandThickness = size / 2 * (ratios.outer - ratios.inner)
+        let titleSize = emphasized ? 9.0 : 8.0
+        let titleLines = bandThickness >= titleSize * 3.4 ? 2 : 1
         return VStack(spacing: 0) {
             Text(slice.node.title)
-                .font(.system(size: emphasized ? 9 : 8, weight: .semibold))
-                .lineLimit(1)
+                .font(.system(size: titleSize, weight: .semibold))
+                .lineLimit(titleLines)
+                .multilineTextAlignment(.center)
+                .minimumScaleFactor(0.7)
+                .allowsTightening(true)
+                .fixedSize(horizontal: false, vertical: true)
             Text(percentString(slice.share))
                 .font(.system(size: 8, weight: .bold, design: .rounded))
                 .monospacedDigit()
         }
-        .foregroundStyle(Color.white.opacity(0.92))
-        .shadow(color: .black.opacity(0.45), radius: 1.5, y: 0.5)
-        .frame(width: max(36, size * 0.18))
+        .foregroundStyle(onLightSlice ? Color.black.opacity(0.80) : Color.white.opacity(0.92))
+        .shadow(
+            color: onLightSlice ? Color.white.opacity(0.55) : Color.black.opacity(0.45),
+            radius: 1.5,
+            y: 0.5
+        )
+        // Keep the label inside its own wedge: wide arcs may hold a long name, narrow
+        // ones must not spill into the neighbour.
+        .frame(width: calloutWidth(slice: slice, size: size, radiusRatio: radiusRatio))
         .offset(x: x, y: y)
         .allowsHitTesting(false)
+    }
+
+    /// Chord the wedge offers at the label's radius, clamped so even a 360° wedge keeps
+    /// its text inside the ring rather than running over the hole.
+    private func calloutWidth(slice: LaidOutSlice, size: CGFloat, radiusRatio: CGFloat) -> CGFloat {
+        let sweep = min(120.0, max(0, slice.end - slice.start))
+        let radius = size / 2 * radiusRatio
+        let chord = 2 * radius * CGFloat(sin(Angle(degrees: sweep / 2).radians))
+        return max(34, min(chord * 0.9, size * 0.30))
     }
 
     private struct HoverDetail {
@@ -549,92 +618,103 @@ struct SunburstChart: View {
     // MARK: - Layout
 
     private func layoutSlices(root: AppModel.SunburstNode) -> [LaidOutSlice] {
-        let apps = root.children.sorted { $0.value > $1.value }
-        guard !apps.isEmpty else { return [] }
+        let wedges = wedgeNodes(of: root)
+        guard !wedges.isEmpty else { return [] }
 
-        let total = max(1, apps.reduce(UInt64(0)) { $0 &+ $1.value })
+        // Angles are proportional to measured bytes; only the fixed inter-wedge gaps
+        // come off the circle, so a wedge's sweep is its share of the whole ring.
+        let total = max(1, wedges.reduce(UInt64(0)) { $0 &+ $1.value })
+        let usable = max(60.0, 360.0 - gapDegrees * Double(wedges.count))
         var result: [LaidOutSlice] = []
         var angle = -90.0
 
-        let usable = 340.0
-
-        for app in apps {
-            let share = Double(app.value) / Double(total)
-            let sweep = max(1.2, share * usable - gapDegrees)
-            let start = angle
-            let end = angle + sweep
+        for wedge in wedges {
+            let share = Double(wedge.value) / Double(total)
+            let sweep = max(0.35, share * usable)
             result.append(LaidOutSlice(
-                id: app.id,
-                node: app,
-                start: start,
-                end: end,
+                id: wedge.id,
+                node: wedge,
+                start: angle,
+                end: angle + sweep,
                 ring: 0,
                 parentID: nil,
                 share: share
             ))
-
-            if app.hasChildren {
-                let sites = app.children.sorted { $0.value > $1.value }
-                let siteTotal = max(1, sites.reduce(UInt64(0)) { $0 &+ $1.value })
-                var sa = start
-                for site in sites {
-                    let siteShareOfApp = Double(site.value) / Double(siteTotal)
-                    let ss = max(0.4, siteShareOfApp * sweep - 0.15)
-                    let se = min(end, sa + ss)
-                    result.append(LaidOutSlice(
-                        id: site.id,
-                        node: site,
-                        start: sa,
-                        end: se,
-                        ring: 1,
-                        parentID: app.id,
-                        share: share * siteShareOfApp
-                    ))
-                    sa = se
-                }
-            } else if model.sunburstPath.isEmpty {
-                result.append(LaidOutSlice(
-                    id: "\(app.id)#rim",
-                    node: app,
-                    start: start,
-                    end: end,
-                    ring: 1,
-                    parentID: app.id,
-                    share: share
-                ))
-            }
-
-            angle = end + gapDegrees
+            angle += sweep + gapDegrees
         }
         return result
     }
 
+    /// Children of the current level, biggest first, with the unreadable tail folded
+    /// into one aggregate wedge carrying the tail's real summed bytes.
+    private func wedgeNodes(of root: AppModel.SunburstNode) -> [AppModel.SunburstNode] {
+        let kids = root.children.sorted { $0.value > $1.value }
+        guard !kids.isEmpty else { return [] }
+        let total = max(1, kids.reduce(UInt64(0)) { $0 &+ $1.value })
+
+        var kept: [AppModel.SunburstNode] = []
+        var tail: [AppModel.SunburstNode] = []
+        for (index, kid) in kids.enumerated() {
+            let share = Double(kid.value) / Double(total)
+            if index < wedgeLimit && share >= minWedgeShare {
+                kept.append(kid)
+            } else {
+                tail.append(kid)
+            }
+        }
+        // A single leftover stays itself — folding one item explains nothing.
+        guard tail.count > 1 else { return kept + tail }
+
+        let summed = tail.reduce(UInt64(0)) { $0 &+ $1.value }
+        kept.append(
+            AppModel.SunburstNode(
+                id: Self.aggregateWedgeID,
+                title: l10n.t("sunburst.otherWedge", tail.count),
+                value: summed,
+                colorIndex: 0,
+                colorVariant: 0,
+                children: []
+            )
+        )
+        return kept
+    }
+
+    /// The folded tail wedge: it stands for many rows, so it takes no hover or drill.
+    private func isAggregate(_ id: String) -> Bool {
+        id == Self.aggregateWedgeID
+    }
+
+    /// Radial nudge along the wedge's mid-angle, for the hovered segment only.
+    /// Hit testing stays on the un-nudged geometry, so the pointer keeps the slice
+    /// it picked instead of sliding off the shape it just moved.
+    private func explodeOffset(slice: LaidOutSlice, size: CGFloat, active: Bool) -> CGSize {
+        guard active else { return .zero }
+        let mid = Angle(degrees: (slice.start + slice.end) / 2).radians
+        let push = max(4, size * 0.032)
+        return CGSize(width: cos(mid) * push, height: sin(mid) * push)
+    }
+
     private func ringRatios(ring: Int) -> (inner: CGFloat, outer: CGFloat) {
-        if ring == 0 {
-            return (ring0Inner, ring0Outer)
+        (bandInner, bandOuter)
+    }
+
+    /// Palette color for a wedge; the folded tail stays neutral so it never competes
+    /// with a real app for attention.
+    private func wedgeColor(_ slice: LaidOutSlice, hovered: Bool) -> Color {
+        if isAggregate(slice.id) {
+            return EyesOnYouTheme.textSecondary.opacity(colorScheme == .light ? 0.28 : 0.32)
         }
-        return (ring1Inner, ring1Outer)
+        return EyesOnYouTheme.seriesColor(
+            index: slice.node.colorIndex,
+            variant: slice.node.colorVariant,
+            ring: slice.ring,
+            hovered: hovered
+        )
     }
 
-    private func color(for node: AppModel.SunburstNode, ring: Int, hovered: Bool) -> Color {
-        let sat = ring == 0 ? 0.72 : 0.55
-        let bri = ring == 0 ? (hovered ? 0.95 : 0.78) : (hovered ? 0.98 : 0.88)
-        return Color(hue: node.hue, saturation: sat, brightness: bri)
-    }
-
+    /// Everything but the hovered wedge fades, so one segment reads at a time.
     private func isRelated(hover: String?, slice: LaidOutSlice) -> Bool {
-        guard let hover else { return true }
-        if slice.id == hover { return true }
-        if slice.parentID == hover { return true }
-        if hover.hasPrefix(slice.id + "|") { return true }
-        if let parent = slice.parentID, hover.hasPrefix(parent + "|") || hover == parent {
-            return true
-        }
-        if slice.id.hasPrefix(hover + "#") { return true }
-        if hover.contains("|"), let parent = slice.parentID, hover.hasPrefix(parent) {
-            return slice.ring == 1 && (slice.id == hover || slice.parentID == parent)
-        }
-        return false
+        hover == nil ? true : isSliceHovered(slice)
     }
 
     // MARK: - Hit testing
@@ -653,30 +733,10 @@ struct SunburstChart: View {
 
     private func hitSlice(at point: CGPoint, size: CGSize, slices: [LaidOutSlice]) -> LaidOutSlice? {
         guard let polar = polar(at: point, size: size) else { return nil }
-        if polar.ratio < innerHole { return nil }
-
-        let ring: Int?
-        if polar.ratio >= ring0Inner && polar.ratio <= ring0Outer {
-            ring = 0
-        } else if polar.ratio >= ring1Inner && polar.ratio <= ring1Outer {
-            ring = 1
-        } else {
-            // Prefer nearest ring when pointer is in gaps between rings.
-            if polar.ratio > ring0Outer && polar.ratio < ring1Inner {
-                ring = polar.ratio < (ring0Outer + ring1Inner) / 2 ? 0 : 1
-            } else if polar.ratio > ring1Outer && polar.ratio <= 1.02 {
-                ring = 1
-            } else {
-                ring = nil
-            }
-        }
-        guard let ring else { return nil }
-
-        let angle = polar.angle
-        return slices.first { slice in
-            guard slice.ring == ring else { return false }
-            return angleInRange(angle, start: slice.start, end: slice.end)
-        }
+        // One band: anything from just inside its edge out to the rim counts, so the
+        // pointer never falls into a dead zone between rings.
+        guard polar.ratio >= bandInner - 0.03, polar.ratio <= 1.02 else { return nil }
+        return slices.first { angleInRange(polar.angle, start: $0.start, end: $0.end) }
     }
 
     private func angleInRange(_ angle: Double, start: Double, end: Double) -> Bool {
@@ -684,44 +744,35 @@ struct SunburstChart: View {
     }
 
     private func handlePointer(at point: CGPoint, in size: CGSize, slices: [LaidOutSlice]) {
-        if let hit = hitSlice(at: point, size: size, slices: slices) {
-            if hit.ring == 1, let parent = hit.parentID {
-                if hit.id.contains("|") {
-                    model.setHoverNode(hit.id)
-                } else {
-                    model.setHoverNode(parent)
-                }
-            } else {
-                model.setHoverNode(hit.id)
-            }
-        } else {
+        guard let hit = hitSlice(at: point, size: size, slices: slices), !isAggregate(hit.id) else {
             model.setHoverNode(nil)
+            model.setPieHoverRow(nil)
+            return
         }
+        // Wedge ids are ranking row ids at every level, so the two cards light up
+        // the same thing without any translation.
+        model.setHoverNode(hit.id)
+        model.setPieHoverRow(hit.id)
     }
 
     private func handleClick(
         at point: CGPoint,
         in size: CGSize,
         slices: [LaidOutSlice],
-        current: AppModel.SunburstNode
+        softFilterAppID: String?
     ) {
         guard let polar = polar(at: point, size: size) else { return }
-        if polar.ratio < innerHole {
-            model.sunburstGoBack()
+        if polar.ratio < discRatio {
+            // The hit layer sits above the center disc, so honour what the disc offers:
+            // commit the hovered app's preview, otherwise step back out.
+            if let softFilterAppID {
+                model.drillInto(nodeID: softFilterAppID)
+            } else {
+                model.sunburstGoBack()
+            }
             return
         }
-        guard let hit = hitSlice(at: point, size: size, slices: slices) else { return }
-
-        if hit.ring == 0 {
-            model.drillInto(nodeID: hit.id)
-        } else if hit.ring == 1, let parent = hit.parentID {
-            if model.sunburstPath.last != parent,
-               current.children.first(where: { $0.id == parent })?.hasChildren == true {
-                model.drillInto(nodeID: parent)
-            }
-            if hit.id.contains("|") {
-                model.setHoverNode(hit.id)
-            }
-        }
+        guard let hit = hitSlice(at: point, size: size, slices: slices), !isAggregate(hit.id) else { return }
+        model.drillInto(nodeID: hit.id)
     }
 }

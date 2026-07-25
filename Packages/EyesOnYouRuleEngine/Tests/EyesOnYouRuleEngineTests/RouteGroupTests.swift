@@ -39,19 +39,19 @@ final class RouteGroupTests: XCTestCase {
         let decisionC = snapshot.evaluateRoute(flow(for: appC))
         XCTAssertEqual(decisionC.action, .proxy(profileID: profileID))
 
-        // Flip app A off (inherit → falls through to default direct)
+        // Flip app A off: with no rule left, macOS decides — `.inherit`, not `.direct`.
         store.assignRoute(app: appA, route: .inherit)
         snapshot = store.compileSnapshot()
         let decisionAAfter = snapshot.evaluateRoute(flow(for: appA))
-        XCTAssertEqual(decisionAAfter.action, .direct)
+        XCTAssertEqual(decisionAAfter.action, .inherit)
 
         // Group still applies to C
         XCTAssertEqual(snapshot.evaluateRoute(flow(for: appC)).action, .proxy(profileID: profileID))
 
-        // Remove C from group → direct
+        // Remove C from group → no policy applies
         store.removeApp(appC, fromGroup: group.id)
         snapshot = store.compileSnapshot()
-        XCTAssertEqual(snapshot.evaluateRoute(flow(for: appC)).action, .direct)
+        XCTAssertEqual(snapshot.evaluateRoute(flow(for: appC)).action, .inherit)
     }
 
     func testExplicitRuleOverridesGroupAndDefault() {
@@ -147,11 +147,11 @@ final class RouteGroupTests: XCTestCase {
         // False positive: "evilapi.com" must NOT match suffix "api.com"
         XCTAssertEqual(
             snapshot.evaluateRoute(flow(for: appA, host: "evilapi.com")).action,
-            .direct
+            .inherit
         )
         XCTAssertEqual(
             snapshot.evaluateRoute(flow(for: appA, host: "notapi.com")).action,
-            .direct
+            .inherit
         )
     }
 

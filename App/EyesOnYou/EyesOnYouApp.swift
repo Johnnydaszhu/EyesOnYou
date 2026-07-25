@@ -96,4 +96,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Stay alive for menu-bar quick panel after closing the dashboard window.
         false
     }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        // Flush the buckets recorded since the last periodic write, so quitting does
+        // not discard the final interval of real traffic.
+        boundModel?.persistBeforeTermination()
+    }
+
+    /// Also persist when the machine is going down — `applicationWillTerminate` is not
+    /// guaranteed during logout or restart.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        boundModel?.persistBeforeTermination()
+        return .terminateNow
+    }
 }

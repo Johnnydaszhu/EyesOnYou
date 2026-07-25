@@ -21,7 +21,7 @@ struct MainDashboardView: View {
 
                 GlobalTimeRangeBar()
                     .padding(.horizontal, 16)
-                    .padding(.top, 4)
+                    .padding(.top, 2)
                     .padding(.bottom, 2)
 
                 content
@@ -46,17 +46,34 @@ struct MainDashboardView: View {
         .onChange(of: model.appearanceMode) { mode in
             AppModel.applyAppearance(mode)
         }
+        // Shown once, on first launch only: enabling foreground labeling needs an
+        // Accessibility grant the user has to give, and nothing else in the UI
+        // explains why the app would ask for it.
+        .alert(
+            l10n.t("onboarding.title"),
+            isPresented: $model.showsForegroundLabelingOnboarding
+        ) {
+            Button(l10n.t("onboarding.enable")) {
+                model.completeForegroundLabelingOnboarding(enable: true)
+            }
+            Button(l10n.t("onboarding.later"), role: .cancel) {
+                model.completeForegroundLabelingOnboarding(enable: false)
+            }
+        } message: {
+            Text(l10n.t("onboarding.body"))
+        }
     }
 
-    /// Top bar: app name left-aligned with content · version / settings / appearance.
-    /// Sits in the titlebar band beside traffic lights (leading inset) instead of
-    /// stacking a tall empty strip below them.
+    /// Top bar: app name left-aligned with content cards · version / settings / appearance.
+    /// Sits just below the traffic-light band (top inset) so leading can stay at 16pt
+    /// and match the time bar / bento cards — no logo, no extra leading gutter.
     private var topChrome: some View {
         HStack(spacing: 8) {
             Text(AppBrand.displayName)
                 .font(.system(size: 15, weight: .semibold, design: .rounded))
                 .foregroundStyle(EyesOnYouTheme.textPrimary)
                 .lineLimit(1)
+                .accessibilityAddTraits(.isHeader)
 
             Spacer(minLength: 8)
 
@@ -82,11 +99,9 @@ struct MainDashboardView: View {
             .help(l10n.t("settings.title"))
             AppearanceModePicker()
         }
-        // Trailing matches content inset; leading clears traffic lights when chrome
-        // shares the titlebar row (no update banner above).
-        .padding(.leading, model.appUpdateAvailable ? 16 : 78)
-        .padding(.trailing, 16)
-        .padding(.top, model.appUpdateAvailable ? 6 : 8)
+        .padding(.horizontal, 16)
+        // Clear traffic lights only; keep inset tight so the titlebar band stays short.
+        .padding(.top, model.appUpdateAvailable ? 6 : 28)
         .padding(.bottom, 2)
     }
 

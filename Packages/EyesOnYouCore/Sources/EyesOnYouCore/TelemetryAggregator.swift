@@ -318,6 +318,9 @@ public final class TelemetryAggregator: @unchecked Sendable {
                 if shouldBreakDown {
                     sites = destMap
                         .filter { $0.key != DestinationKey.unknown || destMap.count == 1 }
+                        // A segment with no bytes carries only a flow-open counter and
+                        // would read as a destination the app sent nothing to.
+                        .filter { $0.value.totalBytes > 0 }
                         .map { dest, siteTotals in
                             SiteTrafficSnapshot(
                                 destinationKey: dest,
@@ -479,6 +482,42 @@ public final class TelemetryAggregator: @unchecked Sendable {
     }
 
     /// Byte share by route kind over a wall-clock range (optionally scoped to one app).
+    /// Per-app byte totals split into direct vs proxied, in one pass over the buckets.
+    ///
+    /// Backs the per-app "proxy share" label: `proxied` is systemProxy + customProxy
+    /// route bytes, `direct` is everything else the app actually moved.
+    public func routeByteShareByApp(
+        from: Date,
+        to: Date,
+        preferredGranularity: BucketGranularity? = nil
+    ) -> [AppIdentityKey: (direct: UInt64, proxied: UInt64)] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let fromMs = Int64(from.timeIntervalSince1970 * 1000)
+        let toMs = Int64(to.timeIntervalSince1970 * 1000)
+        let spanSec = max(1, Int(to.timeIntervalSince1970 - from.timeIntervalSince1970))
+        let granularity = preferredGranularity ?? Self.chooseGranularity(spanSeconds: spanSec)
+
+        var byApp: [AppIdentityKey: (direct: UInt64, proxied: UInt64)] = [:]
+        for (key, totals) in buckets {
+            guard key.granularity == granularity else { continue }
+            if key.bucketStartMs + Int64(granularity.seconds) * 1000 <= fromMs { continue }
+            if key.bucketStartMs >= toMs { continue }
+            let bytes = totals.totalBytes
+            guard bytes > 0 else { continue }
+            var entry = byApp[key.app] ?? (direct: 0, proxied: 0)
+            switch key.routeKind {
+            case .systemProxy, .customProxy:
+                entry.proxied &+= bytes
+            case .direct, .blocked, .unknown:
+                entry.direct &+= bytes
+            }
+            byApp[key.app] = entry
+        }
+        return byApp
+    }
+
     public func routeByteShare(
         for app: AppIdentityKey?,
         from: Date,
@@ -540,6 +579,38 @@ public final class TelemetryAggregator: @unchecked Sendable {
             .map { TrafficBucket(key: $0.key, totals: $0.value) }
     }
 
+    /// Load persisted buckets back in, so a restart resumes with its history intact.
+    ///
+    /// Totals are **replaced**, not merged: the caller is restoring a snapshot that
+    /// already includes everything recorded for those buckets. Merging would double
+    /// every byte that survived the restart.
+    public func importBuckets(_ imported: [TrafficBucket]) {
+        lock.lock()
+        defer { lock.unlock() }
+        for bucket in imported {
+            buckets[bucket.key] = bucket.totals
+        }
+    }
+
+    /// Display names known for the apps seen this session (for persistence).
+    public func exportDisplayNames() -> [AppIdentityKey: String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return appDisplayNames
+    }
+
+    /// Seed display names for apps restored from storage but not yet seen live.
+    public func importDisplayNames(_ names: [AppIdentityKey: String]) {
+        lock.lock()
+        defer { lock.unlock() }
+        for (app, name) in names where !name.isEmpty {
+            // Never overwrite a name resolved from a live process this session.
+            if appDisplayNames[app] == nil {
+                appDisplayNames[app] = name
+            }
+        }
+    }
+
     public func reset() {
         lock.lock()
         defer { lock.unlock() }
@@ -568,7 +639,11 @@ public final class TelemetryAggregator: @unchecked Sendable {
 
     /// Strip synthetic prefixes used in demo/project keys for display.
     public static func displayTitle(forDestination dest: String) -> String {
-        let prefixes = ["project:", "session:", "chat:", "workspace:"]
+        // Path segments carry no site name by design; English defaults here, the app
+        // layer localizes.
+        if dest == DestinationKey.viaProxyNode { return "Via proxy node" }
+        if dest == DestinationKey.directByRule { return "Direct by rule" }
+        let prefixes = ["project:", "session:", "chat:", "workspace:", "window:"]
         for p in prefixes {
             if dest.lowercased().hasPrefix(p) {
                 return String(dest.dropFirst(p.count))

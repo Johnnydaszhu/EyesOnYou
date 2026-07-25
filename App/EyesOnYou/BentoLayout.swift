@@ -34,10 +34,9 @@ struct BentoMetrics: Equatable {
     let metricIconSize: CGFloat
     /// Primary value font size.
     let valueFontSize: CGFloat
-    /// Whether ranking shows secondary columns (disk, group, proxy…).
-    let showDiskColumns: Bool
-    let showRouteStatusColumns: Bool
-    let showGroupProxyColumns: Bool
+    /// Whether ranking shows the trailing tag columns (egress / online).
+    /// Both are narrow text cells, so only the tiniest layout drops them.
+    let showTagColumns: Bool
     /// Ranking header font.
     let rankingHeaderFont: CGFloat
     let rankingRowFont: CGFloat
@@ -63,41 +62,31 @@ struct BentoMetrics: Equatable {
             outerPadding = 0
             typeScale = 1.08
             sunburstWidthRatio = 0.30
-            showDiskColumns = true
-            showRouteStatusColumns = true
-            showGroupProxyColumns = true
+            showTagColumns = true
         case .large:
             gap = 12
             outerPadding = 0
             typeScale = 1.0
             sunburstWidthRatio = 0.32
-            showDiskColumns = true
-            showRouteStatusColumns = true
-            showGroupProxyColumns = true
+            showTagColumns = true
         case .medium:
             gap = 12
             outerPadding = 0
             typeScale = 0.96
             sunburstWidthRatio = 0.36
-            showDiskColumns = true
-            showRouteStatusColumns = true
-            showGroupProxyColumns = false
+            showTagColumns = true
         case .compact:
             gap = 10
             outerPadding = 0
             typeScale = 0.92
             sunburstWidthRatio = 1.0
-            showDiskColumns = true
-            showRouteStatusColumns = false
-            showGroupProxyColumns = false
+            showTagColumns = true
         case .tiny:
             gap = 8
             outerPadding = 0
             typeScale = 0.88
             sunburstWidthRatio = 1.0
-            showDiskColumns = false
-            showRouteStatusColumns = false
-            showGroupProxyColumns = false
+            showTagColumns = false
         }
 
         // Metrics row: keep totals / live / proxy cards on one shared height.
