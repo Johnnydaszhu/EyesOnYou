@@ -53,3 +53,7 @@ DEVELOPMENT_TEAM.xcconfig
 # Logs & crash
 *.log
 crashlogs/
+
+# Local Release / DMG outputs
+dist/
+build/

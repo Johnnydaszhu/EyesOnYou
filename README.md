@@ -28,6 +28,24 @@ Overview dashboard: period totals, live traffic, proxy routing mix, sunburst tra
 - **Agent-friendly CLI** — JSON output for scripts and coding agents (`docs/CLI.md`)
 - **In-app updates** — checks [GitHub Releases](https://github.com/Johnnydaszhu/FlowLens/releases) automatically; footer version label for manual check / download
 
+## Download / DMG
+
+GitHub Releases host the installable disk image (`FlowLens-<version>.dmg`).
+
+```bash
+# Local: build DMG into dist/
+./scripts/build-dmg.sh
+
+# Local: build + publish Release (requires gh auth)
+./scripts/publish-release.sh 0.1.0
+
+# Or push a tag — Actions builds and uploads the DMG
+git tag -a v0.1.0 -m "FlowLens 0.1.0"
+git push origin v0.1.0
+```
+
+Full notes: [`docs/RELEASE.md`](docs/RELEASE.md). CI builds are ad-hoc signed (demo telemetry); Developer ID + notarization is documented for maintainer machines.
+
 ## Quick start
 
 ```bash
@@ -72,7 +90,8 @@ The host launches with **demo telemetry** when the system extension is not insta
 3. Double-counting: [`docs/DOUBLE_COUNTING_AND_CORRELATION.md`](./docs/DOUBLE_COUNTING_AND_CORRELATION.md)
 4. Xcode bootstrap: [`docs/XCODE_BOOTSTRAP.md`](./docs/XCODE_BOOTSTRAP.md)
 5. Contributing: [`CONTRIBUTING.md`](./CONTRIBUTING.md)
-6. Chinese README: [`README.zh-CN.md`](./README.zh-CN.md)
+6. Release / DMG: [`docs/RELEASE.md`](./docs/RELEASE.md)
+7. Chinese README: [`README.zh-CN.md`](./README.zh-CN.md)
 
 ## System extension
 

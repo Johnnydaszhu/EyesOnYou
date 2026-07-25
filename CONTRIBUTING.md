@@ -69,6 +69,15 @@ Network Extension features require a paid Apple Developer Team, matching App Gro
 
 See [`docs/XCODE_BOOTSTRAP.md`](docs/XCODE_BOOTSTRAP.md) and [`config/`](config/) for entitlements.
 
+## Release DMG
+
+```bash
+./scripts/build-dmg.sh           # → dist/FlowLens-<version>.dmg
+./scripts/publish-release.sh     # upload to GitHub Releases (gh auth required)
+```
+
+Pushing `v*` tags also runs [`.github/workflows/release.yml`](.github/workflows/release.yml). Details: [`docs/RELEASE.md`](docs/RELEASE.md).
+
 ## Development principles
 
 1. **Fail-open** by default for firewall and proxy (do not brick the Mac).

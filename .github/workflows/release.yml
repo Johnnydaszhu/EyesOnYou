@@ -1,0 +1,108 @@
+name: Release DMG
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Marketing version without v prefix (e.g. 0.1.0). Empty = Info.plist."
+        required: false
+        type: string
+      draft:
+        description: "Create as draft release"
+        required: false
+        type: boolean
+        default: false
+      prerelease:
+        description: "Mark as pre-release"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    name: Build DMG & publish GitHub Release
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Resolve version
+        id: ver
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "push" && "${GITHUB_REF}" == refs/tags/v* ]]; then
+            V="${GITHUB_REF#refs/tags/v}"
+          elif [[ -n "${{ inputs.version }}" ]]; then
+            V="${{ inputs.version }}"
+            V="${V#v}"
+          else
+            V="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' App/FlowLens/Info.plist)"
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "tag=v$V" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $V"
+
+      - name: Build DMG
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: ./scripts/build-dmg.sh "$VERSION"
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FlowLens-${{ steps.ver.outputs.version }}-dmg
+          path: dist/FlowLens-${{ steps.ver.outputs.version }}.dmg
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Ensure git tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "FlowLens ${VERSION}"
+          git push origin "$TAG"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          ARGS=(--skip-build "$VERSION")
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.draft }}" == "true" ]]; then
+            ARGS=(--draft "${ARGS[@]}")
+          fi
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && "${{ inputs.prerelease }}" == "true" ]]; then
+            ARGS=(--prerelease "${ARGS[@]}")
+          fi
+          ./scripts/publish-release.sh "${ARGS[@]}"

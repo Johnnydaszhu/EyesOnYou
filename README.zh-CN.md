@@ -28,6 +28,24 @@
 - **面向 Agent 的 CLI** — JSON 输出，便于脚本与编程助手（`docs/CLI.md`）
 - **应用内更新** — 自动检查 [GitHub Releases](https://github.com/Johnnydaszhu/FlowLens/releases)；左下角版本号可手动检查 / 下载
 
+## 下载 / DMG
+
+安装包以 `FlowLens-<version>.dmg` 发布在 GitHub Releases。
+
+```bash
+# 本地打 DMG → dist/
+./scripts/build-dmg.sh
+
+# 本地打 DMG 并发布 Release（需 gh 登录）
+./scripts/publish-release.sh 0.1.0
+
+# 或推送 tag，由 Actions 自动构建并上传 DMG
+git tag -a v0.1.0 -m "FlowLens 0.1.0"
+git push origin v0.1.0
+```
+
+说明见 [`docs/RELEASE.md`](docs/RELEASE.md)。CI 默认为 ad-hoc 签名（演示遥测）；Developer ID 与公证见该文档。
+
 ## 快速开始
 
 ```bash
@@ -72,7 +90,8 @@ xcodebuild -project FlowLens.xcodeproj -scheme FlowLens \
 3. 双计数与关联：[`docs/DOUBLE_COUNTING_AND_CORRELATION.md`](./docs/DOUBLE_COUNTING_AND_CORRELATION.md)
 4. Xcode 从零搭建：[`docs/XCODE_BOOTSTRAP.md`](./docs/XCODE_BOOTSTRAP.md)
 5. 贡献指南：[`CONTRIBUTING.md`](./CONTRIBUTING.md)
-6. 英文 README（默认）：[`README.md`](./README.md)
+6. 发布 / DMG：[`docs/RELEASE.md`](./docs/RELEASE.md)
+7. 英文 README（默认）：[`README.md`](./README.md)
 
 ## 系统扩展
 
