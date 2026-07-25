@@ -1,4 +1,4 @@
-# AGENTS.md — FlowLens for coding agents
+# AGENTS.md — EyesOnYou (FlowLens repo) for coding agents
 
 This repository is optimized for **Codex**, **Claude Code**, and similar agents.
 

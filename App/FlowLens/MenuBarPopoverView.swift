@@ -32,34 +32,12 @@ struct MenuBarPopoverView: View {
         .frame(width: popoverWidth)
         .frame(minHeight: 380, maxHeight: 520)
         .background {
-            ZStack {
-                VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow)
-                Circle()
-                    .fill(FlowLensTheme.accentBlue.opacity(0.14))
-                    .frame(width: 160, height: 160)
-                    .blur(radius: 36)
-                    .offset(x: -70, y: -80)
-                Circle()
-                    .fill(FlowLensTheme.gold.opacity(0.08))
-                    .frame(width: 140, height: 140)
-                    .blur(radius: 32)
-                    .offset(x: 90, y: 160)
-                Color.black.opacity(0.14)
-            }
+            LiquidGlassWindowBackdrop()
         }
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.26), Color.white.opacity(0.06)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1
-                )
-        )
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .preferredColorScheme(model.appearanceMode.preferredColorScheme)
         .id(l10n.revision)
+        .animation(nil, value: model.themeRevision)
     }
 
     // MARK: - Main panel
@@ -67,64 +45,55 @@ struct MenuBarPopoverView: View {
     private var mainPanel: some View {
         VStack(spacing: 0) {
             liveTrafficBlock
-                .padding(.horizontal, 12)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
-
-            Divider().overlay(Color.white.opacity(0.08))
+                .padding(.horizontal, 14)
+                .padding(.top, 14)
+                .padding(.bottom, 10)
 
             appList
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-
-            Divider().overlay(Color.white.opacity(0.08))
+                .padding(.horizontal, 10)
+                .padding(.top, 2)
+                .padding(.bottom, 4)
 
             footerActions
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+                .padding(.horizontal, 14)
+                .padding(.top, 8)
+                .padding(.bottom, 12)
         }
     }
 
-    // MARK: - Live traffic (rates + full-width chart + period)
+    // MARK: - Live traffic (rates + period + chart)
 
     private var liveTrafficBlock: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 10) {
-                VStack(alignment: .leading, spacing: 5) {
-                    pathRateLine(
-                        label: l10n.t("status.path.direct"),
-                        down: model.directDownBps,
-                        up: model.directUpBps,
-                        share: model.directShare,
-                        color: FlowLensTheme.accentGreen
-                    )
-                    pathRateLine(
-                        label: l10n.t("status.path.proxy"),
-                        down: model.proxyDownBps,
-                        up: model.proxyUpBps,
-                        share: model.proxyShare,
-                        color: FlowLensTheme.accentPurple
-                    )
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-                VStack(alignment: .trailing, spacing: 4) {
-                    ForEach(AppModel.OverviewPeriod.menuQuickPeriods) { period in
-                        periodChip(period)
-                    }
-                }
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 8) {
+                pathRateLine(
+                    label: l10n.t("status.path.direct"),
+                    down: model.directDownBps,
+                    up: model.directUpBps,
+                    share: model.directShare,
+                    color: FlowLensTheme.routeDirect
+                )
+                pathRateLine(
+                    label: l10n.t("status.path.proxy"),
+                    down: model.proxyDownBps,
+                    up: model.proxyUpBps,
+                    share: model.proxyShare,
+                    color: FlowLensTheme.routeProxy
+                )
             }
 
-            PathDualSparkline(
-                direct: model.sparklineDirect,
-                proxy: model.sparklineProxy
+            periodSegmentedControl
+
+            // Same series / palette as main dashboard live-traffic card.
+            AreaChartView(
+                down: model.sparklineDown,
+                up: model.sparklineUp,
+                lineWidth: 1.5
             )
             .frame(maxWidth: .infinity)
-            .frame(height: 44)
+            .frame(height: 52)
             .accessibilityHidden(true)
         }
-        .padding(12)
-        .background { LiquidGlassBackground(style: .inset, cornerRadius: 12) }
     }
 
     private func pathRateLine(
@@ -139,14 +108,14 @@ struct MenuBarPopoverView: View {
                 .fill(color)
                 .frame(width: 6, height: 6)
             Text(label)
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(color)
-                .frame(width: 28, alignment: .leading)
+                .frame(width: 32, alignment: .leading)
             HStack(spacing: 2) {
                 Image(systemName: "arrow.down")
                     .font(.system(size: 8, weight: .bold))
                 Text(ByteFormat.rateMBps(bytesPerSecond: down))
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     .monospacedDigit()
             }
             .foregroundStyle(FlowLensTheme.textPrimary)
@@ -154,36 +123,46 @@ struct MenuBarPopoverView: View {
                 Image(systemName: "arrow.up")
                     .font(.system(size: 8, weight: .bold))
                 Text(ByteFormat.rateMBps(bytesPerSecond: up))
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
                     .monospacedDigit()
             }
             .foregroundStyle(FlowLensTheme.textPrimary.opacity(0.9))
             Spacer(minLength: 2)
             Text("\(Int((share * 100).rounded()))%")
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
                 .foregroundStyle(color)
                 .monospacedDigit()
         }
     }
 
-    private func periodChip(_ period: AppModel.OverviewPeriod) -> some View {
+    /// Unified pill segmented control — one surface, no per-chip borders.
+    private var periodSegmentedControl: some View {
+        HStack(spacing: 2) {
+            ForEach(AppModel.OverviewPeriod.menuQuickPeriods) { period in
+                periodSegment(period)
+            }
+        }
+        .padding(3)
+        .background {
+            Capsule(style: .continuous)
+                .fill(Color.white.opacity(0.06))
+        }
+    }
+
+    private func periodSegment(_ period: AppModel.OverviewPeriod) -> some View {
         let selected = model.overviewPeriod == period
         return Button {
             model.overviewPeriod = period
         } label: {
             Text(l10n.overviewPeriodTitle(period))
                 .font(.system(size: 10, weight: selected ? .semibold : .medium))
-                .foregroundStyle(selected ? Color.black.opacity(0.88) : FlowLensTheme.textSecondary)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 4)
+                .foregroundStyle(selected ? FlowLensTheme.textPrimary : FlowLensTheme.textSecondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
                 .background {
                     if selected {
-                        Capsule()
-                            .fill(FlowLensTheme.accentBlue.opacity(0.92))
-                    } else {
-                        Capsule()
-                            .fill(Color.white.opacity(0.06))
-                            .overlay(Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 0.6))
+                        Capsule(style: .continuous)
+                            .fill(Color.white.opacity(0.14))
                     }
                 }
         }
@@ -193,12 +172,12 @@ struct MenuBarPopoverView: View {
     // MARK: - App list
 
     private var appList: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 2) {
             Text(l10n.t("menu.topApps"))
-                .font(.system(size: 9, weight: .semibold))
+                .font(.system(size: 10, weight: .semibold))
                 .foregroundStyle(FlowLensTheme.textSecondary)
-                .padding(.horizontal, 6)
-                .padding(.top, 4)
+                .padding(.horizontal, 8)
+                .padding(.bottom, 2)
 
             ScrollView {
                 LazyVStack(spacing: 0) {
@@ -210,9 +189,6 @@ struct MenuBarPopoverView: View {
                     }()
                     ForEach(Array(apps.enumerated()), id: \.element.id) { index, app in
                         appRow(rank: index + 1, app: app)
-                        if index < apps.count - 1 {
-                            Divider().overlay(Color.white.opacity(0.05))
-                        }
                     }
                 }
             }
@@ -226,7 +202,7 @@ struct MenuBarPopoverView: View {
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundStyle(FlowLensTheme.textSecondary)
                 .frame(width: 16, alignment: .trailing)
-            AppIconView(app: app.app, displayName: app.displayName, size: 18)
+            AppIconView(app: app.app, displayName: app.displayName, size: 20)
             VStack(alignment: .leading, spacing: 1) {
                 Text(app.displayName)
                     .font(.system(size: 12, weight: .medium))
@@ -249,9 +225,12 @@ struct MenuBarPopoverView: View {
                 .font(.system(size: 9, design: .monospaced))
                 .foregroundStyle(FlowLensTheme.textSecondary)
             }
+            Image(systemName: "chevron.right")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(FlowLensTheme.textSecondary.opacity(0.55))
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 7)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
         .contentShape(Rectangle())
         .onTapGesture {
             model.hoverNodeID = app.app.storageKey
@@ -260,10 +239,10 @@ struct MenuBarPopoverView: View {
         }
     }
 
-    // MARK: - Footer (text only, compact)
+    // MARK: - Footer
 
     private var footerActions: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             footerTextButton(title: l10n.t("menu.openDashboard"), prominent: true) {
                 model.openDashboard()
                 MenuBarController.shared.closePopover()
@@ -288,27 +267,14 @@ struct MenuBarPopoverView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 7)
-                .foregroundStyle(prominent ? Color.black.opacity(0.85) : FlowLensTheme.textPrimary)
+                .padding(.vertical, 9)
+                .foregroundStyle(FlowLensTheme.textPrimary)
                 .background {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(
-                            prominent
-                                ? AnyShapeStyle(
-                                    LinearGradient(
-                                        colors: [
-                                            FlowLensTheme.gold.opacity(0.95),
-                                            FlowLensTheme.gold.opacity(0.65)
-                                        ],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    )
-                                )
-                                : AnyShapeStyle(Color.white.opacity(0.08))
-                        )
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.white.opacity(prominent ? 0.1 : 0.06))
                         .overlay(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .strokeBorder(Color.white.opacity(prominent ? 0.2 : 0.1), lineWidth: 0.7)
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(Color.white.opacity(prominent ? 0.16 : 0.1), lineWidth: 0.5)
                         )
                 }
         }
@@ -341,25 +307,21 @@ struct MenuBarPopoverView: View {
                     .foregroundStyle(FlowLensTheme.textPrimary)
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 12)
-
-            Divider().overlay(Color.white.opacity(0.08))
+            .padding(.vertical, 14)
 
             Text(l10n.t("menu.style.hint"))
                 .font(.system(size: 10))
                 .foregroundStyle(FlowLensTheme.textSecondary)
                 .padding(.horizontal, 14)
-                .padding(.top, 10)
-                .padding(.bottom, 6)
+                .padding(.bottom, 10)
 
-            VStack(spacing: 6) {
+            VStack(spacing: 4) {
                 ForEach(AppModel.MenuBarDisplayStyle.allCases) { style in
                     styleOptionRow(style)
                 }
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 10)
             .padding(.bottom, 14)
-            .padding(.top, 4)
 
             Spacer(minLength: 0)
         }
@@ -400,16 +362,7 @@ struct MenuBarPopoverView: View {
             .padding(.vertical, 10)
             .background {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(selected ? FlowLensTheme.accentBlue.opacity(0.14) : Color.white.opacity(0.05))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .strokeBorder(
-                                selected
-                                    ? FlowLensTheme.accentBlue.opacity(0.45)
-                                    : Color.white.opacity(0.08),
-                                lineWidth: selected ? 1 : 0.7
-                            )
-                    )
+                    .fill(selected ? FlowLensTheme.accentBlue.opacity(0.14) : Color.clear)
             }
         }
         .buttonStyle(.plain)

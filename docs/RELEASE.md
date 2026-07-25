@@ -1,6 +1,6 @@
-# Releasing FlowLens (DMG + GitHub Releases)
+# Releasing EyesOnYou (DMG + GitHub Releases)
 
-FlowLens ships UI builds as a **`.dmg`** attached to [GitHub Releases](https://github.com/Johnnydaszhu/FlowLens/releases). The in-app updater prefers assets ending in `.dmg`, then `.pkg`, then `.zip`.
+EyesOnYou ships UI builds as a **`.dmg`** attached to [GitHub Releases](https://github.com/Johnnydaszhu/FlowLens/releases). The in-app updater prefers assets ending in `.dmg`, then `.pkg`, then `.zip`.
 
 ## Quick paths
 
@@ -10,18 +10,18 @@ FlowLens ships UI builds as a **`.dmg`** attached to [GitHub Releases](https://g
 2. Push a version tag:
 
 ```bash
-git tag -a v0.1.0 -m "FlowLens 0.1.0"
+git tag -a v0.1.0 -m "EyesOnYou 0.1.0"
 git push origin v0.1.0
 ```
 
-3. Workflow [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs on `macos-14`, builds `FlowLens-0.1.0.dmg`, and publishes the Release.
+3. Workflow [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs on `macos-14`, builds `EyesOnYou-0.1.0.dmg`, and publishes the Release.
 
 Or: **Actions → Release DMG → Run workflow** and enter a version (creates the tag if missing).
 
 ### B. Local script
 
 ```bash
-# Build only → dist/FlowLens-<version>.dmg
+# Build only → dist/EyesOnYou-<version>.dmg
 ./scripts/build-dmg.sh
 # or
 ./scripts/build-dmg.sh 0.1.1
@@ -36,7 +36,7 @@ Or: **Actions → Release DMG → Run workflow** and enter a version (creates th
 
 | Item | Purpose |
 |---|---|
-| `FlowLens.app` | Host app (+ embedded system extension bundle) |
+| `EyesOnYou.app` | Host app (+ embedded system extension bundle) |
 | `Applications` | Symlink — drag-to-install |
 | `README.txt` | Short install notes |
 
@@ -61,17 +61,17 @@ Keep certificates and app-specific passwords out of git (see `CONTRIBUTING.md`).
 ## Verify a downloaded build
 
 ```bash
-codesign --verify --deep --strict --verbose=4 /Applications/FlowLens.app
-spctl --assess --type execute --verbose=4 /Applications/FlowLens.app
+codesign --verify --deep --strict --verbose=4 /Applications/EyesOnYou.app
+spctl --assess --type execute --verbose=4 /Applications/EyesOnYou.app
 # Notarized only:
-xcrun stapler validate /Applications/FlowLens.app
+xcrun stapler validate /Applications/EyesOnYou.app
 ```
 
 ## Outputs
 
 | Path | Description |
 |---|---|
-| `dist/FlowLens-<ver>.dmg` | Disk image for Releases |
-| `dist/FlowLens.app` | Same app bundle (local inspect) |
+| `dist/EyesOnYou-<ver>.dmg` | Disk image for Releases |
+| `dist/EyesOnYou.app` | Same app bundle (local inspect) |
 | `dist/version.txt` | Resolved marketing version |
 | `build/DerivedData/` | xcodebuild derived data (gitignored) |

@@ -1,6 +1,6 @@
-# Contributing to FlowLens
+# Contributing to EyesOnYou
 
-FlowLens is a native macOS network observability, firewall, and selective-proxy tool. Thank you for helping build it.
+EyesOnYou (repo / modules may still say FlowLens) is a native macOS network observability, firewall, and selective-proxy tool. Thank you for helping build it.
 
 ## License
 
@@ -72,7 +72,7 @@ See [`docs/XCODE_BOOTSTRAP.md`](docs/XCODE_BOOTSTRAP.md) and [`config/`](config/
 ## Release DMG
 
 ```bash
-./scripts/build-dmg.sh           # → dist/FlowLens-<version>.dmg
+./scripts/build-dmg.sh           # → dist/EyesOnYou-<version>.dmg
 ./scripts/publish-release.sh     # upload to GitHub Releases (gh auth required)
 ```
 

@@ -66,6 +66,9 @@ final class AppModel: ObservableObject {
     @Published var sunburstRoot: SunburstNode = .empty
     /// Shared hover id between sunburst and ranking table (`AppRankingRow.id` / node.id).
     @Published var hoverNodeID: String? = nil
+    /// Ranking-row hover that temporarily filters the pie to that app's destinations.
+    /// Separate from `hoverNodeID` so pie pointer moves don't cancel the preview.
+    @Published var rankingHoverFilterID: String? = nil
     /// Drill-down path of node ids; empty = top-level apps.
     @Published var sunburstPath: [String] = []
     @Published var routeMix: RouteMix = RouteMix()
@@ -145,6 +148,9 @@ final class AppModel: ObservableObject {
     private var tickTimer: Timer?
     private var demoClock: TimeInterval = 0
     private let demoMode: Bool
+    /// Rolling live rate (down+up) history keyed by `AppIdentityKey.storageKey`.
+    private var appRateHistory: [String: [Double]] = [:]
+    private static let appRateHistoryLimit = 28
     private static let favoritesDefaultsKey = "flowlens.favoriteAppKeys"
     private static let archivedDefaultsKey = "flowlens.archivedAppKeys"
     private static let blockedDefaultsKey = "flowlens.blockedAppKeys"
@@ -275,7 +281,43 @@ final class AppModel: ObservableObject {
 
     private static let menuBarStyleKey = "flowlens.menuBarDisplayStyle"
     private static let rankingColumnSpacingKey = "flowlens.rankingColumnSpacing"
+    private static let rankingHiddenColumnsKey = "flowlens.rankingHiddenColumns"
     private static let appearanceModeKey = "flowlens.appearanceMode"
+    private static let colorThemeTemplateKey = "flowlens.colorThemeTemplate"
+    private static let themeAccentsKey = "flowlens.themeAccents"
+
+    /// Optional ranking table columns the user can hide via header context menu.
+    enum RankingColumnID: String, CaseIterable, Identifiable, Sendable {
+        case down
+        case up
+        case diskRead
+        case diskWrite
+        case trend
+        case lastSeen
+        case requests
+        case route
+        case status
+        case group
+        case proxy
+
+        var id: String { rawValue }
+
+        var titleKey: String {
+            switch self {
+            case .down: return "overview.colDown"
+            case .up: return "overview.colUp"
+            case .diskRead: return "overview.colDiskRead"
+            case .diskWrite: return "overview.colDiskWrite"
+            case .trend: return "overview.colTrend"
+            case .lastSeen: return "overview.colLastSeen"
+            case .requests: return "overview.colRequests"
+            case .route: return "overview.colRoute"
+            case .status: return "overview.colStatus"
+            case .group: return "overview.colGroup"
+            case .proxy: return "overview.colProxy"
+            }
+        }
+    }
 
     @Published var menuBarDisplayStyle: MenuBarDisplayStyle = .dualPath {
         didSet {
@@ -290,6 +332,17 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Color template: forest / ocean / ember / violet / mono / custom.
+    @Published private(set) var colorThemeTemplate: ColorThemeTemplate = .forest
+
+    /// Adjustable accent tokens (persisted). For `.mono`, non-proxy accents are forced to grayscale on apply.
+    @Published private(set) var themeAccents: ThemeAccentSet = .forest
+
+    /// Bumped when colors change so SwiftUI roots can `.id` refresh.
+    @Published private(set) var themeRevision: Int = 0
+
+    private var isLoadingColorTheme = false
+
     /// Horizontal spacing between ranking table columns / header labels (points).
     /// User-adjustable and persisted; clamped to ``rankingColumnSpacingRange``.
     @Published var rankingColumnSpacing: Double = 4 {
@@ -303,11 +356,48 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Hidden optional ranking columns (`RankingColumnID.rawValue`); persisted.
+    @Published private(set) var hiddenRankingColumns: Set<String> = [] {
+        didSet {
+            UserDefaults.standard.set(Array(hiddenRankingColumns).sorted(), forKey: Self.rankingHiddenColumnsKey)
+        }
+    }
+
     static let rankingColumnSpacingRange: ClosedRange<Double> = 2...24
     static let rankingColumnSpacingDefault: Double = 4
 
     static func clampRankingColumnSpacing(_ value: Double) -> Double {
         min(rankingColumnSpacingRange.upperBound, max(rankingColumnSpacingRange.lowerBound, value.rounded()))
+    }
+
+    func isRankingColumnVisible(_ column: RankingColumnID) -> Bool {
+        !hiddenRankingColumns.contains(column.rawValue)
+    }
+
+    func setRankingColumnHidden(_ column: RankingColumnID, hidden: Bool) {
+        var next = hiddenRankingColumns
+        if hidden {
+            next.insert(column.rawValue)
+        } else {
+            next.remove(column.rawValue)
+        }
+        if next != hiddenRankingColumns {
+            hiddenRankingColumns = next
+        }
+    }
+
+    func toggleRankingColumnHidden(_ column: RankingColumnID) {
+        setRankingColumnHidden(column, hidden: isRankingColumnVisible(column))
+    }
+
+    func resetRankingColumns() {
+        if !hiddenRankingColumns.isEmpty {
+            hiddenRankingColumns = []
+        }
+    }
+
+    var hasHiddenRankingColumns: Bool {
+        !hiddenRankingColumns.isEmpty
     }
 
     /// Soft update banner on the main window (nil / false → show nothing in the top bar).
@@ -373,6 +463,10 @@ final class AppModel: ObservableObject {
         let groupName: String?
         /// Share of network total (0...1) for pie chart.
         let share: Double
+        /// Last wall-clock time this app recorded traffic.
+        let lastTrafficAt: Date?
+        /// Mini area-chart series (combined up+down rates or period bytes).
+        let rateSeries: [Double]
 
         init(
             id: String? = nil,
@@ -380,7 +474,9 @@ final class AppModel: ObservableObject {
             diskRead: UInt64,
             diskWrite: UInt64,
             groupName: String?,
-            share: Double
+            share: Double,
+            lastTrafficAt: Date? = nil,
+            rateSeries: [Double] = []
         ) {
             self.id = id ?? snapshot.id
             self.snapshot = snapshot
@@ -388,6 +484,8 @@ final class AppModel: ObservableObject {
             self.diskWrite = diskWrite
             self.groupName = groupName
             self.share = share
+            self.lastTrafficAt = lastTrafficAt
+            self.rateSeries = rateSeries
         }
     }
 
@@ -418,6 +516,10 @@ final class AppModel: ObservableObject {
         if hoverNodeID != id { hoverNodeID = id }
     }
 
+    func setRankingHoverFilter(_ id: String?) {
+        if rankingHoverFilterID != id { rankingHoverFilterID = id }
+    }
+
     func drillInto(nodeID: String) {
         // Only drill if that node exists under current view and has children.
         let current = sunburstRoot.node(path: sunburstPath)
@@ -427,6 +529,7 @@ final class AppModel: ObservableObject {
         withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
             sunburstPath.append(nodeID)
             hoverNodeID = nil
+            rankingHoverFilterID = nil
         }
     }
 
@@ -435,6 +538,7 @@ final class AppModel: ObservableObject {
         withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
             _ = sunburstPath.popLast()
             hoverNodeID = nil
+            rankingHoverFilterID = nil
         }
     }
 
@@ -443,6 +547,7 @@ final class AppModel: ObservableObject {
         withAnimation(.spring(response: 0.38, dampingFraction: 0.86)) {
             sunburstPath.removeAll()
             hoverNodeID = nil
+            rankingHoverFilterID = nil
         }
     }
 
@@ -459,11 +564,17 @@ final class AppModel: ObservableObject {
         } else {
             rankingColumnSpacing = Self.rankingColumnSpacingDefault
         }
+        if let arr = UserDefaults.standard.array(forKey: Self.rankingHiddenColumnsKey) as? [String] {
+            let valid = Set(RankingColumnID.allCases.map(\.rawValue))
+            hiddenRankingColumns = Set(arr.filter { valid.contains($0) })
+        }
         if let raw = UserDefaults.standard.string(forKey: Self.appearanceModeKey),
            let mode = AppearanceMode(rawValue: raw) {
             appearanceMode = mode
         }
         Self.applyAppearance(appearanceMode)
+        loadColorThemePreferences()
+        applyColorTheme()
         loadFavorites()
         loadArchivedAndBlocked()
         seedPolicies()
@@ -581,10 +692,103 @@ final class AppModel: ObservableObject {
         for window in NSApp.windows {
             window.appearance = mode.nsAppearance
         }
+        MenuBarController.shared.refreshPopoverAppearance()
     }
 
     func setAppearanceMode(_ mode: AppearanceMode) {
         appearanceMode = mode
+    }
+
+    func setColorThemeTemplate(_ template: ColorThemeTemplate) {
+        var nextAccents = themeAccents
+        if template != .custom && template != .mono {
+            nextAccents = ThemeAccentSet.defaults(for: template)
+        } else if template == .mono {
+            var mono = ThemeAccentSet.mono
+            mono.proxy = themeAccents.proxy
+            nextAccents = mono
+        }
+        colorThemeTemplate = template
+        themeAccents = nextAccents
+        persistColorTheme()
+        applyColorTheme()
+    }
+
+    /// Update a single accent; switches template to `.custom` when leaving a preset (except mono proxy tweaks).
+    func updateThemeAccent(_ keyPath: WritableKeyPath<ThemeAccentSet, ThemeRGB>, to rgb: ThemeRGB) {
+        var next = themeAccents
+        next[keyPath: keyPath] = rgb
+        commitThemeAccents(next, allowNonProxyInMono: keyPath == \ThemeAccentSet.proxy)
+    }
+
+    /// Primary accent also nudges the darker brand token for consistent surfaces.
+    func updatePrimaryAccent(_ rgb: ThemeRGB) {
+        var next = themeAccents
+        next.accent = rgb
+        next.brand = ThemeRGB(
+            r: max(0, rgb.r * 0.85),
+            g: max(0, rgb.g * 0.85),
+            b: max(0, rgb.b * 0.85)
+        )
+        commitThemeAccents(next, allowNonProxyInMono: false)
+    }
+
+    private func commitThemeAccents(_ next: ThemeAccentSet, allowNonProxyInMono: Bool) {
+        if colorThemeTemplate == .mono {
+            guard allowNonProxyInMono else { return }
+            var locked = ThemeAccentSet.mono
+            locked.proxy = next.proxy
+            themeAccents = locked
+            persistColorTheme()
+            applyColorTheme()
+            return
+        }
+        if colorThemeTemplate != .custom {
+            colorThemeTemplate = .custom
+        }
+        themeAccents = next
+        persistColorTheme()
+        applyColorTheme()
+    }
+
+    func resetThemeAccentsToTemplate() {
+        if colorThemeTemplate == .custom {
+            setColorThemeTemplate(.forest)
+            return
+        }
+        setColorThemeTemplate(colorThemeTemplate)
+    }
+
+    private func loadColorThemePreferences() {
+        isLoadingColorTheme = true
+        var template = ColorThemeTemplate.forest
+        var accents = ThemeAccentSet.forest
+        if let raw = UserDefaults.standard.string(forKey: Self.colorThemeTemplateKey),
+           let loaded = ColorThemeTemplate(rawValue: raw) {
+            template = loaded
+        }
+        if let data = UserDefaults.standard.data(forKey: Self.themeAccentsKey),
+           let decoded = try? JSONDecoder().decode(ThemeAccentSet.self, from: data) {
+            accents = decoded
+        } else {
+            accents = ThemeAccentSet.defaults(for: template == .custom ? .forest : template)
+        }
+        colorThemeTemplate = template
+        themeAccents = accents
+        isLoadingColorTheme = false
+    }
+
+    private func persistColorTheme() {
+        guard !isLoadingColorTheme else { return }
+        UserDefaults.standard.set(colorThemeTemplate.rawValue, forKey: Self.colorThemeTemplateKey)
+        if let data = try? JSONEncoder().encode(themeAccents) {
+            UserDefaults.standard.set(data, forKey: Self.themeAccentsKey)
+        }
+    }
+
+    private func applyColorTheme() {
+        ThemeStore.apply(template: colorThemeTemplate, accents: themeAccents)
+        themeRevision = ThemeStore.revision
     }
 
     func resetRankingColumnSpacing() {
@@ -672,11 +876,14 @@ final class AppModel: ObservableObject {
     }
 
     func toggleBlock(_ app: AppIdentityKey) {
+        setBlocked(app, blocked: !blockedKeys.contains(app.storageKey))
+    }
+
+    /// Explicit allow / block for ranking status menu.
+    func setBlocked(_ app: AppIdentityKey, blocked: Bool) {
         let key = app.storageKey
-        if blockedKeys.contains(key) {
-            blockedKeys.remove(key)
-            removeBlockRules(for: app)
-        } else {
+        if blocked {
+            guard !blockedKeys.contains(key) else { return }
             blockedKeys.insert(key)
             let rule = NetworkPolicyRule(
                 priority: 50_000,
@@ -687,6 +894,15 @@ final class AppModel: ObservableObject {
                 note: "UI block"
             )
             policyStore.upsert(rule: rule)
+        } else {
+            guard blockedKeys.contains(key) else {
+                // Still clear any UI block rules if firewall resolved via other means.
+                removeBlockRules(for: app)
+                refreshPublishedState()
+                return
+            }
+            blockedKeys.remove(key)
+            removeBlockRules(for: app)
         }
         persistArchivedAndBlocked()
         refreshPublishedState()
@@ -890,26 +1106,24 @@ final class AppModel: ObservableObject {
     }
 
     func revealInFinder(_ app: AppIdentityKey) {
-        let sid = app.signingIdentifier
-        let aliases: [String: String] = [
-            "com.apple.WebKit.Networking": "com.apple.Safari",
-            "com.google.Chrome.helper": "com.google.Chrome",
-            "com.anthropic.claude": "com.anthropic.claudefordesktop",
-        ]
-        let bundleID = aliases[sid] ?? sid
-        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
-            NSWorkspace.shared.activateFileViewerSelecting([url])
+        guard let url = AppIconCache.shared.applicationURL(forSigningID: app.signingIdentifier) else {
             return
         }
-        let name = AppIconCache.shared.displayName(forSigningID: sid, fallback: sid)
-        if let path = NSWorkspace.shared.fullPath(forApplication: name) {
-            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+        // Context-menu dismissal reactivates this app and can immediately bury Finder.
+        // Defer the reveal so Finder stays frontmost after the menu closes.
+        DispatchQueue.main.async {
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+            let finderApps = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.finder")
+            if let finder = finderApps.first {
+                finder.activate(options: [.activateIgnoringOtherApps])
+            }
         }
     }
 
     /// Remove telemetry for the app and drop it from ranking (also clears favorite pin).
     func deleteAppFromRanking(_ app: AppIdentityKey) {
         aggregator.purge(app: app)
+        appRateHistory.removeValue(forKey: app.storageKey)
         favoriteKeys.remove(app.storageKey)
         persistFavorites()
         archivedKeys.remove(app.storageKey)
@@ -1238,7 +1452,7 @@ final class AppModel: ObservableObject {
     func openDashboard() {
         selectedTab = .overview
         NSApp.activate(ignoringOtherApps: true)
-        if let window = NSApp.windows.first(where: { $0.title == "FlowLens" || $0.contentView != nil }) {
+        if let window = NSApp.windows.first(where: { $0.title == AppBrand.displayName || $0.contentView != nil }) {
             window.makeKeyAndOrderFront(nil)
         }
     }
@@ -1507,17 +1721,27 @@ final class AppModel: ObservableObject {
             return demoMode ? UInt64(Double(weekWrite) * ds) : periodDiskWrite
         }()
 
+        updateAppRateHistory(from: activeTops + archivedTops)
+
         func makeRows(from snaps: [AppTrafficSnapshot], shareBase: UInt64) -> [AppRankingRow] {
             snaps.map { snap -> AppRankingRow in
                 let share = Double(snap.totals.totalBytes) / Double(max(1, shareBase))
                 let groupName = groups.first(where: { $0.memberKeys.contains(snap.app) })?.name
                 let bias = demoDiskBias(for: snap.app)
+                let lastAt = aggregator.lastTrafficAt(for: snap.app)
+                    ?? ((snap.rateDownBps + snap.rateUpBps) > 1 ? now : nil)
                 return AppRankingRow(
                     snapshot: snap,
                     diskRead: UInt64(Double(diskR) * share * bias),
                     diskWrite: UInt64(Double(diskW) * share * (2.0 - bias)),
                     groupName: groupName,
-                    share: min(1, share)
+                    share: min(1, share),
+                    lastTrafficAt: lastAt,
+                    rateSeries: displayRateSeries(
+                        for: snap,
+                        periodFrom: periodFrom,
+                        periodTo: periodTo
+                    )
                 )
             }
         }
@@ -1606,6 +1830,7 @@ final class AppModel: ObservableObject {
         let siteTotal = max(1, sites.reduce(UInt64(0)) { $0 &+ $1.totals.totalBytes })
         return sites.map { site in
             let share = Double(site.totals.totalBytes) / Double(siteTotal)
+            let scaledSeries = parent.rateSeries.map { $0 * share }
             return AppRankingRow(
                 id: "\(parent.id)|\(site.destinationKey)",
                 snapshot: AppTrafficSnapshot(
@@ -1623,9 +1848,50 @@ final class AppModel: ObservableObject {
                 diskRead: UInt64(Double(parent.diskRead) * share),
                 diskWrite: UInt64(Double(parent.diskWrite) * share),
                 groupName: parent.groupName,
-                share: share
+                share: share,
+                lastTrafficAt: site.totals.totalBytes > 0 ? parent.lastTrafficAt : nil,
+                rateSeries: scaledSeries
             )
         }
+    }
+
+    /// Append one live (down+up) sample per visible app each tick.
+    private func updateAppRateHistory(from snaps: [AppTrafficSnapshot]) {
+        let activeKeys = Set(snaps.map(\.app.storageKey))
+        for snap in snaps {
+            let key = snap.app.storageKey
+            var series = appRateHistory[key] ?? []
+            series.append(snap.rateDownBps + snap.rateUpBps)
+            if series.count > Self.appRateHistoryLimit {
+                series.removeFirst(series.count - Self.appRateHistoryLimit)
+            }
+            appRateHistory[key] = series
+        }
+        appRateHistory = appRateHistory.filter { activeKeys.contains($0.key) || archivedKeys.contains($0.key) }
+    }
+
+    /// Prefer live sparkline; when idle, show period byte shape so the cell isn't empty.
+    private func displayRateSeries(
+        for snap: AppTrafficSnapshot,
+        periodFrom: Date,
+        periodTo: Date
+    ) -> [Double] {
+        let live = appRateHistory[snap.app.storageKey] ?? []
+        if (live.max() ?? 0) > 1 {
+            return live
+        }
+        guard snap.totals.totalBytes > 0 else { return live }
+        let bytes = aggregator.byteSeries(
+            for: snap.app,
+            from: periodFrom,
+            to: periodTo,
+            points: Self.appRateHistoryLimit
+        )
+        let combined = zip(bytes.down, bytes.up).map { $0 + $1 }
+        if (combined.max() ?? 0) > 0 {
+            return combined
+        }
+        return live
     }
 
     var drilledAppTitle: String? {
@@ -1836,7 +2102,7 @@ final class AppModel: ObservableObject {
         ]
         // VS Code: different projects (synthetic destination keys)
         let vscodeProjects: [(String, UInt64, UInt64)] = [
-            ("project:FlowLens", 90_000_000, 420_000_000),
+            ("project:EyesOnYou", 90_000_000, 420_000_000),
             ("project:dontbesilent-web", 55_000_000, 280_000_000),
             ("project:design-system", 40_000_000, 190_000_000),
             ("project:api-gateway", 35_000_000, 160_000_000),

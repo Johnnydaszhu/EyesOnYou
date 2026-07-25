@@ -4,7 +4,7 @@
 # Usage:
 #   ./scripts/publish-release.sh                 # build + publish Info.plist version
 #   ./scripts/publish-release.sh 0.1.1           # build + publish v0.1.1
-#   ./scripts/publish-release.sh --skip-build    # upload existing dist/FlowLens-*.dmg
+#   ./scripts/publish-release.sh --skip-build    # upload existing dist/EyesOnYou-*.dmg
 #   ./scripts/publish-release.sh --draft 0.1.1
 #
 # Requires: gh (authenticated), and build-dmg.sh prerequisites unless --skip-build.
@@ -75,7 +75,7 @@ need gh
 
 VERSION="$(resolve_version)"
 TAG="v${VERSION}"
-DMG_PATH="$DIST_DIR/FlowLens-${VERSION}.dmg"
+DMG_PATH="$DIST_DIR/EyesOnYou-${VERSION}.dmg"
 
 echo "==> publish GitHub Release"
 echo "    tag: $TAG"
@@ -86,9 +86,9 @@ if [[ "$SKIP_BUILD" -eq 0 ]]; then
 fi
 
 if [[ ! -f "$DMG_PATH" ]]; then
-  # Fallback: any FlowLens-*.dmg in dist
-  if compgen -G "$DIST_DIR/FlowLens-*.dmg" >/dev/null; then
-    DMG_PATH="$(ls -1t "$DIST_DIR"/FlowLens-*.dmg | head -1)"
+  # Fallback: any EyesOnYou-*.dmg in dist
+  if compgen -G "$DIST_DIR/EyesOnYou-*.dmg" >/dev/null; then
+    DMG_PATH="$(ls -1t "$DIST_DIR"/EyesOnYou-*.dmg | head -1)"
     echo "    using: $DMG_PATH"
   else
     echo "error: DMG not found. Run ./scripts/build-dmg.sh first or drop --skip-build." >&2
@@ -98,11 +98,11 @@ fi
 
 NOTES_FILE="$DIST_DIR/release-notes.md"
 cat > "$NOTES_FILE" <<EOF
-## FlowLens ${VERSION}
+## EyesOnYou ${VERSION}
 
 ### Install
-1. Download \`FlowLens-${VERSION}.dmg\`
-2. Open the disk image and drag **FlowLens** into **Applications**
+1. Download \`EyesOnYou-${VERSION}.dmg\`
+2. Open the disk image and drag **EyesOnYou** into **Applications**
 3. Launch from Applications
 
 ### Notes
@@ -111,12 +111,12 @@ cat > "$NOTES_FILE" <<EOF
 
 ### Verify (signed builds)
 \`\`\`bash
-codesign --verify --deep --strict --verbose=4 /Applications/FlowLens.app
-spctl --assess --type execute --verbose=4 /Applications/FlowLens.app
+codesign --verify --deep --strict --verbose=4 /Applications/EyesOnYou.app
+spctl --assess --type execute --verbose=4 /Applications/EyesOnYou.app
 \`\`\`
 EOF
 
-GH_ARGS=(release create "$TAG" "$DMG_PATH" --title "FlowLens ${VERSION}" --notes-file "$NOTES_FILE")
+GH_ARGS=(release create "$TAG" "$DMG_PATH" --title "EyesOnYou ${VERSION}" --notes-file "$NOTES_FILE")
 if [[ "$DRAFT" -eq 1 ]]; then
   GH_ARGS+=(--draft)
 fi
@@ -135,7 +135,7 @@ else
   # On GitHub Actions the tag is already present (push trigger) or created by the workflow.
   if [[ "${GITHUB_ACTIONS:-}" != "true" ]]; then
     if ! git rev-parse "$TAG" >/dev/null 2>&1; then
-      git tag -a "$TAG" -m "FlowLens ${VERSION}"
+      git tag -a "$TAG" -m "EyesOnYou ${VERSION}"
     fi
     git push origin "$TAG" 2>/dev/null || true
   fi

@@ -61,9 +61,7 @@ final class AppIconCache: ObservableObject {
 
     /// Prefer system-localized display name from the installed app bundle.
     func displayName(forSigningID signingID: String, fallback: String) -> String {
-        let key = Self.normalize(signingID)
-        let bundleID = Self.aliases[key] ?? key
-        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+        if let url = Self.applicationURL(forSigningID: signingID) {
             if let bundle = Bundle(url: url),
                let name = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
                 ?? bundle.object(forInfoDictionaryKey: "CFBundleName") as? String,
@@ -73,6 +71,38 @@ final class AppIconCache: ObservableObject {
             return url.deletingPathExtension().lastPathComponent
         }
         return fallback
+    }
+
+    /// Resolve the on-disk `.app` URL for a signing / bundle identifier.
+    func applicationURL(forSigningID signingID: String) -> URL? {
+        Self.applicationURL(forSigningID: signingID)
+    }
+
+    /// Resolve the on-disk `.app` URL for a signing / bundle identifier.
+    static func applicationURL(forSigningID signingID: String) -> URL? {
+        let key = normalize(signingID)
+        let candidates = bundleCandidates(for: key)
+        for bundleID in candidates {
+            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
+                return url
+            }
+        }
+        for app in NSWorkspace.shared.runningApplications {
+            guard let bid = app.bundleIdentifier, candidates.contains(bid) else { continue }
+            if let url = app.bundleURL {
+                return url
+            }
+        }
+        // Last resort: strip helper / renderer / networking suffixes and retry Launch Services.
+        for suffix in [".helper.renderer", ".helper", ".WebContent", ".Networking", ".plugincontainer"] {
+            if key.hasSuffix(suffix) {
+                let parent = String(key.dropLast(suffix.count))
+                if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: parent) {
+                    return url
+                }
+            }
+        }
+        return nil
     }
 
     private func sized(_ image: NSImage, size: CGFloat) -> NSImage {
@@ -87,21 +117,19 @@ final class AppIconCache: ObservableObject {
     }
 
     private static func loadIcon(for signingID: String) -> NSImage? {
-        let candidates = bundleCandidates(for: signingID)
-        for bundleID in candidates {
-            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {
-                let icon = NSWorkspace.shared.icon(forFile: url.path)
-                icon.size = NSSize(width: 64, height: 64)
-                return icon
-            }
+        if let url = applicationURL(forSigningID: signingID) {
+            let icon = NSWorkspace.shared.icon(forFile: url.path)
+            icon.size = NSSize(width: 64, height: 64)
+            return icon
         }
-        // Fallback: scan running apps
+        // Fallback: running-app icon when bundle path is unavailable.
+        let candidates = bundleCandidates(for: signingID)
         for app in NSWorkspace.shared.runningApplications {
-            guard let bid = app.bundleIdentifier else { continue }
-            if candidates.contains(bid), let icon = app.icon {
-                icon.size = NSSize(width: 64, height: 64)
-                return icon
+            guard let bid = app.bundleIdentifier, candidates.contains(bid), let icon = app.icon else {
+                continue
             }
+            icon.size = NSSize(width: 64, height: 64)
+            return icon
         }
         return nil
     }

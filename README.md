@@ -1,19 +1,15 @@
-# FlowLens
+# EyesOnYou
 
 [English](./README.md) · [简体中文](./README.zh-CN.md)
 
 Native macOS network observability, per-app firewall, and selective proxy.
 
-> Working codename — verify trademark and domain before a public launch.
+> Formerly FlowLens. Verify trademark and domain before a public launch.
 
 ## Screenshots
 
 <p align="center">
-  <img src="docs/screenshots/overview-light.png" alt="FlowLens overview — light appearance" width="860" />
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/overview-dark.png" alt="FlowLens overview — dark appearance" width="860" />
+  <img src="docs/screenshots/overview.gif" alt="EyesOnYou overview dashboard" width="860" />
 </p>
 
 Overview dashboard: period totals, live traffic, proxy routing mix, sunburst traffic map, and per-app ranking (favorites, groups, selective proxy).
@@ -30,7 +26,7 @@ Overview dashboard: period totals, live traffic, proxy routing mix, sunburst tra
 
 ## Download / DMG
 
-GitHub Releases host the installable disk image (`FlowLens-<version>.dmg`).
+GitHub Releases host the installable disk image (`EyesOnYou-<version>.dmg`).
 
 ```bash
 # Local: build DMG into dist/
@@ -40,7 +36,7 @@ GitHub Releases host the installable disk image (`FlowLens-<version>.dmg`).
 ./scripts/publish-release.sh 0.1.0
 
 # Or push a tag — Actions builds and uploads the DMG
-git tag -a v0.1.0 -m "FlowLens 0.1.0"
+git tag -a v0.1.0 -m "EyesOnYou 0.1.0"
 git push origin v0.1.0
 ```
 

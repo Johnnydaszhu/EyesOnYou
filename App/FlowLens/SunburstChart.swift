@@ -89,14 +89,18 @@ struct SunburstChart: View {
     private let topShareLimit = 5
 
     var body: some View {
-        let current = model.sunburstRoot.node(path: model.sunburstPath)
+        let softFilter = softFilteredRoot()
+        let current = softFilter?.node ?? model.sunburstRoot.node(path: model.sunburstPath)
+        let isSoftFiltered = softFilter != nil
         let slices = layoutSlices(root: current)
         let topShares = topShareItems(from: current)
-        let centerTitle = model.sunburstPath.isEmpty
-            ? l10n.t("sunburst.apps")
-            : current.title
+        let centerTitle: String = {
+            if let soft = softFilter { return soft.node.title }
+            if model.sunburstPath.isEmpty { return l10n.t("sunburst.apps") }
+            return current.title
+        }()
         let centerValue = ByteFormat.string(for: current.value)
-        let hoverDetail = hoveredDetail(slices: slices, root: current)
+        let hoverDetail = isSoftFiltered ? nil : hoveredDetail(slices: slices, root: current)
 
         VStack(spacing: 8) {
             // Always-visible drill navigation
@@ -130,6 +134,10 @@ struct SunburstChart: View {
                             .background(Capsule().fill(Color.primary.opacity(0.06)))
                     }
                     .buttonStyle(.plain)
+                } else if isSoftFiltered {
+                    Text(l10n.t("sunburst.hoverFilter"))
+                        .font(.system(size: 10))
+                        .foregroundStyle(FlowLensTheme.brandGreen)
                 } else {
                     Text(l10n.t("sunburst.hint"))
                         .font(.system(size: 10))
@@ -150,8 +158,10 @@ struct SunburstChart: View {
                         .frame(width: size * 0.96, height: size * 0.96)
 
                     ForEach(slices) { slice in
-                        let isHovered = isSliceHovered(slice)
-                        let dimmed = model.hoverNodeID != nil && !isRelated(hover: model.hoverNodeID, slice: slice)
+                        let isHovered = !isSoftFiltered && isSliceHovered(slice)
+                        let dimmed = !isSoftFiltered
+                            && model.hoverNodeID != nil
+                            && !isRelated(hover: model.hoverNodeID, slice: slice)
                         let ratios = ringRatios(ring: slice.ring)
 
                         RingSlice(
@@ -240,7 +250,13 @@ struct SunburstChart: View {
                                         .foregroundStyle(FlowLensTheme.textPrimary)
                                         .lineLimit(1)
                                         .minimumScaleFactor(0.6)
-                                    if !model.sunburstPath.isEmpty {
+                                    if isSoftFiltered {
+                                        Text(l10n.t("sunburst.hoverFilter"))
+                                            .font(.system(size: 9, weight: .medium))
+                                            .foregroundStyle(FlowLensTheme.brandGreen.opacity(0.9))
+                                            .lineLimit(1)
+                                            .minimumScaleFactor(0.7)
+                                    } else if !model.sunburstPath.isEmpty {
                                         Text(l10n.t("sunburst.centerBack"))
                                             .font(.system(size: 9, weight: .medium))
                                             .foregroundStyle(FlowLensTheme.accentBlue.opacity(0.85))
@@ -256,9 +272,17 @@ struct SunburstChart: View {
                         }
                         .contentShape(Circle())
                         .onTapGesture {
-                            model.sunburstGoBack()
+                            if isSoftFiltered, let appID = softFilter?.appID {
+                                model.drillInto(nodeID: appID)
+                            } else {
+                                model.sunburstGoBack()
+                            }
                         }
-                        .help(model.sunburstPath.isEmpty ? "" : l10n.t("sunburst.centerBack"))
+                        .help(
+                            isSoftFiltered
+                                ? l10n.t("ranking.drill")
+                                : (model.sunburstPath.isEmpty ? "" : l10n.t("sunburst.centerBack"))
+                        )
 
                     // Hit layer
                     Color.clear
@@ -293,23 +317,46 @@ struct SunburstChart: View {
             .frame(minHeight: 160)
             .layoutPriority(1)
 
-            topShareLegend(items: topShares)
+            topShareLegend(items: topShares, softFiltered: isSoftFiltered)
         }
+        .animation(.easeOut(duration: 0.18), value: softFilter?.appID)
         .id(l10n.revision)
+    }
+
+    /// Ranking-row hover temporarily filters the pie to that app's destinations
+    /// (real-time preview without committing a drill).
+    private func softFilteredRoot() -> (appID: String, node: AppModel.SunburstNode)? {
+        guard model.sunburstPath.isEmpty,
+              let appID = model.rankingHoverFilterID,
+              let focused = model.sunburstRoot.children.first(where: { $0.id == appID }),
+              focused.hasChildren
+        else {
+            return nil
+        }
+        return (
+            appID: focused.id,
+            node: AppModel.SunburstNode(
+                id: focused.id,
+                title: focused.title,
+                value: focused.value,
+                hue: focused.hue,
+                children: focused.children
+            )
+        )
     }
 
     // MARK: - Top share legend
 
-    private func topShareLegend(items: [TopShareItem]) -> some View {
+    private func topShareLegend(items: [TopShareItem], softFiltered: Bool) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(l10n.t("sunburst.topShares"))
+            Text(l10n.t(softFiltered ? "sunburst.filteredShares" : "sunburst.topShares"))
                 .font(.system(size: 9, weight: .semibold))
                 .foregroundStyle(FlowLensTheme.textSecondary)
                 .textCase(.uppercase)
 
             ForEach(items) { item in
-                let active = isLegendActive(item.id)
-                let dimmed = model.hoverNodeID != nil && !active
+                let active = softFiltered || isLegendActive(item.id)
+                let dimmed = !softFiltered && model.hoverNodeID != nil && !active
                 HStack(spacing: 6) {
                     Circle()
                         .fill(Color(hue: item.hue, saturation: 0.7, brightness: active ? 0.95 : 0.78))
@@ -328,7 +375,7 @@ struct SunburstChart: View {
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
                 .background {
-                    if active {
+                    if active && !softFiltered {
                         RoundedRectangle(cornerRadius: 6, style: .continuous)
                             .fill(FlowLensTheme.brandGreen.opacity(0.10))
                     }
@@ -336,6 +383,7 @@ struct SunburstChart: View {
                 .opacity(dimmed ? 0.35 : 1)
                 .contentShape(Rectangle())
                 .onHover { inside in
+                    if softFiltered { return }
                     if inside {
                         model.setHoverNode(item.id)
                     } else if model.hoverNodeID == item.id {
@@ -343,7 +391,11 @@ struct SunburstChart: View {
                     }
                 }
                 .onTapGesture {
-                    model.drillInto(nodeID: item.id)
+                    if softFiltered, let appID = softFilteredRoot()?.appID {
+                        model.drillInto(nodeID: appID)
+                    } else {
+                        model.drillInto(nodeID: item.id)
+                    }
                 }
                 .animation(.easeOut(duration: 0.12), value: model.hoverNodeID)
             }

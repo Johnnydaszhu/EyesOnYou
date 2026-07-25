@@ -22,12 +22,14 @@
 		602DF5D43E4A32F5275B0A78 /* FlowFilterDataProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD4055A5258C6C36594BE1F9 /* FlowFilterDataProvider.swift */; };
 		609C4716164409314F69DFD9 /* L10n.swift in Sources */ = {isa = PBXBuildFile; fileRef = 474AC95039BCD487568E6853 /* L10n.swift */; };
 		673E98873B94340FF8088B81 /* MainDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE249AA5368677FE75C9AD0D /* MainDashboardView.swift */; };
+		706111527D529AB02C671145 /* ThemePalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AC32A74690F08C2ADC4D367 /* ThemePalette.swift */; };
 		7E7B4AC4257F8011CDA10616 /* MenuBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77EA9F5347ECAF68596078C9 /* MenuBarController.swift */; };
 		85006722216439D47849F836 /* FlowLensProxyCore in Frameworks */ = {isa = PBXBuildFile; productRef = 526C7F19DCCB3F606ED5AF7D /* FlowLensProxyCore */; };
 		8858B935ADE883578E80CAC2 /* FlowLensRuleEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 518475C2B7F7D4C38A48DA37 /* FlowLensRuleEngine */; };
 		8E2F1FF0283E665686FEEBA0 /* FlowTransparentProxyProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47FF35FCC77CBAF6A03BFD74 /* FlowTransparentProxyProvider.swift */; };
 		932F84424E361614CCE70219 /* GlobalTimeRangeBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78F29A419CA7BDC32BF080BE /* GlobalTimeRangeBar.swift */; };
 		9370863D79F891890BA575DA /* OverviewTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEE15FACDA4C412D6A805F5C /* OverviewTabView.swift */; };
+		973062A982ACDC404EEEE1A0 /* AppBrand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 630E23BD97E519C8FFB78556 /* AppBrand.swift */; };
 		A4693C6447480FD0BC2D6D8E /* GlobalSearchBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21AAD310A39CB63DBEA8CF3F /* GlobalSearchBar.swift */; };
 		A7E97D56CDD892CB5557261C /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 146EFF018627D3F3BD8A0C26 /* AppModel.swift */; };
 		A9B1F6E4202C38D588DCD62E /* FlowLensApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51E1ACC4174B593AD9C44834 /* FlowLensApp.swift */; };
@@ -80,6 +82,8 @@
 		53F509D9A0DE09E83EAB983C /* BentoLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoLayout.swift; sourceTree = "<group>"; };
 		5508FCFB19EBC3967C78477A /* FlowLensNetworkExtension.systemextension */ = {isa = PBXFileReference; explicitFileType = "wrapper.system-extension"; includeInIndex = 0; path = FlowLensNetworkExtension.systemextension; sourceTree = BUILT_PRODUCTS_DIR; };
 		5EC3D370165D8B5780FDF719 /* FlowLens */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FlowLens; path = .; sourceTree = SOURCE_ROOT; };
+		630E23BD97E519C8FFB78556 /* AppBrand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppBrand.swift; sourceTree = "<group>"; };
+		6AC32A74690F08C2ADC4D367 /* ThemePalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemePalette.swift; sourceTree = "<group>"; };
 		7571A7FC78B3E293625B7B7A /* AppIconView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIconView.swift; sourceTree = "<group>"; };
 		77EA9F5347ECAF68596078C9 /* MenuBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarController.swift; sourceTree = "<group>"; };
 		78F29A419CA7BDC32BF080BE /* GlobalTimeRangeBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalTimeRangeBar.swift; sourceTree = "<group>"; };
@@ -158,6 +162,7 @@
 			isa = PBXGroup;
 			children = (
 				983C7F31C3D2F2F5979E1820 /* Localization */,
+				630E23BD97E519C8FFB78556 /* AppBrand.swift */,
 				7571A7FC78B3E293625B7B7A /* AppIconView.swift */,
 				146EFF018627D3F3BD8A0C26 /* AppModel.swift */,
 				448DF02635E6AA29171B4DD5 /* AppsRulesProxyHistoryViews.swift */,
@@ -175,6 +180,7 @@
 				2AC4613B3A376037EAFDF83E /* SettingsWindowController.swift */,
 				E13DBC5D97BC5D41D601A280 /* SunburstChart.swift */,
 				8946E972E09FE090D788BCDF /* Theme.swift */,
+				6AC32A74690F08C2ADC4D367 /* ThemePalette.swift */,
 			);
 			path = FlowLens;
 			sourceTree = "<group>";
@@ -323,6 +329,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				973062A982ACDC404EEEE1A0 /* AppBrand.swift in Sources */,
 				FE4A0DA3D1C2AA5058D418C4 /* AppIconView.swift in Sources */,
 				A7E97D56CDD892CB5557261C /* AppModel.swift in Sources */,
 				04D522CD80D28F7182723035 /* AppUpdateService.swift in Sources */,
@@ -341,6 +348,7 @@
 				B53AE225496F25CB84116035 /* SettingsWindowController.swift in Sources */,
 				CE97132A8B07454BC5CD6F55 /* SunburstChart.swift in Sources */,
 				01DAD3DA1D4557B051C0EBC7 /* Theme.swift in Sources */,
+				706111527D529AB02C671145 /* ThemePalette.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -453,7 +461,7 @@
 					"@executable_path/../Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.FlowLens;
-				PRODUCT_NAME = FlowLens;
+				PRODUCT_NAME = EyesOnYou;
 				SDKROOT = macosx;
 			};
 			name = Debug;
@@ -474,7 +482,7 @@
 					"@executable_path/../Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.example.FlowLens;
-				PRODUCT_NAME = FlowLens;
+				PRODUCT_NAME = EyesOnYou;
 				SDKROOT = macosx;
 			};
 			name = Release;

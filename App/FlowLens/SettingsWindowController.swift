@@ -36,8 +36,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         )
         window.title = LocalizationStore.shared.t("settings.title")
         window.contentViewController = hosting
-        window.setContentSize(NSSize(width: 640, height: 560))
-        window.minSize = NSSize(width: 520, height: 420)
+        window.setContentSize(NSSize(width: 660, height: 640))
+        window.minSize = NSSize(width: 540, height: 480)
         window.center()
         window.isReleasedWhenClosed = false
         window.delegate = self
@@ -78,7 +78,7 @@ struct SettingsView: View {
             aboutPane
                 .tabItem { Label(l10n.t("settings.tab.about"), systemImage: "info.circle") }
         }
-        .frame(minWidth: 520, minHeight: 420)
+        .frame(minWidth: 540, minHeight: 480)
         .padding(4)
         .id(l10n.revision)
     }
@@ -155,6 +155,92 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             } header: {
                 Text(l10n.t("appearance.section"))
+            }
+
+            Section {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 10)], spacing: 10) {
+                    ForEach(ColorThemeTemplate.allCases) { template in
+                        ThemeTemplateCard(
+                            template: template,
+                            isSelected: model.colorThemeTemplate == template
+                        ) {
+                            model.setColorThemeTemplate(template)
+                        }
+                    }
+                }
+                .padding(.vertical, 4)
+
+                Text(l10n.t(model.colorThemeTemplate == .mono ? "theme.mono.hint" : "theme.template.hint"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text(l10n.t("theme.section"))
+            }
+
+            Section {
+                if model.colorThemeTemplate == .mono {
+                    ThemeColorRow(
+                        title: l10n.t("theme.color.proxy"),
+                        subtitle: l10n.t("theme.color.proxy.monoHint"),
+                        color: Binding(
+                            get: { model.themeAccents.proxy.color },
+                            set: { model.updateThemeAccent(\.proxy, to: ThemeRGB(color: $0)) }
+                        )
+                    )
+                } else {
+                    ThemeColorRow(
+                        title: l10n.t("theme.color.primary"),
+                        subtitle: l10n.t("theme.color.primary.hint"),
+                        color: Binding(
+                            get: { model.themeAccents.accent.color },
+                            set: { model.updatePrimaryAccent(ThemeRGB(color: $0)) }
+                        )
+                    )
+                    ThemeColorRow(
+                        title: l10n.t("theme.color.secondary"),
+                        subtitle: l10n.t("theme.color.secondary.hint"),
+                        color: Binding(
+                            get: { model.themeAccents.secondary.color },
+                            set: { model.updateThemeAccent(\.secondary, to: ThemeRGB(color: $0)) }
+                        )
+                    )
+                    ThemeColorRow(
+                        title: l10n.t("theme.color.tertiary"),
+                        subtitle: l10n.t("theme.color.tertiary.hint"),
+                        color: Binding(
+                            get: { model.themeAccents.tertiary.color },
+                            set: { model.updateThemeAccent(\.tertiary, to: ThemeRGB(color: $0)) }
+                        )
+                    )
+                    ThemeColorRow(
+                        title: l10n.t("theme.color.proxy"),
+                        subtitle: l10n.t("theme.color.proxy.hint"),
+                        color: Binding(
+                            get: { model.themeAccents.proxy.color },
+                            set: { model.updateThemeAccent(\.proxy, to: ThemeRGB(color: $0)) }
+                        )
+                    )
+                    ThemeColorRow(
+                        title: l10n.t("theme.color.danger"),
+                        subtitle: l10n.t("theme.color.danger.hint"),
+                        color: Binding(
+                            get: { model.themeAccents.danger.color },
+                            set: { model.updateThemeAccent(\.danger, to: ThemeRGB(color: $0)) }
+                        )
+                    )
+                }
+
+                HStack {
+                    Spacer()
+                    Button(l10n.t("theme.reset")) {
+                        model.resetThemeAccentsToTemplate()
+                    }
+                }
+            } header: {
+                Text(l10n.t("theme.customize.section"))
+            } footer: {
+                Text(l10n.t("theme.customize.footer"))
+                    .font(.caption)
             }
         }
         .formStyle(.grouped)
@@ -272,7 +358,7 @@ struct SettingsView: View {
         Form {
             Section {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("FlowLens")
+                    Text(AppBrand.displayName)
                         .font(.title2.weight(.semibold))
                     Text(l10n.t("settings.about.tagline"))
                         .foregroundStyle(.secondary)
@@ -306,9 +392,74 @@ struct SettingsView: View {
     }
 
     private var displayNameForResolved: String {
-        switch l10n.resolvedCode {
-        case "zh-Hans": return l10n.t("lang.chinese")
-        default: return l10n.t("lang.english")
+        l10n.displayName(forCode: l10n.resolvedCode)
+    }
+}
+
+// MARK: - Theme settings controls
+
+private struct ThemeTemplateCard: View {
+    let template: ColorThemeTemplate
+    let isSelected: Bool
+    let action: () -> Void
+    @EnvironmentObject private var l10n: LocalizationStore
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 4) {
+                    ForEach(Array(template.previewSwatches.enumerated()), id: \.offset) { _, color in
+                        Circle()
+                            .fill(color)
+                            .frame(width: 12, height: 12)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: template.systemImage)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                Text(l10n.t(template.localizationKey))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.primary.opacity(isSelected ? 0.08 : 0.03))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(
+                                isSelected ? FlowLensTheme.accentBlue.opacity(0.85) : Color.primary.opacity(0.12),
+                                lineWidth: isSelected ? 1.4 : 0.8
+                            )
+                    )
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityLabel(l10n.t(template.localizationKey))
+    }
+}
+
+private struct ThemeColorRow: View {
+    let title: String
+    let subtitle: String
+    @Binding var color: Color
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            ColorPicker("", selection: $color, supportsOpacity: false)
+                .labelsHidden()
+                .frame(width: 44)
         }
     }
 }

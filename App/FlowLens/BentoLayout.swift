@@ -100,9 +100,9 @@ struct BentoMetrics: Equatable {
             showGroupProxyColumns = false
         }
 
-        // Metrics row: ~22–28% of viewport, clamped.
-        let idealMetrics = h * (wc == .tiny || wc == .compact ? 0.42 : 0.26)
-        metricsRowHeight = min(max(idealMetrics, 160), wc == .xl ? 240 : 210)
+        // Metrics row: keep totals / live / proxy cards on one shared height.
+        let idealMetrics = h * (wc == .tiny || wc == .compact ? 0.38 : 0.22)
+        metricsRowHeight = min(max(idealMetrics, 148), wc == .xl ? 200 : 176)
 
         // Detail row height token (used when side-by-side fills remaining flex space).
         let idealDetail = h * (wc == .tiny || wc == .compact ? 0.55 : 0.58)

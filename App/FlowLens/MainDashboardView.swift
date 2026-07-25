@@ -17,7 +17,7 @@ struct MainDashboardView: View {
                         .liquidGlassBar()
                 }
 
-                topTrailingChrome
+                topChrome
 
                 GlobalTimeRangeBar()
                     .padding(.horizontal, 16)
@@ -27,14 +27,14 @@ struct MainDashboardView: View {
                 content
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
-                    .padding(.bottom, 4)
+                    .padding(.bottom, 12)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-                footer
             }
         }
         .preferredColorScheme(model.appearanceMode.preferredColorScheme)
         .id(l10n.revision)
+        // Ensure palette rebuilds participate in SwiftUI invalidation (tokens are static).
+        .animation(nil, value: model.themeRevision)
         .onAppear {
             AppModel.applyAppearance(model.appearanceMode)
             if let delegate = NSApp.delegate as? AppDelegate {
@@ -48,14 +48,45 @@ struct MainDashboardView: View {
         }
     }
 
-    /// Top-right appearance control (Auto / Light / Dark).
-    private var topTrailingChrome: some View {
+    /// Top bar: app name left-aligned with content · version / settings / appearance.
+    /// Sits in the titlebar band beside traffic lights (leading inset) instead of
+    /// stacking a tall empty strip below them.
+    private var topChrome: some View {
         HStack(spacing: 8) {
-            Spacer(minLength: 0)
+            Text(AppBrand.displayName)
+                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .foregroundStyle(FlowLensTheme.textPrimary)
+                .lineLimit(1)
+
+            Spacer(minLength: 8)
+
+            headerVersionControl
+            Button {
+                model.openSettings()
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(FlowLensTheme.textSecondary)
+                    .frame(width: 28, height: 28)
+                    .background {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.primary.opacity(0.05))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .strokeBorder(FlowLensTheme.cardBorder.opacity(0.8), lineWidth: 0.7)
+                            )
+                    }
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(l10n.t("settings.title"))
             AppearanceModePicker()
         }
-        .padding(.horizontal, 16)
-        .padding(.top, model.appUpdateAvailable ? 6 : 10)
+        // Trailing matches content inset; leading clears traffic lights when chrome
+        // shares the titlebar row (no update banner above).
+        .padding(.leading, model.appUpdateAvailable ? 16 : 78)
+        .padding(.trailing, 16)
+        .padding(.top, model.appUpdateAvailable ? 6 : 8)
         .padding(.bottom, 2)
     }
 
@@ -103,38 +134,8 @@ struct MainDashboardView: View {
         OverviewTabView()
     }
 
-    private var footer: some View {
-        HStack(spacing: 10) {
-            footerVersionControl
-            Spacer()
-            HStack(spacing: 6) {
-                Image(systemName: "wifi")
-                Text(l10n.t("footer.network"))
-            }
-            .font(.system(size: 11))
-            .foregroundStyle(FlowLensTheme.textSecondary)
-
-            Button {
-                model.openSettings()
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(FlowLensTheme.textSecondary)
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(l10n.t("settings.title"))
-            .padding(.leading, 4)
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 6)
-        .padding(.bottom, 10)
-        // No separate bar fill — sits on the same window backdrop as content.
-    }
-
-    private var footerVersionControl: some View {
-        HStack(spacing: 8) {
+    private var headerVersionControl: some View {
+        HStack(spacing: 6) {
             Button {
                 model.checkForUpdates(manual: true)
             } label: {
@@ -155,6 +156,17 @@ struct MainDashboardView: View {
                         ? FlowLensTheme.accentBlue
                         : FlowLensTheme.textSecondary
                 )
+                .padding(.horizontal, 8)
+                .frame(height: 28)
+                .background {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.primary.opacity(0.05))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(FlowLensTheme.cardBorder.opacity(0.8), lineWidth: 0.7)
+                        )
+                }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help(l10n.t("update.check.help"))
@@ -190,18 +202,45 @@ struct MainDashboardView: View {
 
 // MARK: - Path dual sparkline (used by menu bar status item + popover)
 
-/// Dual-series mini sparkline (direct green / proxy purple), iStat density.
+/// Dual-series mini sparkline (direct / proxy), iStat density.
+/// Colors match dashboard route tokens (`routeDirect` / `routeProxy`) and status-bar labels.
 struct PathDualSparkline: View {
     let direct: [Double]
     let proxy: [Double]
+    /// Status-bar density: keep hairline strokes and light fills.
+    var lineWidth: CGFloat = 0.8
+    var fillOpacity: Double = 0.12
+
+    @Environment(\.colorScheme) private var colorScheme
+    @EnvironmentObject private var model: AppModel
 
     var body: some View {
+        // Resolve against the app appearance (not status-item ambient), and use the
+        // same route tokens as Overview / dual-path labels.
+        let scheme = model.appearanceMode.preferredColorScheme ?? colorScheme
+        let directColor = FlowLensTheme.canvasRouteDirect(colorScheme: scheme)
+        let proxyColor = FlowLensTheme.canvasRouteProxy(colorScheme: scheme)
+        let _ = model.themeRevision
         Canvas { context, size in
             let d = pad(direct)
             let p = pad(proxy)
             let peak = max(d.max() ?? 0, p.max() ?? 0, 1)
-            drawSeries(context: context, size: size, values: p, peak: peak, color: FlowLensTheme.accentPurple.opacity(0.9), fillOpacity: 0.18)
-            drawSeries(context: context, size: size, values: d, peak: peak, color: FlowLensTheme.accentGreen.opacity(0.95), fillOpacity: 0.22)
+            drawSeries(
+                context: context,
+                size: size,
+                values: p,
+                peak: peak,
+                color: proxyColor.opacity(0.9),
+                fillOpacity: fillOpacity * 0.85
+            )
+            drawSeries(
+                context: context,
+                size: size,
+                values: d,
+                peak: peak,
+                color: directColor.opacity(0.95),
+                fillOpacity: fillOpacity
+            )
         }
     }
 
@@ -221,11 +260,13 @@ struct PathDualSparkline: View {
     ) {
         guard values.count >= 2, size.width > 1, size.height > 1 else { return }
         let step = size.width / CGFloat(values.count - 1)
+        let inset: CGFloat = 0.5
         var line = Path()
         var fill = Path()
         for (i, v) in values.enumerated() {
             let x = CGFloat(i) * step
-            let y = size.height - CGFloat(v / peak) * (size.height - 2) - 1
+            let usable = max(size.height - inset * 2, 1)
+            let y = size.height - inset - CGFloat(v / peak) * usable
             let pt = CGPoint(x: x, y: y)
             if i == 0 {
                 line.move(to: pt)
@@ -239,7 +280,7 @@ struct PathDualSparkline: View {
         fill.addLine(to: CGPoint(x: size.width, y: size.height))
         fill.closeSubpath()
         context.fill(fill, with: .color(color.opacity(fillOpacity)))
-        context.stroke(line, with: .color(color), lineWidth: 1.2)
+        context.stroke(line, with: .color(color), lineWidth: lineWidth)
     }
 }
 

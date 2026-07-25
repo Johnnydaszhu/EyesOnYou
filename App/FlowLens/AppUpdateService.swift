@@ -1,7 +1,7 @@
 import Foundation
 import AppKit
 
-/// Checks GitHub Releases for a newer FlowLens build and optionally downloads the asset.
+/// Checks GitHub Releases for a newer EyesOnYou build and optionally downloads the asset.
 enum AppUpdateService {
     static let githubOwner = "Johnnydaszhu"
     static let githubRepo = "FlowLens"
@@ -92,7 +92,7 @@ enum AppUpdateService {
 
         var request = URLRequest(url: api)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        request.setValue("FlowLens-Updater", forHTTPHeaderField: "User-Agent")
+        request.setValue("EyesOnYou-Updater", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 20
 
         let task = URLSession.shared.dataTask(with: request) { data, response, error in

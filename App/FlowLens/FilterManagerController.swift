@@ -34,7 +34,7 @@ final class FilterManagerController: NSObject, ObservableObject {
         configuration.filterDataProviderBundleIdentifier = extensionBundleIdentifier
 
         manager.providerConfiguration = configuration
-        manager.localizedDescription = "FlowLens Network Filter"
+        manager.localizedDescription = "\(AppBrand.displayName) Network Filter"
         manager.isEnabled = true
         try await manager.saveToPreferences()
         filterEnabled = true

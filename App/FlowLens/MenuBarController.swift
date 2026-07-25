@@ -43,7 +43,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
 
         button.title = ""
         button.image = nil
-        button.toolTip = "FlowLens"
+        button.toolTip = AppBrand.displayName
         button.target = self
         button.action = #selector(statusItemClicked(_:))
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -66,10 +66,18 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         pop.behavior = .transient
         pop.animates = true
         pop.delegate = self
-        pop.appearance = NSAppearance(named: .vibrantDark)
+        pop.appearance = model.appearanceMode.nsAppearance
+            ?? NSApp.effectiveAppearance
         pop.contentViewController = host
         popover = pop
         hostingController = host
+    }
+
+    /// Keep popover chrome in sync with main-window appearance.
+    func refreshPopoverAppearance() {
+        guard let model else { return }
+        popover?.appearance = model.appearanceMode.nsAppearance
+            ?? NSApp.effectiveAppearance
     }
 
     private func bindLiveTitle(to model: AppModel) {
@@ -99,39 +107,43 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
 
         let width: CGFloat
         switch style {
-        case .iconOnly: width = 28
-        case .compactRates: width = 118
-        case .dualPath: width = 168
+        case .iconOnly: width = 26
+        case .compactRates: width = 72
+        case .dualPath: width = 118
         }
         statusItem?.length = width
 
+        let itemHeight: CGFloat = 18
         let root = AnyView(
             MenuBarStatusItemView(style: style)
                 .environmentObject(model)
                 .environmentObject(l10n)
-                .frame(width: width, height: 22)
+                .preferredColorScheme(model.appearanceMode.preferredColorScheme)
+                .frame(width: width, height: itemHeight)
         )
 
         if let existing = statusHostingView {
             existing.rootView = root
-            existing.frame = NSRect(x: 0, y: 0, width: width, height: 22)
+            existing.frame = NSRect(x: 0, y: 0, width: width, height: itemHeight)
+            existing.appearance = model.appearanceMode.nsAppearance
         } else {
             let host = NSHostingView(rootView: root)
-            host.frame = NSRect(x: 0, y: 0, width: width, height: 22)
+            host.frame = NSRect(x: 0, y: 0, width: width, height: itemHeight)
             host.autoresizingMask = [.maxXMargin, .minYMargin, .maxYMargin]
+            host.appearance = model.appearanceMode.nsAppearance
             button.addSubview(host)
             statusHostingView = host
         }
 
         // Keep a bit of left padding so the custom view sits in the button.
-        statusHostingView?.frame.origin = CGPoint(x: 2, y: (button.bounds.height - 22) / 2)
+        statusHostingView?.frame.origin = CGPoint(x: 2, y: (button.bounds.height - itemHeight) / 2)
 
         let down = ByteFormat.rateMBps(bytesPerSecond: model.rateDownBps)
         let up = ByteFormat.rateMBps(bytesPerSecond: model.rateUpBps)
         let dPct = Int((model.directShare * 100).rounded())
         let pPct = Int((model.proxyShare * 100).rounded())
         button.toolTip = """
-        FlowLens
+        \(AppBrand.displayName)
         \(l10n.t("status.path.total")) ↓ \(down)  ↑ \(up)
         \(l10n.t("status.path.direct")) ↓ \(ByteFormat.rateMBps(bytesPerSecond: model.directDownBps))  ↑ \(ByteFormat.rateMBps(bytesPerSecond: model.directUpBps))  (\(dPct)%)
         \(l10n.t("status.path.proxy")) ↓ \(ByteFormat.rateMBps(bytesPerSecond: model.proxyDownBps))  ↑ \(ByteFormat.rateMBps(bytesPerSecond: model.proxyUpBps))  (\(pPct)%)
@@ -175,6 +187,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
                     .environmentObject(LocalizationStore.shared)
             )
         }
+        refreshPopoverAppearance()
         popover?.contentSize = NSSize(width: 340, height: 460)
         popover?.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         button.isHighlighted = true
@@ -249,9 +262,21 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
 struct MenuBarStatusItemView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var l10n: LocalizationStore
+    @Environment(\.colorScheme) private var colorScheme
     let style: AppModel.MenuBarDisplayStyle
 
+    private var statusRouteDirect: Color {
+        let scheme = model.appearanceMode.preferredColorScheme ?? colorScheme
+        return FlowLensTheme.canvasRouteDirect(colorScheme: scheme)
+    }
+
+    private var statusRouteProxy: Color {
+        let scheme = model.appearanceMode.preferredColorScheme ?? colorScheme
+        return FlowLensTheme.canvasRouteProxy(colorScheme: scheme)
+    }
+
     var body: some View {
+        let _ = model.themeRevision
         Group {
             switch style {
             case .iconOnly:
@@ -260,44 +285,36 @@ struct MenuBarStatusItemView: View {
                     .foregroundStyle(Color.primary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .compactRates:
-                HStack(spacing: 3) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text("↓\(ByteFormat.rateMBps(bytesPerSecond: model.rateDownBps))")
-                        Text("↑\(ByteFormat.rateMBps(bytesPerSecond: model.rateUpBps))")
-                    }
-                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                    .monospacedDigit()
-                    Text("\(Int((model.directShare * 100).rounded()))/\(Int((model.proxyShare * 100).rounded()))")
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
+                VStack(alignment: .leading, spacing: -1) {
+                    Text("↓\(shortRate(model.rateDownBps))")
+                    Text("↑\(shortRate(model.rateUpBps))")
                 }
+                .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                .monospacedDigit()
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             case .dualPath:
-                HStack(spacing: 4) {
+                HStack(spacing: 3) {
                     PathDualSparkline(
                         direct: model.sparklineDirect,
-                        proxy: model.sparklineProxy
+                        proxy: model.sparklineProxy,
+                        lineWidth: 0.7,
+                        fillOpacity: 0.1
                     )
-                    .frame(width: 36, height: 16)
-                    VStack(alignment: .leading, spacing: 0) {
+                    .frame(width: 22, height: 10)
+                    VStack(alignment: .leading, spacing: -1) {
                         HStack(spacing: 2) {
-                            Text(l10n.t("status.path.direct").prefix(1) + "")
-                                .foregroundStyle(FlowLensTheme.accentGreen)
+                            Text(l10n.t("status.path.direct"))
+                                .foregroundStyle(statusRouteDirect)
                             Text("↓\(shortRate(model.directDownBps))")
                         }
                         HStack(spacing: 2) {
-                            Text(l10n.t("status.path.proxy").prefix(1) + "")
-                                .foregroundStyle(FlowLensTheme.accentPurple)
+                            Text(l10n.t("status.path.proxy"))
+                                .foregroundStyle(statusRouteProxy)
                             Text("↓\(shortRate(model.proxyDownBps))")
                         }
                     }
-                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
                     .monospacedDigit()
-                    Text("\(Int((model.directShare * 100).rounded()))/\(Int((model.proxyShare * 100).rounded()))")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             }

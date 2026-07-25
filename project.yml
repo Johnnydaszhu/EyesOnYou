@@ -32,7 +32,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.FlowLens
-        PRODUCT_NAME: FlowLens
+        PRODUCT_NAME: EyesOnYou
         INFOPLIST_FILE: App/FlowLens/Info.plist
         CODE_SIGN_ENTITLEMENTS: App/FlowLens/FlowLens.entitlements
         LD_RUNPATH_SEARCH_PATHS: ["$(inherited)", "@executable_path/../Frameworks"]

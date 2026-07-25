@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build FlowLens.app (Release) and wrap it in a UDZO DMG under dist/.
+# Build EyesOnYou.app (Release) and wrap it in a UDZO DMG under dist/.
 #
 # Usage:
 #   ./scripts/build-dmg.sh              # version from App/FlowLens/Info.plist
@@ -24,6 +24,7 @@ DERIVED_DATA="${DERIVED_DATA:-$ROOT/build/DerivedData}"
 DIST_DIR="${DIST_DIR:-$ROOT/dist}"
 CODE_SIGN_IDENTITY="${CODE_SIGN_IDENTITY:--}"
 NOTARIZE="${NOTARIZE:-0}"
+APP_NAME="EyesOnYou"
 
 plist_version() {
   /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/App/FlowLens/Info.plist"
@@ -45,7 +46,7 @@ else
 fi
 
 TAG="v${VERSION}"
-DMG_NAME="FlowLens-${VERSION}.dmg"
+DMG_NAME="${APP_NAME}-${VERSION}.dmg"
 STAGE="$DIST_DIR/dmg-stage"
 
 need() {
@@ -60,7 +61,7 @@ need xcodebuild
 need hdiutil
 need ditto
 
-echo "==> FlowLens DMG build"
+echo "==> ${APP_NAME} DMG build"
 echo "    version:       $VERSION  ($TAG)"
 echo "    configuration: $CONFIGURATION"
 echo "    sign identity: $CODE_SIGN_IDENTITY"
@@ -98,9 +99,9 @@ xcodebuild \
   "${SIGN_ARGS[@]}" \
   build
 
-APP_PRODUCT="$DERIVED_DATA/Build/Products/$CONFIGURATION/FlowLens.app"
+APP_PRODUCT="$DERIVED_DATA/Build/Products/$CONFIGURATION/${APP_NAME}.app"
 if [[ ! -d "$APP_PRODUCT" ]]; then
-  echo "error: FlowLens.app not found at $APP_PRODUCT" >&2
+  echo "error: ${APP_NAME}.app not found at $APP_PRODUCT" >&2
   exit 1
 fi
 
@@ -115,14 +116,14 @@ fi
     "$APP_PRODUCT/Contents/Info.plist"
 
 echo "==> stage DMG contents"
-ditto "$APP_PRODUCT" "$STAGE/FlowLens.app"
+ditto "$APP_PRODUCT" "$STAGE/${APP_NAME}.app"
 ln -sf /Applications "$STAGE/Applications"
 
 cat > "$STAGE/README.txt" <<EOF
-FlowLens ${VERSION}
+${APP_NAME} ${VERSION}
 
-1. Drag FlowLens.app into Applications.
-2. Launch FlowLens from Applications (or Spotlight).
+1. Drag ${APP_NAME}.app into Applications.
+2. Launch ${APP_NAME} from Applications (or Spotlight).
 3. System extension / filter features require a signed build and user approval.
    Ad-hoc CI builds run in demo-telemetry mode for UI development.
 
@@ -134,15 +135,15 @@ rm -f "$DMG_PATH"
 
 echo "==> create DMG"
 hdiutil create \
-  -volname "FlowLens ${VERSION}" \
+  -volname "${APP_NAME} ${VERSION}" \
   -srcfolder "$STAGE" \
   -ov \
   -format UDZO \
   -fs HFS+ \
   "$DMG_PATH"
 
-rm -rf "$DIST_DIR/FlowLens.app"
-ditto "$APP_PRODUCT" "$DIST_DIR/FlowLens.app"
+rm -rf "$DIST_DIR/${APP_NAME}.app"
+ditto "$APP_PRODUCT" "$DIST_DIR/${APP_NAME}.app"
 
 printf '%s\n' "$VERSION" > "$DIST_DIR/version.txt"
 printf '%s\n' "$DMG_PATH" > "$DIST_DIR/dmg-path.txt"
@@ -164,6 +165,6 @@ fi
 rm -rf "$STAGE"
 
 echo "==> done"
-echo "    app: $DIST_DIR/FlowLens.app"
+echo "    app: $DIST_DIR/${APP_NAME}.app"
 echo "    dmg: $DMG_PATH"
 ls -lh "$DMG_PATH"

@@ -71,8 +71,8 @@ jobs:
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
         with:
-          name: FlowLens-${{ steps.ver.outputs.version }}-dmg
-          path: dist/FlowLens-${{ steps.ver.outputs.version }}.dmg
+          name: EyesOnYou-${{ steps.ver.outputs.version }}-dmg
+          path: dist/EyesOnYou-${{ steps.ver.outputs.version }}.dmg
           if-no-files-found: error
           retention-days: 30
 
@@ -89,7 +89,7 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "FlowLens ${VERSION}"
+          git tag -a "$TAG" -m "EyesOnYou ${VERSION}"
           git push origin "$TAG"
 
       - name: Publish GitHub Release

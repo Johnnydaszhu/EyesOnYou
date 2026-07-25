@@ -100,7 +100,7 @@ enum CLIDemoCatalog {
             ("Chrome", "com.google.Chrome", "EQHXZ8M8AV", "github.com", 80_000_000, 900_000_000),
             ("Chrome", "com.google.Chrome", "EQHXZ8M8AV", "www.youtube.com", 200_000_000, 980_000_000),
             ("Safari", "com.apple.Safari", "APPLE", "www.apple.com", 30_000_000, 180_000_000),
-            ("Visual Studio Code", "com.microsoft.VSCode", "UBF8T346G9", "project:FlowLens", 90_000_000, 420_000_000),
+            ("Visual Studio Code", "com.microsoft.VSCode", "UBF8T346G9", "project:EyesOnYou", 90_000_000, 420_000_000),
             ("Visual Studio Code", "com.microsoft.VSCode", "UBF8T346G9", "project:design-system", 40_000_000, 190_000_000),
             ("ChatGPT", "com.openai.chat", "2DC432GLL2", "session:Swift concurrency", 40_000_000, 220_000_000),
             ("Claude", "com.anthropic.claude", "TEAM2", "session:Architecture review", 50_000_000, 400_000_000),

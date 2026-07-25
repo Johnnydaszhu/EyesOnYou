@@ -1,19 +1,15 @@
-# FlowLens
+# EyesOnYou
 
 [English](./README.md) · [简体中文](./README.zh-CN.md)
 
 原生 macOS 网络可观测、按应用防火墙与选择性代理工具。
 
-> 工作代号：正式公开发布前请自行核对商标与域名可用性。
+> 原名 FlowLens。正式公开发布前请自行核对商标与域名可用性。
 
 ## 截图
 
 <p align="center">
-  <img src="docs/screenshots/overview-light.png" alt="FlowLens 总览 — 浅色外观" width="860" />
-</p>
-
-<p align="center">
-  <img src="docs/screenshots/overview-dark.png" alt="FlowLens 总览 — 深色外观" width="860" />
+  <img src="docs/screenshots/overview.gif" alt="EyesOnYou 总览面板" width="860" />
 </p>
 
 总览面板：时段合计、实时流量、代理路由占比、流量构成 sunburst，以及按应用排行（收藏、分组、选择性代理）。
@@ -30,7 +26,7 @@
 
 ## 下载 / DMG
 
-安装包以 `FlowLens-<version>.dmg` 发布在 GitHub Releases。
+安装包以 `EyesOnYou-<version>.dmg` 发布在 GitHub Releases。
 
 ```bash
 # 本地打 DMG → dist/
@@ -40,7 +36,7 @@
 ./scripts/publish-release.sh 0.1.0
 
 # 或推送 tag，由 Actions 自动构建并上传 DMG
-git tag -a v0.1.0 -m "FlowLens 0.1.0"
+git tag -a v0.1.0 -m "EyesOnYou 0.1.0"
 git push origin v0.1.0
 ```
 

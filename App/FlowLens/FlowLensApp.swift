@@ -8,18 +8,20 @@ struct FlowLensApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        WindowGroup("FlowLens") {
+        WindowGroup(AppBrand.displayName) {
             MainDashboardView()
                 .environmentObject(appModel)
                 .environmentObject(l10n)
                 .frame(minWidth: 1100, minHeight: 720)
                 .preferredColorScheme(appModel.appearanceMode.preferredColorScheme)
+                .background(WindowTitleBarHider())
                 .onAppear {
                     // Ensure menu bar is bound to this model instance.
                     AppModel.applyAppearance(appModel.appearanceMode)
                     appDelegate.bind(model: appModel)
                 }
         }
+        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1280, height: 820)
         .commands {
             CommandGroup(replacing: .newItem) {}
@@ -29,7 +31,7 @@ struct FlowLensApp: App {
                 }
                 .keyboardShortcut(",", modifiers: [.command])
             }
-            CommandMenu("FlowLens") {
+            CommandMenu(AppBrand.displayName) {
                 Button(l10n.t("menu.openDashboard")) {
                     appModel.openDashboard()
                 }
@@ -40,6 +42,31 @@ struct FlowLensApp: App {
                 .keyboardShortcut("l", modifiers: [.command, .shift])
             }
         }
+    }
+}
+
+/// Hides the native title string so branding lives only in the content chrome.
+private struct WindowTitleBarHider: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            Self.apply(to: view.window)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            Self.apply(to: nsView.window)
+        }
+    }
+
+    private static func apply(to window: NSWindow?) {
+        guard let window else { return }
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.styleMask.insert(.fullSizeContentView)
+        window.isMovableByWindowBackground = true
     }
 }
 

@@ -60,6 +60,8 @@ public final class TelemetryAggregator: @unchecked Sendable {
     private var buckets: [TrafficBucketKey: TrafficTotals] = [:]
     private var appDisplayNames: [AppIdentityKey: String] = [:]
     private var liveRates: [AppIdentityKey: (up: Double, down: Double, at: Date)] = [:]
+    /// Last wall-clock time bytes were recorded for an app (does not expire with live rates).
+    private var lastTrafficAtByApp: [AppIdentityKey: Date] = [:]
     private var activeFlows: [UUID: ActiveFlowState] = [:]
     private var recentConnections: [LiveConnection] = []
     private let maxRecentConnections: Int
@@ -175,6 +177,11 @@ public final class TelemetryAggregator: @unchecked Sendable {
             downSum &+= totals.bytesDown
         }
         liveRates[app] = (up: Double(upSum), down: Double(downSum), at: at)
+        if let previous = lastTrafficAtByApp[app] {
+            if at > previous { lastTrafficAtByApp[app] = at }
+        } else {
+            lastTrafficAtByApp[app] = at
+        }
         _ = rateKey
     }
 
@@ -213,6 +220,13 @@ public final class TelemetryAggregator: @unchecked Sendable {
             }
             totals.flowsClosed &+= 1
             buckets[key] = totals
+        }
+        if finalUp > 0 || finalDown > 0 {
+            if let previous = lastTrafficAtByApp[app] {
+                if at > previous { lastTrafficAtByApp[app] = at }
+            } else {
+                lastTrafficAtByApp[app] = at
+            }
         }
     }
 
@@ -376,6 +390,26 @@ public final class TelemetryAggregator: @unchecked Sendable {
             .map { $0 }
     }
 
+    /// Most recent time this app recorded non-zero byte traffic.
+    public func lastTrafficAt(for app: AppIdentityKey) -> Date? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let stamped = lastTrafficAtByApp[app] {
+            return stamped
+        }
+        // Fallback: newest one-second bucket that carried bytes.
+        var latest: Int64 = 0
+        for (key, totals) in buckets {
+            guard key.app == app, key.granularity == .oneSecond else { continue }
+            guard totals.bytesUp > 0 || totals.bytesDown > 0 else { continue }
+            if key.bucketStartMs > latest {
+                latest = key.bucketStartMs
+            }
+        }
+        guard latest > 0 else { return nil }
+        return Date(timeIntervalSince1970: Double(latest) / 1000.0)
+    }
+
     public func liveRateBps() -> (up: Double, down: Double) {
         liveRateBps(for: nil)
     }
@@ -406,6 +440,7 @@ public final class TelemetryAggregator: @unchecked Sendable {
         defer { lock.unlock() }
         buckets = buckets.filter { $0.key.app != app }
         liveRates.removeValue(forKey: app)
+        lastTrafficAtByApp.removeValue(forKey: app)
         activeFlows = activeFlows.filter { $0.value.app != app }
         recentConnections.removeAll { $0.app == app }
         appDisplayNames.removeValue(forKey: app)
@@ -510,6 +545,7 @@ public final class TelemetryAggregator: @unchecked Sendable {
         defer { lock.unlock() }
         buckets.removeAll()
         liveRates.removeAll()
+        lastTrafficAtByApp.removeAll()
         activeFlows.removeAll()
         recentConnections.removeAll()
     }
