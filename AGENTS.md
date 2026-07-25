@@ -1,4 +1,4 @@
-# AGENTS.md — EyesOnYou (EyesOnYou repo) for coding agents
+# AGENTS.md — EyesOnYou for coding agents
 
 This repository is optimized for **Codex**, **Claude Code**, and similar agents.
 

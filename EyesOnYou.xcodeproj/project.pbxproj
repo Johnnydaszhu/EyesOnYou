@@ -87,7 +87,6 @@
 		6E6383950E80A740A829FAF6 /* EyesOnYouApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EyesOnYouApp.swift; sourceTree = "<group>"; };
 		7C912ACCD2973BDEFB9A3C86 /* SunburstChart.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SunburstChart.swift; sourceTree = "<group>"; };
 		7EEDF548435AE3B919D922B1 /* AppUpdateService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateService.swift; sourceTree = "<group>"; };
-		A09BAA08D27780E58D66223D /* FlowLens */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FlowLens; path = .; sourceTree = SOURCE_ROOT; };
 		A65CB4743D80D070A5599214 /* ExtensionRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionRuntime.swift; sourceTree = "<group>"; };
 		B7D0362C1496241E30A66CA1 /* GlobalTimeRangeBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalTimeRangeBar.swift; sourceTree = "<group>"; };
 		BFB7518FC4A69D11F6120F91 /* GlobalSearchBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalSearchBar.swift; sourceTree = "<group>"; };
@@ -96,6 +95,7 @@
 		D05D5E8673F9301FAA7D2781 /* FlowFilterDataProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlowFilterDataProvider.swift; sourceTree = "<group>"; };
 		D0C8625CF559A65285817F3D /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
 		DEC21FF42614F5B39AA02DC5 /* AppBrand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppBrand.swift; sourceTree = "<group>"; };
+		E5B9ACA69A7B6BC12567A7B5 /* EyesOnYou */ = {isa = PBXFileReference; lastKnownFileType = folder; name = EyesOnYou; path = .; sourceTree = SOURCE_ROOT; };
 		EE988E436C31D33BBC74FCFE /* BentoLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoLayout.swift; sourceTree = "<group>"; };
 		EF5B49F5F1651682FE65AFBB /* GroupManagerViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroupManagerViews.swift; sourceTree = "<group>"; };
 		F25F2797B0B66C4B98FF4D3F /* AppIconView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIconView.swift; sourceTree = "<group>"; };
@@ -197,7 +197,7 @@
 		72AA9DFD18825E45CDEBB914 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				A09BAA08D27780E58D66223D /* FlowLens */,
+				E5B9ACA69A7B6BC12567A7B5 /* EyesOnYou */,
 			);
 			path = Packages;
 			sourceTree = "<group>";

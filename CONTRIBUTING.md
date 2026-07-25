@@ -1,6 +1,6 @@
 # Contributing to EyesOnYou
 
-EyesOnYou (repo / modules may still say EyesOnYou) is a native macOS network observability, firewall, and selective-proxy tool. Thank you for helping build it.
+EyesOnYou is a native macOS network observability, firewall, and selective-proxy tool. Thank you for helping build it.
 
 ## License
 
