@@ -339,9 +339,13 @@ public enum DrillableIdentity {
 /// Normalize a remote host into a stable destination key for bucketing.
 public enum DestinationKey {
     public static let unknown = "unknown"
+    private static let labeledPrefixes = ["project:", "session:", "chat:", "workspace:"]
 
     public static func make(hostname: String?, address: String?) -> String {
         if let hostname, !hostname.isEmpty {
+            if let labeled = makeLabeled(hostname) {
+                return labeled
+            }
             var h = hostname.lowercased()
             if h.hasSuffix(".") { h.removeLast() }
             return h
@@ -354,6 +358,26 @@ public enum DestinationKey {
 
     public static func make(from flow: FlowDescriptor) -> String {
         make(hostname: flow.remoteHostname, address: flow.remoteAddress)
+    }
+
+    /// `project:<Name>` / `session:<Title>` — keep title casing, normalize prefix.
+    public static func makeLabeled(prefix: String, title: String) -> String {
+        let trimmedPrefix = prefix.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedPrefix = trimmedPrefix.hasSuffix(":") ? trimmedPrefix : "\(trimmedPrefix):"
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalizedPrefix + trimmedTitle
+    }
+
+    private static func makeLabeled(_ raw: String) -> String? {
+        let lower = raw.lowercased()
+        for prefix in labeledPrefixes where lower.hasPrefix(prefix) {
+            let title = String(raw.dropFirst(prefix.count))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty else { return prefix + "unknown" }
+            // Keep project/session title casing for UI; macOS paths are effectively unique ignoring case.
+            return prefix + title
+        }
+        return nil
     }
 }
 

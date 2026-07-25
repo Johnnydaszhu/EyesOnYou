@@ -14,7 +14,7 @@ git tag -a v0.1.0 -m "EyesOnYou 0.1.0"
 git push origin v0.1.0
 ```
 
-3. Workflow [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs on `macos-14`, builds `EyesOnYou-0.1.0.dmg`, and publishes the Release.
+3. Workflow [`.github/workflows/release.yml`](../.github/workflows/release.yml) runs on `macos-15` (Xcode 16.4), builds `EyesOnYou-<version>.dmg`, and publishes the Release.
 
 Or: **Actions → Release DMG → Run workflow** and enter a version (creates the tag if missing).
 

@@ -48,7 +48,7 @@ enum AppUpdateService {
     static func currentAppVersion() -> String {
         let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
         let trimmed = short?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? "0.1.1" : trimmed
+        return trimmed.isEmpty ? "0.1.2" : trimmed
     }
 
     static func normalizedVersion(_ raw: String) -> String {

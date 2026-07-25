@@ -12,7 +12,7 @@ enum ExitCode: Int {
 }
 
 enum CLIRunner {
-    static let version = "0.1.1"
+    static let version = "0.1.2"
 
     static func run(args: [String]) -> ExitCode {
         do {

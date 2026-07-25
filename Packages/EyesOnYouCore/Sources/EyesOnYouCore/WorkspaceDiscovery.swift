@@ -45,9 +45,9 @@ public struct DiscoveredWorkspace: Sendable, Equatable, Identifiable {
         self.isActive = isActive
     }
 
-    /// Stable drill destination key (`project:<name>`), lowercased by `DestinationKey`.
+    /// Stable drill destination key (`project:<name>`).
     public var destinationKey: String {
-        DestinationKey.make(hostname: "project:\(name)", address: nil)
+        DestinationKey.makeLabeled(prefix: "project", title: name)
     }
 
     public var primarySource: WorkspaceSource {
@@ -71,7 +71,6 @@ public struct WorkspaceDiscoveryOptions: Sendable {
     public var maxCodexSessionsToScan: Int
     /// Cap returned projects after merge/rank.
     public var limit: Int
-    public var fileManager: FileManager
 
     public init(
         homeDirectory: URL = URL(fileURLWithPath: NSHomeDirectory()),
@@ -80,8 +79,7 @@ public struct WorkspaceDiscoveryOptions: Sendable {
         claudeHome: URL? = nil,
         applicationSupport: URL? = nil,
         maxCodexSessionsToScan: Int = 600,
-        limit: Int = 40,
-        fileManager: FileManager = .default
+        limit: Int = 40
     ) {
         self.homeDirectory = homeDirectory
         self.codexHome = codexHome
@@ -90,10 +88,11 @@ public struct WorkspaceDiscoveryOptions: Sendable {
         self.applicationSupport = applicationSupport
         self.maxCodexSessionsToScan = maxCodexSessionsToScan
         self.limit = limit
-        self.fileManager = fileManager
     }
 
     public static var `default`: WorkspaceDiscoveryOptions { WorkspaceDiscoveryOptions() }
+
+    fileprivate var fileManager: FileManager { .default }
 }
 
 /// Discovers real local project folders for Codex / Cursor / VS Code / Claude Code.
@@ -559,6 +558,14 @@ public enum WorkspaceDiscovery {
         fileManager: FileManager
     ) -> [URL] {
         guard limit > 0 else { return [] }
+        // Prefer Codex dated layout sessions/YYYY/MM/DD to avoid walking thousands of archives.
+        let dated = recentJSONLFilesFromDatedLayout(
+            under: root,
+            limit: limit,
+            fileManager: fileManager
+        )
+        if !dated.isEmpty { return dated }
+
         guard let enumerator = fileManager.enumerator(
             at: root,
             includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
@@ -581,6 +588,39 @@ public enum WorkspaceDiscovery {
         return scored.map(\.0)
     }
 
+    private static func recentJSONLFilesFromDatedLayout(
+        under root: URL,
+        limit: Int,
+        fileManager: FileManager
+    ) -> [URL] {
+        let calendar = Calendar(identifier: .gregorian)
+        var day = calendar.startOfDay(for: Date())
+        var collected: [URL] = []
+        // Walk ~120 days back; enough for ranking weight without full archive scan.
+        for _ in 0..<120 {
+            let y = calendar.component(.year, from: day)
+            let m = calendar.component(.month, from: day)
+            let d = calendar.component(.day, from: day)
+            let folder = root
+                .appendingPathComponent(String(format: "%04d", y))
+                .appendingPathComponent(String(format: "%02d", m))
+                .appendingPathComponent(String(format: "%02d", d))
+            if let names = try? fileManager.contentsOfDirectory(atPath: folder.path) {
+                let jsonl = names
+                    .filter { $0.hasSuffix(".jsonl") }
+                    .sorted(by: >)
+                    .map { folder.appendingPathComponent($0) }
+                collected.append(contentsOf: jsonl)
+                if collected.count >= limit {
+                    return Array(collected.prefix(limit))
+                }
+            }
+            guard let previous = calendar.date(byAdding: .day, value: -1, to: day) else { break }
+            day = previous
+        }
+        return collected
+    }
+
     private struct SessionMeta {
         var cwd: String?
         var timestamp: Date?
@@ -589,15 +629,9 @@ public enum WorkspaceDiscovery {
     private static func readSessionMeta(from url: URL) -> SessionMeta? {
         guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
-        // First line is enough — session_meta is written at rollout start.
-        let chunk = handle.readData(ofLength: 8_192)
-        guard !chunk.isEmpty,
-              let text = String(data: chunk, encoding: .utf8)
-        else { return nil }
-        let line = text.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: true).first
-            .map(String.init) ?? text
-        guard let data = line.data(using: .utf8),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        // First JSONL record is session_meta; `instructions` can make that line very large.
+        guard let lineData = readFirstLine(from: handle, maxBytes: 1_048_576),
+              let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any]
         else { return nil }
 
         let payload: [String: Any]
@@ -613,6 +647,21 @@ public enum WorkspaceDiscovery {
                 ?? ISO8601DateFormatter.eyesonyouFractional.date(from: raw)
         }
         return SessionMeta(cwd: cwd, timestamp: timestamp)
+    }
+
+    private static func readFirstLine(from handle: FileHandle, maxBytes: Int) -> Data? {
+        var buffer = Data()
+        let chunkSize = 32_768
+        while buffer.count < maxBytes {
+            let chunk = handle.readData(ofLength: min(chunkSize, maxBytes - buffer.count))
+            if chunk.isEmpty { break }
+            if let nl = chunk.firstIndex(of: UInt8(ascii: "\n")) {
+                buffer.append(chunk.subdata(in: chunk.startIndex..<nl))
+                return buffer.isEmpty ? nil : buffer
+            }
+            buffer.append(chunk)
+        }
+        return buffer.isEmpty ? nil : buffer
     }
 }
 

@@ -50,6 +50,41 @@ final class WorkspaceDiscoveryTests: XCTestCase {
         XCTAssertTrue(found.contains(where: { $0.sources.contains(.cursor) }))
     }
 
+    func testSessionMetaReadsOversizedFirstLine() throws {
+        let projectPath = tempRoot.appendingPathComponent("Documents/GitHub/BigMeta", isDirectory: true)
+        try FileManager.default.createDirectory(at: projectPath, withIntermediateDirectories: true)
+        let codexHome = tempRoot.appendingPathComponent(".codex", isDirectory: true)
+        let sessionDir = codexHome.appendingPathComponent("sessions/2026/07/25", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+
+        let hugeInstructions = String(repeating: "A", count: 40_000)
+        let meta: [String: Any] = [
+            "timestamp": "2026-07-25T03:00:00.000Z",
+            "type": "session_meta",
+            "payload": [
+                "id": "019f0000-0000-7000-8000-000000000099",
+                "cwd": projectPath.path,
+                "instructions": hugeInstructions,
+                "source": "cli"
+            ] as [String: Any]
+        ]
+        var body = try JSONSerialization.data(withJSONObject: meta)
+        body.append(contentsOf: "\n{\"type\":\"event\"}\n".utf8)
+        try body.write(to: sessionDir.appendingPathComponent("rollout-huge.jsonl"))
+
+        let options = WorkspaceDiscoveryOptions(
+            homeDirectory: tempRoot,
+            codexHome: codexHome,
+            applicationSupport: tempRoot.appendingPathComponent("Library/Application Support"),
+            maxCodexSessionsToScan: 10,
+            limit: 10
+        )
+        let found = WorkspaceDiscovery.discover(options: options)
+        XCTAssertTrue(found.contains(where: {
+            $0.path == projectPath.standardizedFileURL.path && $0.sessionCount >= 1
+        }))
+    }
+
     func testCodexDesktopLocalProjectsAndSessionCwd() throws {
         let projectPath = tempRoot.appendingPathComponent("Documents/GitHub/Cultivation", isDirectory: true)
         try FileManager.default.createDirectory(at: projectPath, withIntermediateDirectories: true)
@@ -107,7 +142,7 @@ final class WorkspaceDiscoveryTests: XCTestCase {
         XCTAssertTrue(row.isPinned)
         XCTAssertTrue(row.isActive)
         XCTAssertEqual(row.sessionCount, 1)
-        XCTAssertEqual(row.destinationKey, "project:cultivation")
+        XCTAssertEqual(row.destinationKey, "project:Cultivation")
     }
 
     func testCodexMonitorWorkspacesJSON() throws {
@@ -215,7 +250,7 @@ final class WorkspaceDiscoveryTests: XCTestCase {
         let chatgpt = apps.first { $0.app.signingIdentifier == "com.openai.codex" }
         XCTAssertNotNil(chatgpt)
         XCTAssertTrue(
-            chatgpt?.sites.contains(where: { $0.destinationKey == "project:eyesonyou" }) == true,
+            chatgpt?.sites.contains(where: { $0.destinationKey == "project:EyesOnYou" }) == true,
             "sites=\(chatgpt?.sites.map(\.destinationKey) ?? [])"
         )
     }

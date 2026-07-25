@@ -203,13 +203,14 @@ func cmdWorkspaces(opts: GlobalOptions) throws -> ExitCode {
     let sourceRaw = (opts.flag("source") ?? "all").lowercased()
     let appFilter = opts.flag("app")
 
-    let options = WorkspaceDiscoveryOptions(limit: max(limit, 1))
+    // Discover broadly, then filter/limit — source filters must not see a pre-truncated global top-N.
+    let options = WorkspaceDiscoveryOptions(limit: 0)
     var rows: [DiscoveredWorkspace]
     if let appFilter, !appFilter.isEmpty {
         rows = WorkspaceDiscovery.projects(forSigningIdentifier: appFilter, options: options)
     } else {
         rows = WorkspaceDiscovery.discover(options: options)
-        rows = filterWorkspaces(rows, source: sourceRaw)
+        rows = try filterWorkspaces(rows, source: sourceRaw)
     }
     rows = Array(rows.prefix(max(limit, 1)))
 

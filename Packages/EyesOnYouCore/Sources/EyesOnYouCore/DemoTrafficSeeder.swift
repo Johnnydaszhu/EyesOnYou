@@ -192,7 +192,7 @@ public enum DemoTrafficSeeder {
         let totalWeight = slices.reduce(0.0) { $0 + $1.1 }
         guard totalWeight > 0 else { return offset }
 
-        var next = offset
+        let next = offset
         let route = resolveRoute(identity.key)
         for (index, slice) in slices.enumerated() {
             let share = slice.1 / totalWeight

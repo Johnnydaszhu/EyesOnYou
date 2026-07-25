@@ -56,6 +56,7 @@ xcodebuild -project EyesOnYou.xcodeproj -scheme EyesOnYou \
 | Goal | Location |
 |---|---|
 | Counter math / aggregation | `Packages/EyesOnYouCore` |
+| Codex / Cursor / Claude workspace discovery | `Packages/EyesOnYouCore` (`WorkspaceDiscovery`) |
 | Rules / groups / route toggle | `Packages/EyesOnYouRuleEngine` |
 | SQLite telemetry | `Packages/EyesOnYouStorage` |
 | CLI commands | `Sources/EyesOnYouCLI` |
