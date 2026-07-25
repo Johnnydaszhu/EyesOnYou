@@ -1,7 +1,7 @@
 import Foundation
 import NetworkExtension
-import FlowLensCore
-import FlowLensRuleEngine
+import EyesOnYouCore
+import EyesOnYouRuleEngine
 
 /// Shared process-local runtime for both providers inside the system extension.
 final class ExtensionRuntime: @unchecked Sendable {

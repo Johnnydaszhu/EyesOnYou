@@ -56,7 +56,7 @@ jobs:
             V="${{ inputs.version }}"
             V="${V#v}"
           else
-            V="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' App/FlowLens/Info.plist)"
+            V="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' App/EyesOnYou/Info.plist)"
           fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "tag=v$V" >> "$GITHUB_OUTPUT"

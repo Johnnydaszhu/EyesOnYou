@@ -9,5 +9,5 @@
   <key>com.apple.developer.system-extension.install</key>
   <true/>
   <key>com.apple.security.application-groups</key>
-  <array><string>$(FLOWLENS_APP_GROUP)</string></array>
+  <array><string>$(EYESONYOU_APP_GROUP)</string></array>
 </dict></plist>

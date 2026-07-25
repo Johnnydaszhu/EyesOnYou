@@ -4,7 +4,7 @@
 
 原生 macOS 网络可观测、按应用防火墙与选择性代理工具。
 
-> 原名 FlowLens。正式公开发布前请自行核对商标与域名可用性。
+> 原名 EyesOnYou。正式公开发布前请自行核对商标与域名可用性。
 
 ## 截图
 
@@ -22,7 +22,7 @@
 - **原生技术栈** — SwiftUI + AppKit 宿主，System Extension（Filter + Transparent Proxy）
 - **隐私优先** — 仅元数据与计数；不抓取载荷、不做 TLS 中间人解密
 - **面向 Agent 的 CLI** — JSON 输出，便于脚本与编程助手（`docs/CLI.md`）
-- **应用内更新** — 自动检查 [GitHub Releases](https://github.com/Johnnydaszhu/FlowLens/releases)；左下角版本号可手动检查 / 下载
+- **应用内更新** — 自动检查 [GitHub Releases](https://github.com/Johnnydaszhu/EyesOnYou/releases)；左下角版本号可手动检查 / 下载
 
 ## 下载 / DMG
 
@@ -49,15 +49,15 @@ git push origin v0.1.0
 swift test
 
 # Agent / 脚本 CLI（推荐 --json）
-swift run flowlens --json status
-swift run flowlens --json apps --period week
-swift run flowlens --json evaluate --app com.google.Chrome --host github.com
+swift run eyesonyou --json status
+swift run eyesonyou --json apps --period week
+swift run eyesonyou --json evaluate --app com.google.Chrome --host github.com
 # 完整约定见 docs/CLI.md · AGENTS.md
 
 # 生成 Xcode 工程并构建宿主 App
 brew install xcodegen   # 仅需一次
 xcodegen generate
-xcodebuild -project FlowLens.xcodeproj -scheme FlowLens \
+xcodebuild -project EyesOnYou.xcodeproj -scheme EyesOnYou \
   -configuration Debug CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO build
 ```
 
@@ -67,21 +67,21 @@ xcodebuild -project FlowLens.xcodeproj -scheme FlowLens \
 
 | 路径 | 说明 |
 |---|---|
-| `Packages/FlowLensCore` | 身份、流、计数与内存聚合 |
-| `Packages/FlowLensRuleEngine` | 规则、分组、快照评估 API |
-| `Packages/FlowLensStorage` | SQLite WAL 遥测存储 |
-| `Packages/FlowLensIPC` | 宿主 ↔ 扩展消息 |
-| `Packages/FlowLensProxyCore` | 代理路由辅助 / 配置 |
-| `App/FlowLens` | 宿主 UI（面板 + 菜单栏） |
+| `Packages/EyesOnYouCore` | 身份、流、计数与内存聚合 |
+| `Packages/EyesOnYouRuleEngine` | 规则、分组、快照评估 API |
+| `Packages/EyesOnYouStorage` | SQLite WAL 遥测存储 |
+| `Packages/EyesOnYouIPC` | 宿主 ↔ 扩展消息 |
+| `Packages/EyesOnYouProxyCore` | 代理路由辅助 / 配置 |
+| `App/EyesOnYou` | 宿主 UI（面板 + 菜单栏） |
 | `NetworkExtension` | Filter + Transparent Proxy 提供者 |
-| `Sources/FlowLensCLI` | `flowlens` 命令行 |
+| `Sources/EyesOnYouCLI` | `eyesonyou` 命令行 |
 | `schema/` | SQL 草案 |
 | `docs/` | 规格、ADR、Xcode 引导、CLI |
 | `examples/` | 早期设计骨架（仅参考） |
 
 ## 文档
 
-1. 规格：[`FlowLens_macOS_原生网络工具开发规格_v0.1.md`](./FlowLens_macOS_原生网络工具开发规格_v0.1.md)
+1. 规格：[`EyesOnYou_macOS_原生网络工具开发规格_v0.1.md`](./EyesOnYou_macOS_原生网络工具开发规格_v0.1.md)
 2. Phase 0 API 校准：[`docs/PHASE0_API_SPIKE.md`](./docs/PHASE0_API_SPIKE.md)
 3. 双计数与关联：[`docs/DOUBLE_COUNTING_AND_CORRELATION.md`](./docs/DOUBLE_COUNTING_AND_CORRELATION.md)
 4. Xcode 从零搭建：[`docs/XCODE_BOOTSTRAP.md`](./docs/XCODE_BOOTSTRAP.md)

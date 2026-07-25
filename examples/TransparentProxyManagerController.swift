@@ -3,7 +3,7 @@ import NetworkExtension
 
 @MainActor
 final class TransparentProxyManagerController {
-    private let providerBundleIdentifier = "com.example.FlowLens.NetworkExtension"
+    private let providerBundleIdentifier = "com.example.EyesOnYou.NetworkExtension"
     private var manager: NETransparentProxyManager?
 
     func loadOrCreate() async throws -> NETransparentProxyManager {
@@ -26,12 +26,12 @@ final class TransparentProxyManagerController {
 
         let tunnelProtocol = NETunnelProviderProtocol()
         tunnelProtocol.providerBundleIdentifier = providerBundleIdentifier
-        tunnelProtocol.serverAddress = "FlowLens Selective Proxy"
+        tunnelProtocol.serverAddress = "EyesOnYou Selective Proxy"
         tunnelProtocol.providerConfiguration = [
             "configurationVersion": 1
         ]
 
-        manager.localizedDescription = "FlowLens Selective Proxy"
+        manager.localizedDescription = "EyesOnYou Selective Proxy"
         manager.protocolConfiguration = tunnelProtocol
         manager.isEnabled = true
         try await manager.saveToPreferences()

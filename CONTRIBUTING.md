@@ -1,6 +1,6 @@
 # Contributing to EyesOnYou
 
-EyesOnYou (repo / modules may still say FlowLens) is a native macOS network observability, firewall, and selective-proxy tool. Thank you for helping build it.
+EyesOnYou (repo / modules may still say EyesOnYou) is a native macOS network observability, firewall, and selective-proxy tool. Thank you for helping build it.
 
 ## License
 
@@ -13,18 +13,18 @@ Contributions are accepted under the **MIT License**. Do **not** copy or adapt G
 | Keep out of git | Examples |
 |---|---|
 | Team ID | `DEVELOPMENT_TEAM = ABCD123456` |
-| Real App IDs / App Groups | anything other than `com.example.FlowLens*` placeholders |
+| Real App IDs / App Groups | anything other than `com.example.EyesOnYou*` placeholders |
 | Signing secrets | `.p12`, `.p8`, `AuthKey_*.p8`, `.mobileprovision`, `.cer` |
 | Local Xcode state | `xcuserdata/`, `*.xcuserstate` |
 | Machine clutter | `.DS_Store`, absolute home-directory paths |
 
 Tracked signing settings must stay **placeholder / ad-hoc**:
 
-- `PRODUCT_BUNDLE_IDENTIFIER = com.example.FlowLens` (and `.NetworkExtension`)
+- `PRODUCT_BUNDLE_IDENTIFIER = com.example.EyesOnYou` (and `.NetworkExtension`)
 - `DEVELOPMENT_TEAM = ""`
 - `CODE_SIGN_IDENTITY = "-"`
 
-Put real Team IDs only in **gitignored** files such as `config/Local.xcconfig` (see `config/FlowLens.xcconfig.example`).
+Put real Team IDs only in **gitignored** files such as `config/Local.xcconfig` (see `config/EyesOnYou.xcconfig.example`).
 
 Public Team IDs of *other* apps (e.g. Chrome in demo fixtures) are third-party metadata used for synthetic traffic — not this project’s Apple account.
 
@@ -32,14 +32,14 @@ Public Team IDs of *other* apps (e.g. Chrome in demo fixtures) are third-party m
 
 | Path | Role |
 |---|---|
-| `Packages/FlowLensCore` | App identity, flow models, counter math, in-memory telemetry aggregator |
-| `Packages/FlowLensRuleEngine` | Rules, app groups, route/firewall snapshot evaluation |
-| `Packages/FlowLensStorage` | SQLite WAL telemetry store (Foundation + SQLite3) |
-| `Packages/FlowLensIPC` | Host ↔ system-extension message models |
-| `Packages/FlowLensProxyCore` | Selective-proxy route helpers / profiles |
-| `App/FlowLens` | Host app (SwiftUI + AppKit menu bar) |
+| `Packages/EyesOnYouCore` | App identity, flow models, counter math, in-memory telemetry aggregator |
+| `Packages/EyesOnYouRuleEngine` | Rules, app groups, route/firewall snapshot evaluation |
+| `Packages/EyesOnYouStorage` | SQLite WAL telemetry store (Foundation + SQLite3) |
+| `Packages/EyesOnYouIPC` | Host ↔ system-extension message models |
+| `Packages/EyesOnYouProxyCore` | Selective-proxy route helpers / profiles |
+| `App/EyesOnYou` | Host app (SwiftUI + AppKit menu bar) |
 | `NetworkExtension` | System extension with Filter + Transparent Proxy providers |
-| `Sources/FlowLensCLI` | Agent-oriented CLI (`flowlens`) |
+| `Sources/EyesOnYouCLI` | Agent-oriented CLI (`eyesonyou`) |
 | `schema/` | SQL drafts for rules and telemetry |
 | `docs/` | Spec, ADRs, Xcode bootstrap, CLI |
 | `examples/` | Reference skeletons (not the shipping build targets) |
@@ -49,7 +49,7 @@ Pure packages have **no NetworkExtension entitlements** and are tested with:
 
 ```bash
 swift test
-swift run flowlens --json agent-manifest
+swift run eyesonyou --json agent-manifest
 ```
 
 ## Build the host app
@@ -59,7 +59,7 @@ swift run flowlens --json agent-manifest
 xcodegen generate
 
 # Build (ad-hoc / local team)
-xcodebuild -project FlowLens.xcodeproj -scheme FlowLens \
+xcodebuild -project EyesOnYou.xcodeproj -scheme EyesOnYou \
   -configuration Debug \
   CODE_SIGN_IDENTITY="-" CODE_SIGNING_ALLOWED=YES \
   build

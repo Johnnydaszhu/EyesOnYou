@@ -1,12 +1,12 @@
 # Releasing EyesOnYou (DMG + GitHub Releases)
 
-EyesOnYou ships UI builds as a **`.dmg`** attached to [GitHub Releases](https://github.com/Johnnydaszhu/FlowLens/releases). The in-app updater prefers assets ending in `.dmg`, then `.pkg`, then `.zip`.
+EyesOnYou ships UI builds as a **`.dmg`** attached to [GitHub Releases](https://github.com/Johnnydaszhu/EyesOnYou/releases). The in-app updater prefers assets ending in `.dmg`, then `.pkg`, then `.zip`.
 
 ## Quick paths
 
 ### A. GitHub Actions (recommended)
 
-1. Bump `CFBundleShortVersionString` in `App/FlowLens/Info.plist` when cutting a real version.
+1. Bump `CFBundleShortVersionString` in `App/EyesOnYou/Info.plist` when cutting a real version.
 2. Push a version tag:
 
 ```bash

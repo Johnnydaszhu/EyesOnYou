@@ -7,16 +7,16 @@
 建议先创建空目录和 Swift packages，再创建 Xcode workspace：
 
 ```text
-FlowLens/
-├─ FlowLens.xcworkspace
+EyesOnYou/
+├─ EyesOnYou.xcworkspace
 ├─ App/
 ├─ NetworkExtension/
 ├─ Packages/
-│  ├─ FlowLensCore/
-│  ├─ FlowLensRuleEngine/
-│  ├─ FlowLensStorage/
-│  ├─ FlowLensIPC/
-│  └─ FlowLensProxyCore/
+│  ├─ EyesOnYouCore/
+│  ├─ EyesOnYouRuleEngine/
+│  ├─ EyesOnYouStorage/
+│  ├─ EyesOnYouIPC/
+│  └─ EyesOnYouProxyCore/
 ├─ Tests/
 ├─ docs/
 └─ Config/
@@ -29,9 +29,9 @@ FlowLens/
 - 平台：macOS；
 - 生命周期：SwiftUI App；
 - 最低系统：macOS 13；
-- Bundle ID：例如 `com.example.FlowLens`；
+- Bundle ID：例如 `com.example.EyesOnYou`；
 - Hardened Runtime：开启；
-- App Group：`$(TeamIdentifierPrefix)com.example.FlowLens`；
+- App Group：`$(TeamIdentifierPrefix)com.example.EyesOnYou`；
 - System Extension capability：开启；
 - Network Extension capability：加入 content filter 和 app proxy 对应值；
 - 首个 Developer ID 版本建议先不依赖 App Sandbox；若以后进入 Mac App Store，使用单独构建配置验证 sandbox。
@@ -45,13 +45,13 @@ FlowLens/
 目标产物：
 
 ```text
-FlowLens.app/Contents/Library/SystemExtensions/
-└─ com.example.FlowLens.NetworkExtension.systemextension
+EyesOnYou.app/Contents/Library/SystemExtensions/
+└─ com.example.EyesOnYou.NetworkExtension.systemextension
 ```
 
 System Extension：
 
-- Bundle ID：`com.example.FlowLens.NetworkExtension`；
+- Bundle ID：`com.example.EyesOnYou.NetworkExtension`；
 - 与 Host 相同 Team ID；
 - 与 Host 相同 App Group；
 - Network Extension entitlement 同时含 content filter 和 app proxy；
@@ -63,10 +63,10 @@ System Extension：
 不要在日常调试中直接使用 Developer ID 后缀 entitlement。维护四个文件：
 
 ```text
-FlowLensApp.Development.entitlements
-FlowLensApp.DeveloperID.entitlements
-FlowLensNetworkExtension.Development.entitlements
-FlowLensNetworkExtension.DeveloperID.entitlements
+EyesOnYouApp.Development.entitlements
+EyesOnYouApp.DeveloperID.entitlements
+EyesOnYouNetworkExtension.Development.entitlements
+EyesOnYouNetworkExtension.DeveloperID.entitlements
 ```
 
 Development/App Store 值：
@@ -144,12 +144,12 @@ UI 不能只根据 activation request 成功就显示“正在保护”。最终
 ## 8. Release 检查命令示意
 
 ```bash
-codesign --verify --deep --strict --verbose=4 FlowLens.app
-codesign -d --entitlements :- FlowLens.app
+codesign --verify --deep --strict --verbose=4 EyesOnYou.app
+codesign -d --entitlements :- EyesOnYou.app
 codesign -d --entitlements :- \
-  FlowLens.app/Contents/Library/SystemExtensions/*.systemextension
-spctl --assess --type execute --verbose=4 FlowLens.app
-xcrun stapler validate FlowLens.app
+  EyesOnYou.app/Contents/Library/SystemExtensions/*.systemextension
+spctl --assess --type execute --verbose=4 EyesOnYou.app
+xcrun stapler validate EyesOnYou.app
 ```
 
 还要验证 notarization ticket、DMG/PKG、更新包签名和干净系统安装。不同 Xcode 版本对 Developer ID Network Extension 导出处理可能变化，发布脚本必须固定工具链并在升级工具链时重新做全流程验证。

@@ -6,7 +6,7 @@ import OSLog
 /// Architecture skeleton. The actual TCP/UDP flow APIs and network-rule
 /// initializer spelling must be compiled against the current macOS SDK.
 final class FlowTransparentProxyProvider: NETransparentProxyProvider {
-    private let log = Logger(subsystem: "com.example.FlowLens", category: "Proxy")
+    private let log = Logger(subsystem: "com.example.EyesOnYou", category: "Proxy")
     private let runtime = ProxyRuntime.shared
 
     override func startProxy(

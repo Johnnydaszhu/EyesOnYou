@@ -1,4 +1,4 @@
--- FlowLens rule/config schema draft v1
+-- EyesOnYou rule/config schema draft v1
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 PRAGMA foreign_keys = ON;

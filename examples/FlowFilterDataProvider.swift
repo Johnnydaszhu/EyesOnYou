@@ -6,7 +6,7 @@ import os
 /// Architecture skeleton only. Compile against the current macOS SDK and update
 /// API spelling/availability based on Xcode diagnostics and Phase 0 results.
 final class FlowFilterDataProvider: NEFilterDataProvider {
-    private let log = Logger(subsystem: "com.example.FlowLens", category: "Filter")
+    private let log = Logger(subsystem: "com.example.EyesOnYou", category: "Filter")
     private let runtime = ProviderRuntime.shared
 
     override func startFilter(completionHandler: @escaping (Error?) -> Void) {

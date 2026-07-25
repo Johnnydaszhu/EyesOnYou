@@ -61,7 +61,7 @@ resolve_version() {
     normalize_version "$(tr -d '[:space:]' < "$DIST_DIR/version.txt")"
     return
   fi
-  /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/App/FlowLens/Info.plist"
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/App/EyesOnYou/Info.plist"
 }
 
 need() {

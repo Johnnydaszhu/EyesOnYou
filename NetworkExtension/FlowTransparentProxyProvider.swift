@@ -1,14 +1,14 @@
 import Foundation
 import NetworkExtension
 import OSLog
-import FlowLensCore
-import FlowLensRuleEngine
-import FlowLensProxyCore
+import EyesOnYouCore
+import EyesOnYouRuleEngine
+import EyesOnYouProxyCore
 
 /// Selective transparent proxy: claim only routes that match proxy rules.
 /// Default-off / fail-open: return false so the OS handles the flow directly.
 final class FlowTransparentProxyProvider: NETransparentProxyProvider {
-    private let log = Logger(subsystem: "com.example.FlowLens", category: "Proxy")
+    private let log = Logger(subsystem: "com.example.EyesOnYou", category: "Proxy")
     private let runtime = ExtensionRuntime.shared
 
     override func startProxy(

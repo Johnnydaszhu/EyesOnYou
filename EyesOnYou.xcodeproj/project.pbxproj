@@ -1,0 +1,658 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0B8C28D0096EB5DC49122E1E /* EyesOnYouApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E6383950E80A740A829FAF6 /* EyesOnYouApp.swift */; };
+		0C5D21A2D87E116DB5FEC0A7 /* FlowTransparentProxyProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C72C2DCBF09C7FB824FFC4A /* FlowTransparentProxyProvider.swift */; };
+		13923E3ED5AAD53E2B800CF7 /* AppUpdateService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EEDF548435AE3B919D922B1 /* AppUpdateService.swift */; };
+		14F9665970DB84C56CB6202B /* EyesOnYouCore in Frameworks */ = {isa = PBXBuildFile; productRef = 75B48A51E9A3AB55CC329642 /* EyesOnYouCore */; };
+		1F51DF92A698041F567CCAC6 /* BentoLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE988E436C31D33BBC74FCFE /* BentoLayout.swift */; };
+		2BC2DA4B0B0D8A4EE89A754F /* AppsRulesProxyHistoryViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58205854FE302D0373F89421 /* AppsRulesProxyHistoryViews.swift */; };
+		350F263D66BACDEE36F9200B /* MenuBarController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BEA1671CDEEC377B0676A34 /* MenuBarController.swift */; };
+		385EC91D3E04DB9B906E68A7 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4FE3BCCCC1E44EDC1517019 /* AppModel.swift */; };
+		3E431F2600116FE6D5FFC4E0 /* ThemePalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E9A59128684261C89B2EBBE /* ThemePalette.swift */; };
+		49349A2AE6853CF080834EEF /* SettingsWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = CDD99A0F47D6C3578B28701A /* SettingsWindowController.swift */; };
+		4D82BEAC4D2F7E227DD5844F /* FilterManagerController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4609AF65E8D35D03F0155042 /* FilterManagerController.swift */; };
+		507287A80FCD741DB887F257 /* SunburstChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C912ACCD2973BDEFB9A3C86 /* SunburstChart.swift */; };
+		53D46B10208DCA266A964301 /* GlobalTimeRangeBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7D0362C1496241E30A66CA1 /* GlobalTimeRangeBar.swift */; };
+		62E4B79F0C83E146439E4BA5 /* EyesOnYouNetworkExtension.systemextension in Embed Dependencies */ = {isa = PBXBuildFile; fileRef = 47C3F46F8008E7E80AA71546 /* EyesOnYouNetworkExtension.systemextension */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		6ACF68EAF6A869E8A737CB6B /* GroupManagerViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5B49F5F1651682FE65AFBB /* GroupManagerViews.swift */; };
+		806BCBBEB151B9ECF95D2EFC /* ExtensionRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A65CB4743D80D070A5599214 /* ExtensionRuntime.swift */; };
+		8148AE358C833297522912A6 /* EyesOnYouStorage in Frameworks */ = {isa = PBXBuildFile; productRef = 22DF9C94FC061A30076633C0 /* EyesOnYouStorage */; };
+		834A015FC9FFE1F1128391A7 /* EyesOnYouCore in Frameworks */ = {isa = PBXBuildFile; productRef = 75DE2F1284C09EAA91FC5FD3 /* EyesOnYouCore */; };
+		83D2BBE5B4C2D74C30DA65AC /* EyesOnYouProxyCore in Frameworks */ = {isa = PBXBuildFile; productRef = 76141785414B7419F3A1692D /* EyesOnYouProxyCore */; };
+		8CA216D0899EDEE0AA5BCD00 /* L10n.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FBFA66B31016007A47A9919 /* L10n.swift */; };
+		8F87E434886CF04C4D1AD853 /* MainDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 582489B800CEF299FE4487DA /* MainDashboardView.swift */; };
+		90958A43D52589CC10F72A14 /* EyesOnYouRuleEngine in Frameworks */ = {isa = PBXBuildFile; productRef = E2A35F8C3520E8A62BAE07F1 /* EyesOnYouRuleEngine */; };
+		90988A54AF48916B050CDE99 /* FlowFilterDataProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = D05D5E8673F9301FAA7D2781 /* FlowFilterDataProvider.swift */; };
+		A256E05E7B8705264894AA4E /* AppBrand.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEC21FF42614F5B39AA02DC5 /* AppBrand.swift */; };
+		AA20927DD2463DF68240912E /* EyesOnYouProxyCore in Frameworks */ = {isa = PBXBuildFile; productRef = BF378A5B737156C76E2C32E0 /* EyesOnYouProxyCore */; };
+		ADEFD3E4C7B0F929517A89EE /* GlobalSearchBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFB7518FC4A69D11F6120F91 /* GlobalSearchBar.swift */; };
+		B4BF762388C4A019C900D3F6 /* EyesOnYouIPC in Frameworks */ = {isa = PBXBuildFile; productRef = B251025C0BDE89EFB8059C2B /* EyesOnYouIPC */; };
+		B52BCCE0E42295236BAA6904 /* AppIconView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F25F2797B0B66C4B98FF4D3F /* AppIconView.swift */; };
+		B963A5A7432248C7CCCAB62D /* EyesOnYouIPC in Frameworks */ = {isa = PBXBuildFile; productRef = 8DE1580B477C32C38BF3003B /* EyesOnYouIPC */; };
+		C2E00FAEA47B2062B292D749 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = D0C8625CF559A65285817F3D /* NetworkExtension.framework */; };
+		D44412E6F7E7FE70ADF865D0 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69960448DF6DB837B1CDD200 /* Theme.swift */; };
+		EB5498EA4F419FD06A396FFE /* OverviewTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FA88181A021E5C7848D45FD /* OverviewTabView.swift */; };
+		F3A3B3F62AFAF13199C996AD /* EyesOnYouRuleEngine in Frameworks */ = {isa = PBXBuildFile; productRef = 867999A379B497C98B513CF0 /* EyesOnYouRuleEngine */; };
+		F7F68894A14608557EF1DF5A /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49C6B9B1327E17077E01B75C /* main.swift */; };
+		F818990EC8AD9698456499C3 /* SystemExtensions.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3D342B481B38BC2ECF1B36E7 /* SystemExtensions.framework */; };
+		FA348CCB4F78037185F93CA6 /* MenuBarPopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5FF807FBC32679BB3FC967E2 /* MenuBarPopoverView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		1A0447265001585F8EDD3DAB /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A4CCCF065EDC7017C2EE3831 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 345C62488F4A0D9A146332F2;
+			remoteInfo = EyesOnYouNetworkExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		C8209DC4A50E19EDBB0A5561 /* Embed Dependencies */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = Contents/Library/SystemExtensions;
+			dstSubfolderSpec = 1;
+			files = (
+				62E4B79F0C83E146439E4BA5 /* EyesOnYouNetworkExtension.systemextension in Embed Dependencies */,
+			);
+			name = "Embed Dependencies";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		0C72C2DCBF09C7FB824FFC4A /* FlowTransparentProxyProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlowTransparentProxyProvider.swift; sourceTree = "<group>"; };
+		0FA88181A021E5C7848D45FD /* OverviewTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverviewTabView.swift; sourceTree = "<group>"; };
+		2C87A984273121A251272FBE /* EyesOnYou.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EyesOnYou.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		3D342B481B38BC2ECF1B36E7 /* SystemExtensions.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemExtensions.framework; path = System/Library/Frameworks/SystemExtensions.framework; sourceTree = SDKROOT; };
+		4609AF65E8D35D03F0155042 /* FilterManagerController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilterManagerController.swift; sourceTree = "<group>"; };
+		47C3F46F8008E7E80AA71546 /* EyesOnYouNetworkExtension.systemextension */ = {isa = PBXFileReference; explicitFileType = "wrapper.system-extension"; includeInIndex = 0; path = EyesOnYouNetworkExtension.systemextension; sourceTree = BUILT_PRODUCTS_DIR; };
+		49C6B9B1327E17077E01B75C /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		4BEA1671CDEEC377B0676A34 /* MenuBarController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarController.swift; sourceTree = "<group>"; };
+		58205854FE302D0373F89421 /* AppsRulesProxyHistoryViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppsRulesProxyHistoryViews.swift; sourceTree = "<group>"; };
+		582489B800CEF299FE4487DA /* MainDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainDashboardView.swift; sourceTree = "<group>"; };
+		5E9A59128684261C89B2EBBE /* ThemePalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemePalette.swift; sourceTree = "<group>"; };
+		5FBFA66B31016007A47A9919 /* L10n.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = L10n.swift; sourceTree = "<group>"; };
+		5FF807FBC32679BB3FC967E2 /* MenuBarPopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarPopoverView.swift; sourceTree = "<group>"; };
+		69960448DF6DB837B1CDD200 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		6E6383950E80A740A829FAF6 /* EyesOnYouApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EyesOnYouApp.swift; sourceTree = "<group>"; };
+		7C912ACCD2973BDEFB9A3C86 /* SunburstChart.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SunburstChart.swift; sourceTree = "<group>"; };
+		7EEDF548435AE3B919D922B1 /* AppUpdateService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateService.swift; sourceTree = "<group>"; };
+		A09BAA08D27780E58D66223D /* FlowLens */ = {isa = PBXFileReference; lastKnownFileType = folder; name = FlowLens; path = .; sourceTree = SOURCE_ROOT; };
+		A65CB4743D80D070A5599214 /* ExtensionRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionRuntime.swift; sourceTree = "<group>"; };
+		B7D0362C1496241E30A66CA1 /* GlobalTimeRangeBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalTimeRangeBar.swift; sourceTree = "<group>"; };
+		BFB7518FC4A69D11F6120F91 /* GlobalSearchBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalSearchBar.swift; sourceTree = "<group>"; };
+		C4FE3BCCCC1E44EDC1517019 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		CDD99A0F47D6C3578B28701A /* SettingsWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowController.swift; sourceTree = "<group>"; };
+		D05D5E8673F9301FAA7D2781 /* FlowFilterDataProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlowFilterDataProvider.swift; sourceTree = "<group>"; };
+		D0C8625CF559A65285817F3D /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
+		DEC21FF42614F5B39AA02DC5 /* AppBrand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppBrand.swift; sourceTree = "<group>"; };
+		EE988E436C31D33BBC74FCFE /* BentoLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoLayout.swift; sourceTree = "<group>"; };
+		EF5B49F5F1651682FE65AFBB /* GroupManagerViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroupManagerViews.swift; sourceTree = "<group>"; };
+		F25F2797B0B66C4B98FF4D3F /* AppIconView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIconView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A0EDEBF9B5C5702BE654009F /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				14F9665970DB84C56CB6202B /* EyesOnYouCore in Frameworks */,
+				90958A43D52589CC10F72A14 /* EyesOnYouRuleEngine in Frameworks */,
+				83D2BBE5B4C2D74C30DA65AC /* EyesOnYouProxyCore in Frameworks */,
+				B963A5A7432248C7CCCAB62D /* EyesOnYouIPC in Frameworks */,
+				C2E00FAEA47B2062B292D749 /* NetworkExtension.framework in Frameworks */,
+				F818990EC8AD9698456499C3 /* SystemExtensions.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D5169D9DC84FCDD2CBBF36D2 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				834A015FC9FFE1F1128391A7 /* EyesOnYouCore in Frameworks */,
+				F3A3B3F62AFAF13199C996AD /* EyesOnYouRuleEngine in Frameworks */,
+				8148AE358C833297522912A6 /* EyesOnYouStorage in Frameworks */,
+				B4BF762388C4A019C900D3F6 /* EyesOnYouIPC in Frameworks */,
+				AA20927DD2463DF68240912E /* EyesOnYouProxyCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		53C7EAE1E77BFBC11A96C402 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				D0C8625CF559A65285817F3D /* NetworkExtension.framework */,
+				3D342B481B38BC2ECF1B36E7 /* SystemExtensions.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		5C06EE28E317DC55546F420F /* EyesOnYou */ = {
+			isa = PBXGroup;
+			children = (
+				62D508FEB4A92ABD0ED95612 /* Localization */,
+				DEC21FF42614F5B39AA02DC5 /* AppBrand.swift */,
+				F25F2797B0B66C4B98FF4D3F /* AppIconView.swift */,
+				C4FE3BCCCC1E44EDC1517019 /* AppModel.swift */,
+				58205854FE302D0373F89421 /* AppsRulesProxyHistoryViews.swift */,
+				7EEDF548435AE3B919D922B1 /* AppUpdateService.swift */,
+				EE988E436C31D33BBC74FCFE /* BentoLayout.swift */,
+				6E6383950E80A740A829FAF6 /* EyesOnYouApp.swift */,
+				4609AF65E8D35D03F0155042 /* FilterManagerController.swift */,
+				BFB7518FC4A69D11F6120F91 /* GlobalSearchBar.swift */,
+				B7D0362C1496241E30A66CA1 /* GlobalTimeRangeBar.swift */,
+				EF5B49F5F1651682FE65AFBB /* GroupManagerViews.swift */,
+				582489B800CEF299FE4487DA /* MainDashboardView.swift */,
+				4BEA1671CDEEC377B0676A34 /* MenuBarController.swift */,
+				5FF807FBC32679BB3FC967E2 /* MenuBarPopoverView.swift */,
+				0FA88181A021E5C7848D45FD /* OverviewTabView.swift */,
+				CDD99A0F47D6C3578B28701A /* SettingsWindowController.swift */,
+				7C912ACCD2973BDEFB9A3C86 /* SunburstChart.swift */,
+				69960448DF6DB837B1CDD200 /* Theme.swift */,
+				5E9A59128684261C89B2EBBE /* ThemePalette.swift */,
+			);
+			path = EyesOnYou;
+			sourceTree = "<group>";
+		};
+		62D508FEB4A92ABD0ED95612 /* Localization */ = {
+			isa = PBXGroup;
+			children = (
+				5FBFA66B31016007A47A9919 /* L10n.swift */,
+			);
+			path = Localization;
+			sourceTree = "<group>";
+		};
+		6331416765132DABC28B8F6E /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				2C87A984273121A251272FBE /* EyesOnYou.app */,
+				47C3F46F8008E7E80AA71546 /* EyesOnYouNetworkExtension.systemextension */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		6DEAADD035A56366FB8EFDB4 = {
+			isa = PBXGroup;
+			children = (
+				9F819288D83CAD4E2170FFC1 /* App */,
+				7E0AC55AC1F6B140D7F06DDC /* NetworkExtension */,
+				72AA9DFD18825E45CDEBB914 /* Packages */,
+				53C7EAE1E77BFBC11A96C402 /* Frameworks */,
+				6331416765132DABC28B8F6E /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		72AA9DFD18825E45CDEBB914 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				A09BAA08D27780E58D66223D /* FlowLens */,
+			);
+			path = Packages;
+			sourceTree = "<group>";
+		};
+		7E0AC55AC1F6B140D7F06DDC /* NetworkExtension */ = {
+			isa = PBXGroup;
+			children = (
+				A65CB4743D80D070A5599214 /* ExtensionRuntime.swift */,
+				D05D5E8673F9301FAA7D2781 /* FlowFilterDataProvider.swift */,
+				0C72C2DCBF09C7FB824FFC4A /* FlowTransparentProxyProvider.swift */,
+				49C6B9B1327E17077E01B75C /* main.swift */,
+			);
+			path = NetworkExtension;
+			sourceTree = "<group>";
+		};
+		9F819288D83CAD4E2170FFC1 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				5C06EE28E317DC55546F420F /* EyesOnYou */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		0F1C0EBB500E8F99F19395B9 /* EyesOnYou */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E47D0E477F4CB89DB043E86D /* Build configuration list for PBXNativeTarget "EyesOnYou" */;
+			buildPhases = (
+				D3786875DB66F3C7C4F07054 /* Sources */,
+				D5169D9DC84FCDD2CBBF36D2 /* Frameworks */,
+				C8209DC4A50E19EDBB0A5561 /* Embed Dependencies */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				75CA2AF68231725135232383 /* PBXTargetDependency */,
+			);
+			name = EyesOnYou;
+			packageProductDependencies = (
+				75DE2F1284C09EAA91FC5FD3 /* EyesOnYouCore */,
+				867999A379B497C98B513CF0 /* EyesOnYouRuleEngine */,
+				22DF9C94FC061A30076633C0 /* EyesOnYouStorage */,
+				B251025C0BDE89EFB8059C2B /* EyesOnYouIPC */,
+				BF378A5B737156C76E2C32E0 /* EyesOnYouProxyCore */,
+			);
+			productName = EyesOnYou;
+			productReference = 2C87A984273121A251272FBE /* EyesOnYou.app */;
+			productType = "com.apple.product-type.application";
+		};
+		345C62488F4A0D9A146332F2 /* EyesOnYouNetworkExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C3901E5AF3F4CA26C9B35FB8 /* Build configuration list for PBXNativeTarget "EyesOnYouNetworkExtension" */;
+			buildPhases = (
+				76BE761C3C3D5A2A4BB415EE /* Sources */,
+				A0EDEBF9B5C5702BE654009F /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = EyesOnYouNetworkExtension;
+			packageProductDependencies = (
+				75B48A51E9A3AB55CC329642 /* EyesOnYouCore */,
+				E2A35F8C3520E8A62BAE07F1 /* EyesOnYouRuleEngine */,
+				76141785414B7419F3A1692D /* EyesOnYouProxyCore */,
+				8DE1580B477C32C38BF3003B /* EyesOnYouIPC */,
+			);
+			productName = EyesOnYouNetworkExtension;
+			productReference = 47C3F46F8008E7E80AA71546 /* EyesOnYouNetworkExtension.systemextension */;
+			productType = "com.apple.product-type.system-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A4CCCF065EDC7017C2EE3831 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					0F1C0EBB500E8F99F19395B9 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+					345C62488F4A0D9A146332F2 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 0B54CF638B31B2DB808035CB /* Build configuration list for PBXProject "EyesOnYou" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 6DEAADD035A56366FB8EFDB4;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				D2717BD47DA15A7657CF89FE /* XCLocalSwiftPackageReference "." */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 6331416765132DABC28B8F6E /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				0F1C0EBB500E8F99F19395B9 /* EyesOnYou */,
+				345C62488F4A0D9A146332F2 /* EyesOnYouNetworkExtension */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		76BE761C3C3D5A2A4BB415EE /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				806BCBBEB151B9ECF95D2EFC /* ExtensionRuntime.swift in Sources */,
+				90988A54AF48916B050CDE99 /* FlowFilterDataProvider.swift in Sources */,
+				0C5D21A2D87E116DB5FEC0A7 /* FlowTransparentProxyProvider.swift in Sources */,
+				F7F68894A14608557EF1DF5A /* main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D3786875DB66F3C7C4F07054 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A256E05E7B8705264894AA4E /* AppBrand.swift in Sources */,
+				B52BCCE0E42295236BAA6904 /* AppIconView.swift in Sources */,
+				385EC91D3E04DB9B906E68A7 /* AppModel.swift in Sources */,
+				13923E3ED5AAD53E2B800CF7 /* AppUpdateService.swift in Sources */,
+				2BC2DA4B0B0D8A4EE89A754F /* AppsRulesProxyHistoryViews.swift in Sources */,
+				1F51DF92A698041F567CCAC6 /* BentoLayout.swift in Sources */,
+				0B8C28D0096EB5DC49122E1E /* EyesOnYouApp.swift in Sources */,
+				4D82BEAC4D2F7E227DD5844F /* FilterManagerController.swift in Sources */,
+				ADEFD3E4C7B0F929517A89EE /* GlobalSearchBar.swift in Sources */,
+				53D46B10208DCA266A964301 /* GlobalTimeRangeBar.swift in Sources */,
+				6ACF68EAF6A869E8A737CB6B /* GroupManagerViews.swift in Sources */,
+				8CA216D0899EDEE0AA5BCD00 /* L10n.swift in Sources */,
+				8F87E434886CF04C4D1AD853 /* MainDashboardView.swift in Sources */,
+				350F263D66BACDEE36F9200B /* MenuBarController.swift in Sources */,
+				FA348CCB4F78037185F93CA6 /* MenuBarPopoverView.swift in Sources */,
+				EB5498EA4F419FD06A396FFE /* OverviewTabView.swift in Sources */,
+				49349A2AE6853CF080834EEF /* SettingsWindowController.swift in Sources */,
+				507287A80FCD741DB887F257 /* SunburstChart.swift in Sources */,
+				D44412E6F7E7FE70ADF865D0 /* Theme.swift in Sources */,
+				3E431F2600116FE6D5FFC4E0 /* ThemePalette.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		75CA2AF68231725135232383 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 345C62488F4A0D9A146332F2 /* EyesOnYouNetworkExtension */;
+			targetProxy = 1A0447265001585F8EDD3DAB /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		233077D02C40EC0291F9549B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_ENTITLEMENTS = NetworkExtension/EyesOnYouNetworkExtension.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = NetworkExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.EyesOnYou.NetworkExtension;
+				PRODUCT_NAME = EyesOnYouNetworkExtension;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+			};
+			name = Release;
+		};
+		624143F856F30E908547C8FD /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = targeted;
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+		6B23EC17315E912D0917FF65 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_ENTITLEMENTS = App/EyesOnYou/EyesOnYou.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/EyesOnYou/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.EyesOnYou;
+				PRODUCT_NAME = EyesOnYou;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		A79B7523C54BE07555506AC6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "";
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_ENTITLEMENTS = App/EyesOnYou/EyesOnYou.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/EyesOnYou/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.EyesOnYou;
+				PRODUCT_NAME = EyesOnYou;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		AF78D5D28F84924CEC0BD40C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = targeted;
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+		E48CCFD24AF58BCEB476A825 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_ENTITLEMENTS = NetworkExtension/EyesOnYouNetworkExtension.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = NetworkExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.EyesOnYou.NetworkExtension;
+				PRODUCT_NAME = EyesOnYouNetworkExtension;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		0B54CF638B31B2DB808035CB /* Build configuration list for PBXProject "EyesOnYou" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AF78D5D28F84924CEC0BD40C /* Debug */,
+				624143F856F30E908547C8FD /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C3901E5AF3F4CA26C9B35FB8 /* Build configuration list for PBXNativeTarget "EyesOnYouNetworkExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E48CCFD24AF58BCEB476A825 /* Debug */,
+				233077D02C40EC0291F9549B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		E47D0E477F4CB89DB043E86D /* Build configuration list for PBXNativeTarget "EyesOnYou" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A79B7523C54BE07555506AC6 /* Debug */,
+				6B23EC17315E912D0917FF65 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		D2717BD47DA15A7657CF89FE /* XCLocalSwiftPackageReference "." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = .;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		22DF9C94FC061A30076633C0 /* EyesOnYouStorage */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = EyesOnYouStorage;
+		};
+		75B48A51E9A3AB55CC329642 /* EyesOnYouCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = EyesOnYouCore;
+		};
+		75DE2F1284C09EAA91FC5FD3 /* EyesOnYouCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = EyesOnYouCore;
+		};
+		76141785414B7419F3A1692D /* EyesOnYouProxyCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = EyesOnYouProxyCore;
+		};
+		867999A379B497C98B513CF0 /* EyesOnYouRuleEngine */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = EyesOnYouRuleEngine;
+		};
+		8DE1580B477C32C38BF3003B /* EyesOnYouIPC */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = EyesOnYouIPC;
+		};
+		B251025C0BDE89EFB8059C2B /* EyesOnYouIPC */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = EyesOnYouIPC;
+		};
+		BF378A5B737156C76E2C32E0 /* EyesOnYouProxyCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = EyesOnYouProxyCore;
+		};
+		E2A35F8C3520E8A62BAE07F1 /* EyesOnYouRuleEngine */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = EyesOnYouRuleEngine;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = A4CCCF065EDC7017C2EE3831 /* Project object */;
+}

@@ -5,8 +5,8 @@ import OSLog
 // Enter Network Extension system-extension mode as early as possible.
 NEProvider.startSystemExtensionMode()
 
-let log = Logger(subsystem: "com.example.FlowLens", category: "SystemExtension")
-log.info("FlowLens Network Extension starting (Filter + Transparent Proxy providers)")
+let log = Logger(subsystem: "com.example.EyesOnYou", category: "SystemExtension")
+log.info("EyesOnYou Network Extension starting (Filter + Transparent Proxy providers)")
 
 // Shared runtime bootstrap is intentionally minimal here.
 // Filter/Proxy provider start methods own lifecycle-specific initialization.

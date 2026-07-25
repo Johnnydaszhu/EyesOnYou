@@ -1,4 +1,4 @@
-# AGENTS.md — EyesOnYou (FlowLens repo) for coding agents
+# AGENTS.md — EyesOnYou (EyesOnYou repo) for coding agents
 
 This repository is optimized for **Codex**, **Claude Code**, and similar agents.
 
@@ -6,12 +6,12 @@ This repository is optimized for **Codex**, **Claude Code**, and similar agents.
 
 ```bash
 # From repo root
-swift run flowlens --json agent-manifest   # discover commands
-swift run flowlens --json status
-swift run flowlens --json apps --period week --limit 15
-swift run flowlens --json evaluate --app com.google.Chrome --host github.com
-swift run flowlens --json search vscode
-swift run flowlens --json favorites list
+swift run eyesonyou --json agent-manifest   # discover commands
+swift run eyesonyou --json status
+swift run eyesonyou --json apps --period week --limit 15
+swift run eyesonyou --json evaluate --app com.google.Chrome --host github.com
+swift run eyesonyou --json search vscode
+swift run eyesonyou --json favorites list
 ```
 
 - **Always use `--json`** when you will parse output.
@@ -31,14 +31,14 @@ swift run flowlens --json favorites list
 
 ```bash
 swift test
-swift build --product flowlens
+swift build --product eyesonyou
 ```
 
 Host app (GUI) requires Xcode:
 
 ```bash
 xcodegen generate
-xcodebuild -project FlowLens.xcodeproj -scheme FlowLens \
+xcodebuild -project EyesOnYou.xcodeproj -scheme EyesOnYou \
   -configuration Debug CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO build
 ```
 
@@ -47,18 +47,18 @@ xcodebuild -project FlowLens.xcodeproj -scheme FlowLens \
 1. **Fail-open** — default allow / direct when rules missing.
 2. **No TLS MITM / payload capture** — only metadata + counters.
 3. Pure logic lives in `Packages/*` (testable without NetworkExtension).
-4. Host UI is `App/FlowLens`; system extension is `NetworkExtension/`.
+4. Host UI is `App/EyesOnYou`; system extension is `NetworkExtension/`.
 5. Disk I/O in the UI may be demo-scaled until IOKit path lands; network path is the product core.
 
 ## Where to change what
 
 | Goal | Location |
 |---|---|
-| Counter math / aggregation | `Packages/FlowLensCore` |
-| Rules / groups / route toggle | `Packages/FlowLensRuleEngine` |
-| SQLite telemetry | `Packages/FlowLensStorage` |
-| CLI commands | `Sources/FlowLensCLI` |
-| Dashboard / sunburst / search UI | `App/FlowLens` |
+| Counter math / aggregation | `Packages/EyesOnYouCore` |
+| Rules / groups / route toggle | `Packages/EyesOnYouRuleEngine` |
+| SQLite telemetry | `Packages/EyesOnYouStorage` |
+| CLI commands | `Sources/EyesOnYouCLI` |
+| Dashboard / sunburst / search UI | `App/EyesOnYou` |
 | Filter / proxy providers | `NetworkExtension` |
 
 ## Do not

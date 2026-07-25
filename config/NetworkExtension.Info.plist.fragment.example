@@ -1,9 +1,9 @@
 <key>NSSystemExtensionUsageDescription</key>
-<string>FlowLens 使用系统网络扩展统计、控制并按规则路由应用连接。</string>
+<string>EyesOnYou 使用系统网络扩展统计、控制并按规则路由应用连接。</string>
 <key>NetworkExtension</key>
 <dict>
   <key>NEMachServiceName</key>
-  <string>$(FLOWLENS_MACH_SERVICE)</string>
+  <string>$(EYESONYOU_MACH_SERVICE)</string>
   <key>NEProviderClasses</key>
   <dict>
     <key>com.apple.networkextension.filter-data</key>

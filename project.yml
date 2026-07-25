@@ -1,4 +1,4 @@
-name: FlowLens
+name: EyesOnYou
 options:
   bundleIdPrefix: com.example
   deploymentTarget:
@@ -7,7 +7,7 @@ options:
   groupSortPosition: top
 
 packages:
-  FlowLens:
+  EyesOnYou:
     path: .
 
 settings:
@@ -21,20 +21,20 @@ settings:
     SWIFT_STRICT_CONCURRENCY: targeted
 
 targets:
-  FlowLens:
+  EyesOnYou:
     type: application
     platform: macOS
     sources:
-      - path: App/FlowLens
+      - path: App/EyesOnYou
         excludes:
           - Info.plist
           - "*.entitlements"
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.FlowLens
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.EyesOnYou
         PRODUCT_NAME: EyesOnYou
-        INFOPLIST_FILE: App/FlowLens/Info.plist
-        CODE_SIGN_ENTITLEMENTS: App/FlowLens/FlowLens.entitlements
+        INFOPLIST_FILE: App/EyesOnYou/Info.plist
+        CODE_SIGN_ENTITLEMENTS: App/EyesOnYou/EyesOnYou.entitlements
         LD_RUNPATH_SEARCH_PATHS: ["$(inherited)", "@executable_path/../Frameworks"]
         GENERATE_INFOPLIST_FILE: NO
         COMBINE_HIDPI_IMAGES: YES
@@ -43,17 +43,17 @@ targets:
         CODE_SIGNING_ALLOWED: YES
         CODE_SIGNING_REQUIRED: NO
     dependencies:
-      - package: FlowLens
-        product: FlowLensCore
-      - package: FlowLens
-        product: FlowLensRuleEngine
-      - package: FlowLens
-        product: FlowLensStorage
-      - package: FlowLens
-        product: FlowLensIPC
-      - package: FlowLens
-        product: FlowLensProxyCore
-      - target: FlowLensNetworkExtension
+      - package: EyesOnYou
+        product: EyesOnYouCore
+      - package: EyesOnYou
+        product: EyesOnYouRuleEngine
+      - package: EyesOnYou
+        product: EyesOnYouStorage
+      - package: EyesOnYou
+        product: EyesOnYouIPC
+      - package: EyesOnYou
+        product: EyesOnYouProxyCore
+      - target: EyesOnYouNetworkExtension
         embed: true
         codeSign: true
         # Apple-required: App.app/Contents/Library/SystemExtensions/*.systemextension
@@ -64,7 +64,7 @@ targets:
     scheme:
       testTargets: []
 
-  FlowLensNetworkExtension:
+  EyesOnYouNetworkExtension:
     type: system-extension
     platform: macOS
     sources:
@@ -74,10 +74,10 @@ targets:
           - "*.entitlements"
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.FlowLens.NetworkExtension
-        PRODUCT_NAME: FlowLensNetworkExtension
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.EyesOnYou.NetworkExtension
+        PRODUCT_NAME: EyesOnYouNetworkExtension
         INFOPLIST_FILE: NetworkExtension/Info.plist
-        CODE_SIGN_ENTITLEMENTS: NetworkExtension/FlowLensNetworkExtension.entitlements
+        CODE_SIGN_ENTITLEMENTS: NetworkExtension/EyesOnYouNetworkExtension.entitlements
         GENERATE_INFOPLIST_FILE: NO
         SKIP_INSTALL: YES
         CODE_SIGN_IDENTITY: "-"
@@ -85,13 +85,13 @@ targets:
         CODE_SIGNING_REQUIRED: NO
         LD_RUNPATH_SEARCH_PATHS: ["$(inherited)", "@executable_path/../Frameworks"]
     dependencies:
-      - package: FlowLens
-        product: FlowLensCore
-      - package: FlowLens
-        product: FlowLensRuleEngine
-      - package: FlowLens
-        product: FlowLensProxyCore
-      - package: FlowLens
-        product: FlowLensIPC
+      - package: EyesOnYou
+        product: EyesOnYouCore
+      - package: EyesOnYou
+        product: EyesOnYouRuleEngine
+      - package: EyesOnYou
+        product: EyesOnYouProxyCore
+      - package: EyesOnYou
+        product: EyesOnYouIPC
       - sdk: NetworkExtension.framework
       - sdk: SystemExtensions.framework

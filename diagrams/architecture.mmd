@@ -1,5 +1,5 @@
 flowchart LR
-    UI[FlowLens App] <-->|Signed XPC| S[FlowLens.systemextension]
+    UI[EyesOnYou App] <-->|Signed XPC| S[EyesOnYou.systemextension]
     UI --> R[(rules.sqlite + snapshot)]
     UI -->|read-only| T[(telemetry.sqlite)]
     subgraph S[One System Extension Bundle]

@@ -4,7 +4,7 @@
 
 Native macOS network observability, per-app firewall, and selective proxy.
 
-> Formerly FlowLens. Verify trademark and domain before a public launch.
+> Formerly EyesOnYou. Verify trademark and domain before a public launch.
 
 ## Screenshots
 
@@ -22,7 +22,7 @@ Overview dashboard: period totals, live traffic, proxy routing mix, sunburst tra
 - **Native stack** — SwiftUI + AppKit host, system extension with Filter + Transparent Proxy providers
 - **Privacy first** — metadata and counters only; no payload capture, no TLS MITM
 - **Agent-friendly CLI** — JSON output for scripts and coding agents (`docs/CLI.md`)
-- **In-app updates** — checks [GitHub Releases](https://github.com/Johnnydaszhu/FlowLens/releases) automatically; footer version label for manual check / download
+- **In-app updates** — checks [GitHub Releases](https://github.com/Johnnydaszhu/EyesOnYou/releases) automatically; footer version label for manual check / download
 
 ## Download / DMG
 
@@ -49,15 +49,15 @@ Full notes: [`docs/RELEASE.md`](docs/RELEASE.md). CI builds are ad-hoc signed (d
 swift test
 
 # Agent / script CLI (JSON-friendly)
-swift run flowlens --json status
-swift run flowlens --json apps --period week
-swift run flowlens --json evaluate --app com.google.Chrome --host github.com
+swift run eyesonyou --json status
+swift run eyesonyou --json apps --period week
+swift run eyesonyou --json evaluate --app com.google.Chrome --host github.com
 # Full CLI contract: docs/CLI.md · AGENTS.md
 
 # Generate Xcode project and build host app
 brew install xcodegen   # once
 xcodegen generate
-xcodebuild -project FlowLens.xcodeproj -scheme FlowLens \
+xcodebuild -project EyesOnYou.xcodeproj -scheme EyesOnYou \
   -configuration Debug CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO build
 ```
 
@@ -67,21 +67,21 @@ The host launches with **demo telemetry** when the system extension is not insta
 
 | Path | Role |
 |---|---|
-| `Packages/FlowLensCore` | Identity, flows, counter math, in-memory aggregator |
-| `Packages/FlowLensRuleEngine` | Rules, groups, snapshot evaluate API |
-| `Packages/FlowLensStorage` | SQLite WAL telemetry store |
-| `Packages/FlowLensIPC` | Host ↔ extension messages |
-| `Packages/FlowLensProxyCore` | Proxy route helpers / profiles |
-| `App/FlowLens` | Host UI (dashboard + menu bar) |
+| `Packages/EyesOnYouCore` | Identity, flows, counter math, in-memory aggregator |
+| `Packages/EyesOnYouRuleEngine` | Rules, groups, snapshot evaluate API |
+| `Packages/EyesOnYouStorage` | SQLite WAL telemetry store |
+| `Packages/EyesOnYouIPC` | Host ↔ extension messages |
+| `Packages/EyesOnYouProxyCore` | Proxy route helpers / profiles |
+| `App/EyesOnYou` | Host UI (dashboard + menu bar) |
 | `NetworkExtension` | Filter + Transparent Proxy providers |
-| `Sources/FlowLensCLI` | `flowlens` CLI |
+| `Sources/EyesOnYouCLI` | `eyesonyou` CLI |
 | `schema/` | SQL drafts |
 | `docs/` | Spec, ADRs, Xcode bootstrap, CLI, screenshots |
 | `examples/` | Earlier design skeletons (reference only) |
 
 ## Docs
 
-1. Spec: [`FlowLens_macOS_原生网络工具开发规格_v0.1.md`](./FlowLens_macOS_原生网络工具开发规格_v0.1.md)
+1. Spec: [`EyesOnYou_macOS_原生网络工具开发规格_v0.1.md`](./EyesOnYou_macOS_原生网络工具开发规格_v0.1.md)
 2. Phase 0 API spike: [`docs/PHASE0_API_SPIKE.md`](./docs/PHASE0_API_SPIKE.md)
 3. Double-counting: [`docs/DOUBLE_COUNTING_AND_CORRELATION.md`](./docs/DOUBLE_COUNTING_AND_CORRELATION.md)
 4. Xcode bootstrap: [`docs/XCODE_BOOTSTRAP.md`](./docs/XCODE_BOOTSTRAP.md)

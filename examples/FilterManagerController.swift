@@ -4,8 +4,8 @@ import SystemExtensions
 
 @MainActor
 final class FilterManagerController: NSObject {
-    private let extensionBundleIdentifier = "com.example.FlowLens.NetworkExtension"
-    private let filterProviderBundleIdentifier = "com.example.FlowLens.NetworkExtension"
+    private let extensionBundleIdentifier = "com.example.EyesOnYou.NetworkExtension"
+    private let filterProviderBundleIdentifier = "com.example.EyesOnYou.NetworkExtension"
 
     func requestSystemExtensionActivation() {
         let request = OSSystemExtensionRequest.activationRequest(
@@ -27,7 +27,7 @@ final class FilterManagerController: NSObject {
         configuration.filterDataProviderBundleIdentifier = filterProviderBundleIdentifier
 
         manager.providerConfiguration = configuration
-        manager.localizedDescription = "FlowLens Network Filter"
+        manager.localizedDescription = "EyesOnYou Network Filter"
         manager.isEnabled = true
         try await manager.saveToPreferences()
 

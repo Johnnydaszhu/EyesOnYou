@@ -2,7 +2,7 @@
 # Build EyesOnYou.app (Release) and wrap it in a UDZO DMG under dist/.
 #
 # Usage:
-#   ./scripts/build-dmg.sh              # version from App/FlowLens/Info.plist
+#   ./scripts/build-dmg.sh              # version from App/EyesOnYou/Info.plist
 #   ./scripts/build-dmg.sh 0.1.1        # override marketing version
 #   VERSION=0.1.1 ./scripts/build-dmg.sh
 #
@@ -27,7 +27,7 @@ NOTARIZE="${NOTARIZE:-0}"
 APP_NAME="EyesOnYou"
 
 plist_version() {
-  /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/App/FlowLens/Info.plist"
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/App/EyesOnYou/Info.plist"
 }
 
 normalize_version() {
@@ -89,8 +89,8 @@ fi
 
 echo "==> xcodebuild ($CONFIGURATION)"
 xcodebuild \
-  -project FlowLens.xcodeproj \
-  -scheme FlowLens \
+  -project EyesOnYou.xcodeproj \
+  -scheme EyesOnYou \
   -configuration "$CONFIGURATION" \
   -derivedDataPath "$DERIVED_DATA" \
   -destination "platform=macOS" \
@@ -127,7 +127,7 @@ ${APP_NAME} ${VERSION}
 3. System extension / filter features require a signed build and user approval.
    Ad-hoc CI builds run in demo-telemetry mode for UI development.
 
-https://github.com/Johnnydaszhu/FlowLens
+https://github.com/Johnnydaszhu/EyesOnYou
 EOF
 
 DMG_PATH="$DIST_DIR/$DMG_NAME"

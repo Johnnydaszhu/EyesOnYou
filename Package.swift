@@ -2,74 +2,74 @@
 import PackageDescription
 
 let package = Package(
-    name: "FlowLens",
+    name: "EyesOnYou",
     platforms: [
         .macOS(.v13)
     ],
     products: [
-        .library(name: "FlowLensCore", targets: ["FlowLensCore"]),
-        .library(name: "FlowLensRuleEngine", targets: ["FlowLensRuleEngine"]),
-        .library(name: "FlowLensStorage", targets: ["FlowLensStorage"]),
-        .library(name: "FlowLensIPC", targets: ["FlowLensIPC"]),
-        .library(name: "FlowLensProxyCore", targets: ["FlowLensProxyCore"]),
-        .executable(name: "flowlens", targets: ["FlowLensCLI"]),
+        .library(name: "EyesOnYouCore", targets: ["EyesOnYouCore"]),
+        .library(name: "EyesOnYouRuleEngine", targets: ["EyesOnYouRuleEngine"]),
+        .library(name: "EyesOnYouStorage", targets: ["EyesOnYouStorage"]),
+        .library(name: "EyesOnYouIPC", targets: ["EyesOnYouIPC"]),
+        .library(name: "EyesOnYouProxyCore", targets: ["EyesOnYouProxyCore"]),
+        .executable(name: "eyesonyou", targets: ["EyesOnYouCLI"]),
     ],
     targets: [
         .target(
-            name: "FlowLensCore",
-            path: "Packages/FlowLensCore/Sources/FlowLensCore"
+            name: "EyesOnYouCore",
+            path: "Packages/EyesOnYouCore/Sources/EyesOnYouCore"
         ),
         .testTarget(
-            name: "FlowLensCoreTests",
-            dependencies: ["FlowLensCore"],
-            path: "Packages/FlowLensCore/Tests/FlowLensCoreTests"
+            name: "EyesOnYouCoreTests",
+            dependencies: ["EyesOnYouCore"],
+            path: "Packages/EyesOnYouCore/Tests/EyesOnYouCoreTests"
         ),
         .target(
-            name: "FlowLensRuleEngine",
-            dependencies: ["FlowLensCore"],
-            path: "Packages/FlowLensRuleEngine/Sources/FlowLensRuleEngine"
+            name: "EyesOnYouRuleEngine",
+            dependencies: ["EyesOnYouCore"],
+            path: "Packages/EyesOnYouRuleEngine/Sources/EyesOnYouRuleEngine"
         ),
         .testTarget(
-            name: "FlowLensRuleEngineTests",
-            dependencies: ["FlowLensRuleEngine", "FlowLensCore"],
-            path: "Packages/FlowLensRuleEngine/Tests/FlowLensRuleEngineTests"
+            name: "EyesOnYouRuleEngineTests",
+            dependencies: ["EyesOnYouRuleEngine", "EyesOnYouCore"],
+            path: "Packages/EyesOnYouRuleEngine/Tests/EyesOnYouRuleEngineTests"
         ),
         .target(
-            name: "FlowLensStorage",
-            dependencies: ["FlowLensCore"],
-            path: "Packages/FlowLensStorage/Sources/FlowLensStorage"
+            name: "EyesOnYouStorage",
+            dependencies: ["EyesOnYouCore"],
+            path: "Packages/EyesOnYouStorage/Sources/EyesOnYouStorage"
         ),
         .testTarget(
-            name: "FlowLensStorageTests",
-            dependencies: ["FlowLensStorage", "FlowLensCore"],
-            path: "Packages/FlowLensStorage/Tests/FlowLensStorageTests"
+            name: "EyesOnYouStorageTests",
+            dependencies: ["EyesOnYouStorage", "EyesOnYouCore"],
+            path: "Packages/EyesOnYouStorage/Tests/EyesOnYouStorageTests"
         ),
         .target(
-            name: "FlowLensIPC",
-            dependencies: ["FlowLensCore"],
-            path: "Packages/FlowLensIPC/Sources/FlowLensIPC"
+            name: "EyesOnYouIPC",
+            dependencies: ["EyesOnYouCore"],
+            path: "Packages/EyesOnYouIPC/Sources/EyesOnYouIPC"
         ),
         .target(
-            name: "FlowLensProxyCore",
-            dependencies: ["FlowLensCore", "FlowLensRuleEngine"],
-            path: "Packages/FlowLensProxyCore/Sources/FlowLensProxyCore"
+            name: "EyesOnYouProxyCore",
+            dependencies: ["EyesOnYouCore", "EyesOnYouRuleEngine"],
+            path: "Packages/EyesOnYouProxyCore/Sources/EyesOnYouProxyCore"
         ),
         .testTarget(
-            name: "FlowLensProxyCoreTests",
-            dependencies: ["FlowLensProxyCore", "FlowLensCore", "FlowLensRuleEngine"],
-            path: "Packages/FlowLensProxyCore/Tests/FlowLensProxyCoreTests"
+            name: "EyesOnYouProxyCoreTests",
+            dependencies: ["EyesOnYouProxyCore", "EyesOnYouCore", "EyesOnYouRuleEngine"],
+            path: "Packages/EyesOnYouProxyCore/Tests/EyesOnYouProxyCoreTests"
         ),
         // Agent-oriented CLI (JSON stdout, no interactive prompts).
         .executableTarget(
-            name: "FlowLensCLI",
+            name: "EyesOnYouCLI",
             dependencies: [
-                "FlowLensCore",
-                "FlowLensRuleEngine",
-                "FlowLensStorage",
-                "FlowLensProxyCore",
-                "FlowLensIPC",
+                "EyesOnYouCore",
+                "EyesOnYouRuleEngine",
+                "EyesOnYouStorage",
+                "EyesOnYouProxyCore",
+                "EyesOnYouIPC",
             ],
-            path: "Sources/FlowLensCLI"
+            path: "Sources/EyesOnYouCLI"
         ),
     ]
 )

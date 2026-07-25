@@ -1,4 +1,4 @@
--- FlowLens telemetry schema draft v1
+-- EyesOnYou telemetry schema draft v1
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
 PRAGMA foreign_keys = ON;

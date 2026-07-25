@@ -4,7 +4,7 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/docs/screenshots"
-BUNDLE_ID="com.example.FlowLens"
+BUNDLE_ID="com.example.EyesOnYou"
 APP_NAME="EyesOnYou"
 APP="$ROOT/build/DerivedData/Build/Products/Release/${APP_NAME}.app"
 
@@ -30,8 +30,8 @@ kill_app() {
 
 set_prefs() {
   local appearance="$1"
-  defaults write "$BUNDLE_ID" flowlens.languagePreference -string english
-  defaults write "$BUNDLE_ID" flowlens.appearanceMode -string "$appearance"
+  defaults write "$BUNDLE_ID" eyesonyou.languagePreference -string english
+  defaults write "$BUNDLE_ID" eyesonyou.appearanceMode -string "$appearance"
 }
 
 # Largest real dashboard window (skip menu-bar / title-strip leftovers).

@@ -1,13 +1,13 @@
 import Foundation
 import NetworkExtension
 import OSLog
-import FlowLensCore
-import FlowLensRuleEngine
+import EyesOnYouCore
+import EyesOnYouRuleEngine
 
 /// Content filter provider: observe / allow / block + statistics → aggregator.
 /// Compile against the current macOS SDK; method availability may vary by OS version.
 final class FlowFilterDataProvider: NEFilterDataProvider {
-    private let log = Logger(subsystem: "com.example.FlowLens", category: "Filter")
+    private let log = Logger(subsystem: "com.example.EyesOnYou", category: "Filter")
     private let runtime = ExtensionRuntime.shared
 
     override func startFilter(completionHandler: @escaping (Error?) -> Void) {

@@ -1,6 +1,6 @@
-# FlowLens CLI
+# EyesOnYou CLI
 
-Agent-oriented command-line interface for FlowLens. Designed for **Codex**, **Claude Code**, and other coding agents: non-interactive, stable exit codes, optional **JSON** stdout.
+Agent-oriented command-line interface for EyesOnYou. Designed for **Codex**, **Claude Code**, and other coding agents: non-interactive, stable exit codes, optional **JSON** stdout.
 
 ## Install / run
 
@@ -8,14 +8,14 @@ From the repo root (no extra dependencies):
 
 ```bash
 # Debug
-swift run flowlens --help
+swift run eyesonyou --help
 
 # Release binary
-swift build -c release --product flowlens
-./.build/release/flowlens --json status
+swift build -c release --product eyesonyou
+./.build/release/eyesonyou --json status
 
 # Optional: put on PATH
-ln -sf "$(pwd)/.build/release/flowlens" /usr/local/bin/flowlens
+ln -sf "$(pwd)/.build/release/eyesonyou" /usr/local/bin/eyesonyou
 ```
 
 ## Agent contract
@@ -25,7 +25,7 @@ ln -sf "$(pwd)/.build/release/flowlens" /usr/local/bin/flowlens
 | Prefer JSON | Always pass `--json` when parsing |
 | No prompts | Commands never ask for interactive input |
 | Exit codes | `0` ok · `1` usage · `2` runtime · `3` not found |
-| Schema discovery | `flowlens --json agent-manifest` |
+| Schema discovery | `eyesonyou --json agent-manifest` |
 | Demo mode | Without a live system extension / telemetry DB, traffic & apps use a **deterministic demo seed** so evaluate/search still work |
 
 ## Commands
@@ -33,7 +33,7 @@ ln -sf "$(pwd)/.build/release/flowlens" /usr/local/bin/flowlens
 ### `status`
 
 ```bash
-flowlens --json status
+eyesonyou --json status
 ```
 
 Returns version, mode (`demo` \| `sqlite`), paths, favorites count.
@@ -41,7 +41,7 @@ Returns version, mode (`demo` \| `sqlite`), paths, favorites count.
 ### `apps`
 
 ```bash
-flowlens --json apps --period week --limit 20
+eyesonyou --json apps --period week --limit 20
 ```
 
 | Flag | Default | Values |
@@ -54,8 +54,8 @@ Favorites are sorted to the top. Each app may include `segments` (websites / pro
 ### `traffic`
 
 ```bash
-flowlens --json traffic --period day
-flowlens --json traffic --app com.google.Chrome --period week
+eyesonyou --json traffic --period day
+eyesonyou --json traffic --app com.google.Chrome --period week
 ```
 
 Optional `--team` with `--app` for full identity.
@@ -63,7 +63,7 @@ Optional `--team` with `--app` for full identity.
 ### `evaluate` (alias `eval`)
 
 ```bash
-flowlens --json evaluate --app com.google.Chrome --host github.com --port 443
+eyesonyou --json evaluate --app com.google.Chrome --host github.com --port 443
 ```
 
 Returns firewall action, route action, and whether the transparent proxy should claim the flow (fail-open defaults).
@@ -71,7 +71,7 @@ Returns firewall action, route action, and whether the transparent proxy should 
 ### `rules`
 
 ```bash
-flowlens --json rules
+eyesonyou --json rules
 ```
 
 Lists policy rules + groups from the CLI policy store (demo defaults unless extended later).
@@ -79,8 +79,8 @@ Lists policy rules + groups from the CLI policy store (demo defaults unless exte
 ### `search`
 
 ```bash
-flowlens --json search chrome
-flowlens --json search "github"
+eyesonyou --json search chrome
+eyesonyou --json search "github"
 ```
 
 Searches display names, signing IDs, destinations, and rule notes.
@@ -88,15 +88,15 @@ Searches display names, signing IDs, destinations, and rule notes.
 ### `favorites`
 
 ```bash
-flowlens --json favorites list
-flowlens --json favorites add com.microsoft.VSCode
-flowlens --json favorites remove com.microsoft.VSCode
+eyesonyou --json favorites list
+eyesonyou --json favorites add com.microsoft.VSCode
+eyesonyou --json favorites remove com.microsoft.VSCode
 ```
 
 Persists to:
 
-- `UserDefaults` key `flowlens.favoriteAppKeys` (same as the host app)
-- `~/Library/Application Support/FlowLens/favorites.json`
+- `UserDefaults` key `eyesonyou.favoriteAppKeys` (same as the host app)
+- `~/Library/Application Support/EyesOnYou/favorites.json`
 
 ### `paths`
 
@@ -108,15 +108,15 @@ Full machine-readable command schema (for tool registration in agents).
 
 ## Suggested agent workflow
 
-1. `flowlens --json agent-manifest` — register tools once  
-2. `flowlens --json status` — check mode / paths  
-3. `flowlens --json apps --period week` — top consumers  
-4. `flowlens --json evaluate --app … --host …` — policy check before suggesting a rule  
-5. `flowlens --json favorites add …` — pin an app for the user  
+1. `eyesonyou --json agent-manifest` — register tools once  
+2. `eyesonyou --json status` — check mode / paths  
+3. `eyesonyou --json apps --period week` — top consumers  
+4. `eyesonyou --json evaluate --app … --host …` — policy check before suggesting a rule  
+5. `eyesonyou --json favorites add …` — pin an app for the user  
 
 ## Live telemetry
 
-If `~/Library/Application Support/FlowLens/telemetry.sqlite` exists (future host flush), CLI may switch mode to `sqlite`. Today the packaged CLI primarily uses the **demo aggregator** so agents have a reliable offline surface.
+If `~/Library/Application Support/EyesOnYou/telemetry.sqlite` exists (future host flush), CLI may switch mode to `sqlite`. Today the packaged CLI primarily uses the **demo aggregator** so agents have a reliable offline surface.
 
 ## Relationship to the GUI
 
@@ -125,4 +125,4 @@ If `~/Library/Application Support/FlowLens/telemetry.sqlite` exists (future host
 | Host app | SwiftUI dashboard, menu bar, system extension install |
 | CLI | Scriptable query + evaluate + favorites for agents/CI |
 
-Both share pure packages (`FlowLensCore`, `RuleEngine`, `Storage`, …) and the favorites key.
+Both share pure packages (`EyesOnYouCore`, `RuleEngine`, `Storage`, …) and the favorites key.

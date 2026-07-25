@@ -19,7 +19,7 @@
 每条 Filter flow 先分类为：
 
 - `userOrigin`：来源 App 原始 flow，计入 App 总量；
-- `ownProxyUpstream`：FlowLens 自己的上游 socket，不计入用户总量，只记诊断；
+- `ownProxyUpstream`：EyesOnYou 自己的上游 socket，不计入用户总量，只记诊断；
 - `thirdPartyProxyIngress`：用户 App 到本地代理的连接，计入来源 App，同时标记代理证据；
 - `thirdPartyProxyEgress`：本地代理到互联网的出口，归代理 App；Overview 提供“按来源需求”和“按实际进程”两种视图；
 - `unknownSystemMediated`：系统代表 App 建连，按 source app 归属并保存 creating process。
@@ -28,7 +28,7 @@
 
 组合使用：
 
-- source signing identifier 等于 FlowLens system extension；
+- source signing identifier 等于 EyesOnYou system extension；
 - `NEAppProxyFlow.setMetadata(on:)` 传播的来源/内部标记；
 - 上游 proxy profile endpoint；
 - Provider 内部活跃 session 表；
@@ -45,4 +45,4 @@
 
 ## 校准测试
 
-对 1 MiB、100 MiB、长连接和双向传输，分别测 direct、FlowLens HTTP CONNECT、FlowLens SOCKS5、第三方本地代理、VPN。受控服务器 payload 计数与 FlowLens 统计的差异要记录协议开销口径。
+对 1 MiB、100 MiB、长连接和双向传输，分别测 direct、EyesOnYou HTTP CONNECT、EyesOnYou SOCKS5、第三方本地代理、VPN。受控服务器 payload 计数与 EyesOnYou 统计的差异要记录协议开销口径。
