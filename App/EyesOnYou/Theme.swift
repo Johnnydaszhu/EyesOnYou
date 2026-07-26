@@ -696,6 +696,7 @@ struct AppearanceModePicker: View {
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
+        .fixedSize()
         .help(l10n.t("appearance.help"))
         .accessibilityLabel(l10n.t("appearance.help"))
         .id(l10n.revision)

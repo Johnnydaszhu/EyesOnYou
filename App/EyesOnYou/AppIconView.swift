@@ -61,17 +61,26 @@ final class AppIconCache: ObservableObject {
     }
 
     /// Prefer system-localized display name from the installed app bundle.
+    ///
+    /// Memoized: the ranking asks for one of these per app on every tick, and each
+    /// miss costs a Launch Services round trip plus an `Info.plist` read.
     func displayName(forSigningID signingID: String, fallback: String) -> String {
-        if let url = Self.applicationURL(forSigningID: signingID) {
-            if let bundle = Bundle(url: url),
-               let name = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
-                ?? bundle.object(forInfoDictionaryKey: "CFBundleName") as? String,
-               !name.isEmpty {
-                return name
-            }
-            return url.deletingPathExtension().lastPathComponent
+        let key = Self.normalize(signingID)
+        if let hit = Self.nameCache[key] { return hit ?? fallback }
+        let resolved = Self.resolveDisplayName(key: key)
+        Self.nameCache[key] = resolved
+        return resolved ?? fallback
+    }
+
+    private static func resolveDisplayName(key: String) -> String? {
+        guard let url = applicationURL(forSigningID: key) else { return nil }
+        if let bundle = Bundle(url: url),
+           let name = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+            ?? bundle.object(forInfoDictionaryKey: "CFBundleName") as? String,
+           !name.isEmpty {
+            return name
         }
-        return fallback
+        return url.deletingPathExtension().lastPathComponent
     }
 
     /// Resolve the on-disk `.app` URL for a signing / bundle identifier.
@@ -79,9 +88,34 @@ final class AppIconCache: ObservableObject {
         Self.applicationURL(forSigningID: signingID)
     }
 
+    /// Resolved bundle URLs. A hit is kept for the session (matching the icon cache);
+    /// a miss expires, so an app installed while the dashboard is open still shows up.
+    private static var urlCache: [String: URL] = [:]
+    private static var urlMisses: [String: Date] = [:]
+    private static var nameCache: [String: String?] = [:]
+    private static let missTTL: TimeInterval = 60
+
     /// Resolve the on-disk `.app` URL for a signing / bundle identifier.
+    ///
+    /// The uncached path is expensive — several Launch Services lookups and, on a
+    /// miss, a full walk of `runningApplications` — and the dashboard used to run it
+    /// once per ranked app per second.
     static func applicationURL(forSigningID signingID: String) -> URL? {
         let key = normalize(signingID)
+        if let hit = urlCache[key] { return hit }
+        if let missedAt = urlMisses[key], Date().timeIntervalSince(missedAt) < missTTL {
+            return nil
+        }
+        guard let resolved = lookUpApplicationURL(key: key) else {
+            urlMisses[key] = Date()
+            return nil
+        }
+        urlCache[key] = resolved
+        urlMisses.removeValue(forKey: key)
+        return resolved
+    }
+
+    private static func lookUpApplicationURL(key: String) -> URL? {
         let candidates = bundleCandidates(for: key)
         for bundleID in candidates {
             if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) {

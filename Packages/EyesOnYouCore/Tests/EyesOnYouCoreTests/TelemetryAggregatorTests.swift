@@ -228,4 +228,74 @@ final class TelemetryAggregatorTests: XCTestCase {
             DestinationKey.make(hostname: "api.com", address: nil)
         )
     }
+
+    // MARK: - Retention
+
+    /// One-second buckets used to accumulate for as long as the process ran, so a
+    /// day-long session held ~86 400 × apps × destinations of them and every query
+    /// scanned the lot.
+    func testLiveRetentionBoundsOneSecondBuckets() {
+        let agg = TelemetryAggregator(retention: .live)
+        let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+        for second in 0..<3_600 {
+            agg.recordDelta(
+                flowID: UUID(),
+                app: chrome,
+                up: 10,
+                down: 20,
+                at: t0.addingTimeInterval(Double(second)),
+                destinationKey: "www.google.com"
+            )
+        }
+
+        // Five minutes of second buckets, not an hour's worth.
+        XCTAssertLessThanOrEqual(agg.bucketCount(granularity: .oneSecond), 301)
+        XCTAssertGreaterThanOrEqual(agg.bucketCount(granularity: .oneSecond), 300)
+
+        // Coarser granularities still answer for the whole hour.
+        let end = t0.addingTimeInterval(3_600)
+        XCTAssertEqual(agg.totals(for: chrome, from: t0, to: end).bytesUp, 3_600 * 10)
+    }
+
+    func testUnlimitedRetentionKeepsEverySecondBucket() {
+        let agg = TelemetryAggregator()
+        let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+        for second in 0..<1_000 {
+            agg.recordDelta(
+                flowID: UUID(),
+                app: chrome,
+                up: 1,
+                down: 1,
+                at: t0.addingTimeInterval(Double(second)),
+                destinationKey: "www.google.com"
+            )
+        }
+        XCTAssertEqual(agg.bucketCount(granularity: .oneSecond), 1_000)
+    }
+
+    /// A restore wider than the retention window must be trimmed. Keeping those
+    /// buckets is what let the flusher re-write history it had already stored.
+    func testImportRespectsRetention() {
+        let agg = TelemetryAggregator(retention: .live)
+        let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+        let imported = (0..<6).map { day -> TrafficBucket in
+            let at = t0.addingTimeInterval(Double(day) * 86_400)
+            return TrafficBucket(
+                key: TrafficBucketKey(
+                    granularity: .oneMinute,
+                    bucketStartMs: TelemetryAggregator.bucketStartMs(
+                        atMs: Int64(at.timeIntervalSince1970 * 1000),
+                        granularity: .oneMinute
+                    ),
+                    app: chrome,
+                    destinationKey: "www.google.com"
+                ),
+                totals: TrafficTotals(bytesUp: 1, bytesDown: 1)
+            )
+        }
+        agg.importBuckets(imported)
+
+        // `.live` keeps two days of minute buckets: days 3, 4 and 5 survive.
+        XCTAssertEqual(agg.bucketCount(granularity: .oneMinute), 3)
+    }
 }

@@ -7,7 +7,9 @@ import EyesOnYouRuleEngine
 final class ExtensionRuntime: @unchecked Sendable {
     static let shared = ExtensionRuntime()
 
-    let aggregator = TelemetryAggregator()
+    // The extension runs for days at a time; unbounded buckets are what gets a
+    // system extension killed for memory.
+    let aggregator = TelemetryAggregator(retention: .live)
     let flowRegistry = ShardedFlowRegistry()
     let metrics = ExtensionMetrics()
     private(set) var rules: RuleSnapshot

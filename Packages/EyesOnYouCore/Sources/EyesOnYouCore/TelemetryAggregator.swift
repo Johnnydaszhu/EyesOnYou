@@ -46,6 +46,61 @@ public struct TrafficBucket: Sendable, Equatable {
     }
 }
 
+/// How much history each granularity keeps **in memory**.
+///
+/// A process that ingests continuously would otherwise grow without bound: nothing
+/// ever removed a one-second bucket, so a day-long session held ~86 400 × (apps ×
+/// destinations) of them, and every query scanned the lot.
+public struct BucketRetention: Sendable, Equatable {
+    /// Seconds of history to keep, per granularity. `nil` means unbounded.
+    public var oneSecond: TimeInterval?
+    public var oneMinute: TimeInterval?
+    public var oneHour: TimeInterval?
+    public var oneDay: TimeInterval?
+
+    public init(
+        oneSecond: TimeInterval?,
+        oneMinute: TimeInterval?,
+        oneHour: TimeInterval?,
+        oneDay: TimeInterval?
+    ) {
+        self.oneSecond = oneSecond
+        self.oneMinute = oneMinute
+        self.oneHour = oneHour
+        self.oneDay = oneDay
+    }
+
+    /// Keep everything — the default, and what one-shot readers (CLI, tests) want
+    /// when they hydrate an aggregator from an arbitrary historical range.
+    public static let unlimited = BucketRetention(
+        oneSecond: nil,
+        oneMinute: nil,
+        oneHour: nil,
+        oneDay: nil
+    )
+
+    /// For a process that ingests for as long as it runs (host app, system extension).
+    ///
+    /// Windows follow `chooseGranularity`: second buckets only ever answer live rates
+    /// and ranges under two minutes, minute buckets only ranges under two hours. Both
+    /// limits are far above what any query can ask for. Day buckets are tiny and kept.
+    public static let live = BucketRetention(
+        oneSecond: 300,
+        oneMinute: 2 * 86_400,
+        oneHour: 400 * 86_400,
+        oneDay: nil
+    )
+
+    func seconds(for granularity: BucketGranularity) -> TimeInterval? {
+        switch granularity {
+        case .oneSecond: return oneSecond
+        case .oneMinute: return oneMinute
+        case .oneHour: return oneHour
+        case .oneDay: return oneDay
+        }
+    }
+}
+
 private struct ActiveFlowState: Sendable {
     let app: AppIdentityKey
     let openedAt: Date
@@ -55,9 +110,30 @@ private struct ActiveFlowState: Sendable {
 /// In-memory multi-granularity traffic aggregator.
 /// Call sites feed open / stats-delta / close events; queries roll up ranges.
 /// Buckets are keyed by app **and** destination so browsers can split by website.
+///
+/// Storage is indexed by bucket start time, one table per granularity, so a range
+/// query touches only the buckets inside the range instead of every bucket ever
+/// recorded. That matters because the dashboard re-queries once a second.
 public final class TelemetryAggregator: @unchecked Sendable {
+    /// Everything about a bucket except its granularity and start time — those are
+    /// the index, so they are not repeated in the value.
+    private struct SlotKey: Hashable {
+        let app: AppIdentityKey
+        let destinationKey: String
+        let routeKind: RouteKind
+        let transport: TransportProtocol
+    }
+
+    private typealias Slot = [SlotKey: TrafficTotals]
+
     private let lock = NSLock()
-    private var buckets: [TrafficBucketKey: TrafficTotals] = [:]
+    /// `timeline[granularityIndex][bucketStartMs][slotKey]`.
+    private var timeline: [[Int64: Slot]] = Array(repeating: [:], count: 4)
+    /// Newest and oldest bucket start seen per granularity, so eviction can skip
+    /// the scan when nothing has aged out.
+    private var newestSlotStart: [Int64] = [.min, .min, .min, .min]
+    private var oldestSlotStart: [Int64] = [.max, .max, .max, .max]
+
     private var appDisplayNames: [AppIdentityKey: String] = [:]
     private var liveRates: [AppIdentityKey: (up: Double, down: Double, at: Date)] = [:]
     /// Last wall-clock time bytes were recorded for an app (does not expire with live rates).
@@ -65,9 +141,14 @@ public final class TelemetryAggregator: @unchecked Sendable {
     private var activeFlows: [UUID: ActiveFlowState] = [:]
     private var recentConnections: [LiveConnection] = []
     private let maxRecentConnections: Int
+    private let retention: BucketRetention
 
-    public init(maxRecentConnections: Int = 100) {
+    public init(
+        maxRecentConnections: Int = 100,
+        retention: BucketRetention = .unlimited
+    ) {
         self.maxRecentConnections = maxRecentConnections
+        self.retention = retention
     }
 
     // MARK: - Event ingestion
@@ -103,21 +184,19 @@ public final class TelemetryAggregator: @unchecked Sendable {
         }
 
         let nowMs = Int64(flow.openedAt.timeIntervalSince1970 * 1000)
+        let slotKey = SlotKey(
+            app: flow.app,
+            destinationKey: dest,
+            routeKind: RouteKind(action: route),
+            transport: flow.transport
+        )
         for granularity in BucketGranularity.allCases {
-            let key = makeKey(
-                granularity: granularity,
-                atMs: nowMs,
-                app: flow.app,
-                destinationKey: dest,
-                route: route,
-                transport: flow.transport
-            )
-            var totals = buckets[key, default: TrafficTotals()]
-            totals.flowsOpened &+= 1
-            if firewall == .block {
-                totals.flowsBlocked &+= 1
+            mutate(granularity: granularity, atMs: nowMs, slotKey: slotKey) { totals in
+                totals.flowsOpened &+= 1
+                if firewall == .block {
+                    totals.flowsBlocked &+= 1
+                }
             }
-            buckets[key] = totals
         }
     }
 
@@ -141,48 +220,33 @@ public final class TelemetryAggregator: @unchecked Sendable {
             ?? DestinationKey.unknown
 
         let nowMs = Int64(at.timeIntervalSince1970 * 1000)
-        for granularity in BucketGranularity.allCases {
-            let key = makeKey(
-                granularity: granularity,
-                atMs: nowMs,
-                app: app,
-                destinationKey: dest,
-                route: route,
-                transport: transport
-            )
-            var totals = buckets[key, default: TrafficTotals()]
-            totals.bytesUp &+= up
-            totals.bytesDown &+= down
-            buckets[key] = totals
-        }
-
-        let rateKey = makeKey(
-            granularity: .oneSecond,
-            atMs: nowMs,
+        let slotKey = SlotKey(
             app: app,
             destinationKey: dest,
-            route: route,
+            routeKind: RouteKind(action: route),
             transport: transport
         )
-        // App-level rate: sum all destinations for this second bucket set is expensive;
-        // accumulate on liveRates by merging app-wide second totals via scan.
+        for granularity in BucketGranularity.allCases {
+            mutate(granularity: granularity, atMs: nowMs, slotKey: slotKey) { totals in
+                totals.bytesUp &+= up
+                totals.bytesDown &+= down
+            }
+        }
+
+        // App-level rate is the sum of this app's destinations within the current
+        // second. Only that one second's slot is read — a handful of entries —
+        // rather than every bucket the process has ever recorded.
+        let bucketStart = Self.bucketStartMs(atMs: nowMs, granularity: .oneSecond)
         var upSum: UInt64 = 0
         var downSum: UInt64 = 0
-        let bucketStart = Self.bucketStartMs(atMs: nowMs, granularity: .oneSecond)
-        for (key, totals) in buckets {
-            guard key.granularity == .oneSecond,
-                  key.app == app,
-                  key.bucketStartMs == bucketStart else { continue }
-            upSum &+= totals.bytesUp
-            downSum &+= totals.bytesDown
+        if let slot = timeline[0][bucketStart] {
+            for (key, totals) in slot where key.app == app {
+                upSum &+= totals.bytesUp
+                downSum &+= totals.bytesDown
+            }
         }
         liveRates[app] = (up: Double(upSum), down: Double(downSum), at: at)
-        if let previous = lastTrafficAtByApp[app] {
-            if at > previous { lastTrafficAtByApp[app] = at }
-        } else {
-            lastTrafficAtByApp[app] = at
-        }
-        _ = rateKey
+        noteTraffic(app: app, at: at)
     }
 
     public func recordClose(
@@ -204,29 +268,23 @@ public final class TelemetryAggregator: @unchecked Sendable {
         activeFlows.removeValue(forKey: flowID)
 
         let nowMs = Int64(at.timeIntervalSince1970 * 1000)
+        let slotKey = SlotKey(
+            app: app,
+            destinationKey: dest,
+            routeKind: RouteKind(action: route),
+            transport: transport
+        )
         for granularity in BucketGranularity.allCases {
-            let key = makeKey(
-                granularity: granularity,
-                atMs: nowMs,
-                app: app,
-                destinationKey: dest,
-                route: route,
-                transport: transport
-            )
-            var totals = buckets[key, default: TrafficTotals()]
-            if finalUp > 0 || finalDown > 0 {
-                totals.bytesUp &+= finalUp
-                totals.bytesDown &+= finalDown
+            mutate(granularity: granularity, atMs: nowMs, slotKey: slotKey) { totals in
+                if finalUp > 0 || finalDown > 0 {
+                    totals.bytesUp &+= finalUp
+                    totals.bytesDown &+= finalDown
+                }
+                totals.flowsClosed &+= 1
             }
-            totals.flowsClosed &+= 1
-            buckets[key] = totals
         }
         if finalUp > 0 || finalDown > 0 {
-            if let previous = lastTrafficAtByApp[app] {
-                if at > previous { lastTrafficAtByApp[app] = at }
-            } else {
-                lastTrafficAtByApp[app] = at
-            }
+            noteTraffic(app: app, at: at)
         }
     }
 
@@ -248,17 +306,9 @@ public final class TelemetryAggregator: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        let fromMs = Int64(from.timeIntervalSince1970 * 1000)
-        let toMs = Int64(to.timeIntervalSince1970 * 1000)
-        let spanSec = max(1, Int((to.timeIntervalSince1970 - from.timeIntervalSince1970)))
-        let granularity = preferredGranularity ?? Self.chooseGranularity(spanSeconds: spanSec)
-
         var result = TrafficTotals()
-        for (key, totals) in buckets {
-            guard key.granularity == granularity else { continue }
-            if let app, key.app != app { continue }
-            if key.bucketStartMs + Int64(granularity.seconds) * 1000 <= fromMs { continue }
-            if key.bucketStartMs >= toMs { continue }
+        forEachBucket(from: from, to: to, preferred: preferredGranularity) { key, totals in
+            if let app, key.app != app { return }
             result.merge(totals)
         }
         return result
@@ -274,17 +324,9 @@ public final class TelemetryAggregator: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        let fromMs = Int64(from.timeIntervalSince1970 * 1000)
-        let toMs = Int64(to.timeIntervalSince1970 * 1000)
-        let spanSec = max(1, Int((to.timeIntervalSince1970 - from.timeIntervalSince1970)))
-        let granularity = preferredGranularity ?? Self.chooseGranularity(spanSeconds: spanSec)
-
         var byApp: [AppIdentityKey: TrafficTotals] = [:]
         var byAppSite: [AppIdentityKey: [String: TrafficTotals]] = [:]
-        for (key, totals) in buckets {
-            guard key.granularity == granularity else { continue }
-            if key.bucketStartMs + Int64(granularity.seconds) * 1000 <= fromMs { continue }
-            if key.bucketStartMs >= toMs { continue }
+        forEachBucket(from: from, to: to, preferred: preferredGranularity) { key, totals in
             byApp[key.app, default: TrafficTotals()].merge(totals)
             byAppSite[key.app, default: [:]][key.destinationKey, default: TrafficTotals()].merge(totals)
         }
@@ -361,16 +403,9 @@ public final class TelemetryAggregator: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        let fromMs = Int64(from.timeIntervalSince1970 * 1000)
-        let toMs = Int64(to.timeIntervalSince1970 * 1000)
-        let spanSec = max(1, Int((to.timeIntervalSince1970 - from.timeIntervalSince1970)))
-        let granularity = preferredGranularity ?? Self.chooseGranularity(spanSeconds: spanSec)
-
         var bySite: [String: TrafficTotals] = [:]
-        for (key, totals) in buckets {
-            guard key.granularity == granularity, key.app == app else { continue }
-            if key.bucketStartMs + Int64(granularity.seconds) * 1000 <= fromMs { continue }
-            if key.bucketStartMs >= toMs { continue }
+        forEachBucket(from: from, to: to, preferred: preferredGranularity) { key, totals in
+            guard key.app == app else { return }
             bySite[key.destinationKey, default: TrafficTotals()].merge(totals)
         }
 
@@ -402,11 +437,11 @@ public final class TelemetryAggregator: @unchecked Sendable {
         }
         // Fallback: newest one-second bucket that carried bytes.
         var latest: Int64 = 0
-        for (key, totals) in buckets {
-            guard key.app == app, key.granularity == .oneSecond else { continue }
-            guard totals.bytesUp > 0 || totals.bytesDown > 0 else { continue }
-            if key.bucketStartMs > latest {
-                latest = key.bucketStartMs
+        for (start, slot) in timeline[0] where start > latest {
+            for (key, totals) in slot where key.app == app {
+                guard totals.bytesUp > 0 || totals.bytesDown > 0 else { continue }
+                latest = start
+                break
             }
         }
         guard latest > 0 else { return nil }
@@ -441,7 +476,18 @@ public final class TelemetryAggregator: @unchecked Sendable {
     public func purge(app: AppIdentityKey) {
         lock.lock()
         defer { lock.unlock() }
-        buckets = buckets.filter { $0.key.app != app }
+        for index in timeline.indices {
+            for (start, slot) in timeline[index] {
+                let kept = slot.filter { $0.key.app != app }
+                if kept.count == slot.count { continue }
+                if kept.isEmpty {
+                    timeline[index].removeValue(forKey: start)
+                } else {
+                    timeline[index][start] = kept
+                }
+            }
+            resetBoundsIfEmpty(index)
+        }
         liveRates.removeValue(forKey: app)
         lastTrafficAtByApp.removeValue(forKey: app)
         activeFlows = activeFlows.filter { $0.value.app != app }
@@ -466,17 +512,13 @@ public final class TelemetryAggregator: @unchecked Sendable {
         var upBins = Array(repeating: 0.0, count: n)
         var downBins = Array(repeating: 0.0, count: n)
 
-        let spanSec = max(1, Int(to.timeIntervalSince1970 - from.timeIntervalSince1970))
-        let granularity = Self.chooseGranularity(spanSeconds: spanSec)
-
-        for (key, totals) in buckets {
-            guard key.granularity == granularity else { continue }
-            if let app, key.app != app { continue }
-            if key.bucketStartMs + Int64(granularity.seconds) * 1000 <= fromMs { continue }
-            if key.bucketStartMs >= toMs { continue }
-            let idx = min(n - 1, max(0, Int((key.bucketStartMs - fromMs) * Int64(n) / spanMs)))
-            upBins[idx] += Double(totals.bytesUp)
-            downBins[idx] += Double(totals.bytesDown)
+        forEachSlot(from: from, to: to, preferred: nil) { start, slot in
+            let idx = min(n - 1, max(0, Int((start - fromMs) * Int64(n) / spanMs)))
+            for (key, totals) in slot {
+                if let app, key.app != app { continue }
+                upBins[idx] += Double(totals.bytesUp)
+                downBins[idx] += Double(totals.bytesDown)
+            }
         }
         return (upBins, downBins)
     }
@@ -494,18 +536,10 @@ public final class TelemetryAggregator: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        let fromMs = Int64(from.timeIntervalSince1970 * 1000)
-        let toMs = Int64(to.timeIntervalSince1970 * 1000)
-        let spanSec = max(1, Int(to.timeIntervalSince1970 - from.timeIntervalSince1970))
-        let granularity = preferredGranularity ?? Self.chooseGranularity(spanSeconds: spanSec)
-
         var byApp: [AppIdentityKey: (direct: UInt64, proxied: UInt64)] = [:]
-        for (key, totals) in buckets {
-            guard key.granularity == granularity else { continue }
-            if key.bucketStartMs + Int64(granularity.seconds) * 1000 <= fromMs { continue }
-            if key.bucketStartMs >= toMs { continue }
+        forEachBucket(from: from, to: to, preferred: preferredGranularity) { key, totals in
             let bytes = totals.totalBytes
-            guard bytes > 0 else { continue }
+            guard bytes > 0 else { return }
             var entry = byApp[key.app] ?? (direct: 0, proxied: 0)
             switch key.routeKind {
             case .systemProxy, .customProxy:
@@ -526,21 +560,13 @@ public final class TelemetryAggregator: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
 
-        let fromMs = Int64(from.timeIntervalSince1970 * 1000)
-        let toMs = Int64(to.timeIntervalSince1970 * 1000)
-        let spanSec = max(1, Int(to.timeIntervalSince1970 - from.timeIntervalSince1970))
-        let granularity = Self.chooseGranularity(spanSeconds: spanSec)
-
         var direct: UInt64 = 0
         var system: UInt64 = 0
         var custom: UInt64 = 0
         var blocked: UInt64 = 0
 
-        for (key, totals) in buckets {
-            guard key.granularity == granularity else { continue }
-            if let app, key.app != app { continue }
-            if key.bucketStartMs + Int64(granularity.seconds) * 1000 <= fromMs { continue }
-            if key.bucketStartMs >= toMs { continue }
+        forEachBucket(from: from, to: to, preferred: nil) { key, totals in
+            if let app, key.app != app { return }
             let bytes = totals.totalBytes
             blocked &+= totals.flowsBlocked
             switch key.routeKind {
@@ -574,9 +600,27 @@ public final class TelemetryAggregator: @unchecked Sendable {
     public func exportBuckets(granularity: BucketGranularity) -> [TrafficBucket] {
         lock.lock()
         defer { lock.unlock() }
-        return buckets
-            .filter { $0.key.granularity == granularity }
-            .map { TrafficBucket(key: $0.key, totals: $0.value) }
+        var result: [TrafficBucket] = []
+        let table = timeline[Self.index(granularity)]
+        result.reserveCapacity(table.count)
+        for (start, slot) in table {
+            for (slotKey, totals) in slot {
+                result.append(
+                    TrafficBucket(
+                        key: TrafficBucketKey(
+                            granularity: granularity,
+                            bucketStartMs: start,
+                            app: slotKey.app,
+                            destinationKey: slotKey.destinationKey,
+                            routeKind: slotKey.routeKind,
+                            transport: slotKey.transport
+                        ),
+                        totals: totals
+                    )
+                )
+            }
+        }
+        return result
     }
 
     /// Load persisted buckets back in, so a restart resumes with its history intact.
@@ -584,11 +628,28 @@ public final class TelemetryAggregator: @unchecked Sendable {
     /// Totals are **replaced**, not merged: the caller is restoring a snapshot that
     /// already includes everything recorded for those buckets. Merging would double
     /// every byte that survived the restart.
+    ///
+    /// Retention applies here too. A caller that restores more history than the policy
+    /// keeps would otherwise hold buckets the flusher has already forgotten the
+    /// watermark for, and the next flush would write their totals to SQLite a second
+    /// time.
     public func importBuckets(_ imported: [TrafficBucket]) {
         lock.lock()
         defer { lock.unlock() }
         for bucket in imported {
-            buckets[bucket.key] = bucket.totals
+            let index = Self.index(bucket.key.granularity)
+            let start = bucket.key.bucketStartMs
+            let slotKey = SlotKey(
+                app: bucket.key.app,
+                destinationKey: bucket.key.destinationKey,
+                routeKind: bucket.key.routeKind,
+                transport: bucket.key.transport
+            )
+            timeline[index][start, default: [:]][slotKey] = bucket.totals
+            noteBounds(index: index, start: start)
+        }
+        for index in timeline.indices {
+            evictIfNeeded(index)
         }
     }
 
@@ -614,11 +675,20 @@ public final class TelemetryAggregator: @unchecked Sendable {
     public func reset() {
         lock.lock()
         defer { lock.unlock() }
-        buckets.removeAll()
+        timeline = Array(repeating: [:], count: 4)
+        newestSlotStart = [.min, .min, .min, .min]
+        oldestSlotStart = [.max, .max, .max, .max]
         liveRates.removeAll()
         lastTrafficAtByApp.removeAll()
         activeFlows.removeAll()
         recentConnections.removeAll()
+    }
+
+    /// Buckets currently held in memory, per granularity — retention diagnostics.
+    public func bucketCount(granularity: BucketGranularity) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return timeline[Self.index(granularity)].values.reduce(0) { $0 + $1.count }
     }
 
     // MARK: - Helpers
@@ -652,22 +722,144 @@ public final class TelemetryAggregator: @unchecked Sendable {
         return dest
     }
 
-    private func makeKey(
+    private static func index(_ granularity: BucketGranularity) -> Int {
+        switch granularity {
+        case .oneSecond: return 0
+        case .oneMinute: return 1
+        case .oneHour: return 2
+        case .oneDay: return 3
+        }
+    }
+
+    private static func granularity(atIndex index: Int) -> BucketGranularity {
+        switch index {
+        case 0: return .oneSecond
+        case 1: return .oneMinute
+        case 2: return .oneHour
+        default: return .oneDay
+        }
+    }
+
+    // MARK: - Storage
+
+    /// Add to (or create) one bucket. Caller holds the lock.
+    ///
+    /// The nested subscripts mutate in place; pulling the slot out into a local and
+    /// writing it back would copy the whole slot on every recorded delta.
+    private func mutate(
         granularity: BucketGranularity,
         atMs: Int64,
-        app: AppIdentityKey,
-        destinationKey: String,
-        route: RouteAction,
-        transport: TransportProtocol
-    ) -> TrafficBucketKey {
-        TrafficBucketKey(
-            granularity: granularity,
-            bucketStartMs: Self.bucketStartMs(atMs: atMs, granularity: granularity),
-            app: app,
-            destinationKey: destinationKey,
-            routeKind: RouteKind(action: route),
-            transport: transport
-        )
+        slotKey: SlotKey,
+        _ body: (inout TrafficTotals) -> Void
+    ) {
+        let index = Self.index(granularity)
+        let start = Self.bucketStartMs(atMs: atMs, granularity: granularity)
+        body(&timeline[index][start, default: [:]][slotKey, default: TrafficTotals()])
+        if noteBounds(index: index, start: start) {
+            evictIfNeeded(index)
+        }
+    }
+
+    /// Track the newest / oldest bucket start. Returns true when the newest advanced,
+    /// which is the only moment retention can newly expire something.
+    @discardableResult
+    private func noteBounds(index: Int, start: Int64) -> Bool {
+        if start < oldestSlotStart[index] { oldestSlotStart[index] = start }
+        guard start > newestSlotStart[index] else { return false }
+        newestSlotStart[index] = start
+        return true
+    }
+
+    private func resetBoundsIfEmpty(_ index: Int) {
+        guard timeline[index].isEmpty else { return }
+        newestSlotStart[index] = .min
+        oldestSlotStart[index] = .max
+    }
+
+    /// Drop buckets older than the retention window for this granularity.
+    private func evictIfNeeded(_ index: Int) {
+        let granularity = Self.granularity(atIndex: index)
+        guard let window = retention.seconds(for: granularity) else { return }
+        let newest = newestSlotStart[index]
+        guard newest != .min else { return }
+        let cutoff = newest - Int64(window * 1000)
+        guard oldestSlotStart[index] < cutoff else { return }
+
+        var oldest = Int64.max
+        timeline[index] = timeline[index].filter { start, _ in
+            guard start >= cutoff else { return false }
+            if start < oldest { oldest = start }
+            return true
+        }
+        oldestSlotStart[index] = oldest
+        resetBoundsIfEmpty(index)
+    }
+
+    private func noteTraffic(app: AppIdentityKey, at: Date) {
+        if let previous = lastTrafficAtByApp[app] {
+            if at > previous { lastTrafficAtByApp[app] = at }
+        } else {
+            lastTrafficAtByApp[app] = at
+        }
+    }
+
+    // MARK: - Range iteration
+
+    /// Visit every bucket overlapping `[from, to)` at the granularity that best fits
+    /// the span. Caller holds the lock.
+    ///
+    /// The predicate matches what a full scan used to apply: a bucket counts when its
+    /// window ends after `from` and it starts before `to`.
+    private func forEachSlot(
+        from: Date,
+        to: Date,
+        preferred: BucketGranularity?,
+        _ body: (Int64, Slot) -> Void
+    ) {
+        let fromMs = Int64(from.timeIntervalSince1970 * 1000)
+        let toMs = Int64(to.timeIntervalSince1970 * 1000)
+        guard toMs > 0 else { return }
+        let spanSec = max(1, Int(to.timeIntervalSince1970 - from.timeIntervalSince1970))
+        let granularity = preferred ?? Self.chooseGranularity(spanSeconds: spanSec)
+        let index = Self.index(granularity)
+        let table = timeline[index]
+        guard !table.isEmpty else { return }
+
+        let step = Int64(granularity.seconds) * 1000
+        let first = Self.bucketStartMs(atMs: fromMs, granularity: granularity)
+        let last = Self.bucketStartMs(atMs: toMs - 1, granularity: granularity)
+        guard last >= first else { return }
+
+        // Walking the range is the point: it costs the number of buckets asked for,
+        // not the number retained. When the range is wider than the whole table,
+        // iterating the table is cheaper.
+        let slotsInRange = (last - first) / step + 1
+        if slotsInRange <= Int64(table.count) {
+            var start = first
+            while start <= last {
+                if let slot = table[start] { body(start, slot) }
+                start += step
+            }
+        } else {
+            for (start, slot) in table where start >= first && start <= last {
+                body(start, slot)
+            }
+        }
+    }
+
+    /// Every bucket in range, flattened. Rollups only ever look at the slot key, so
+    /// the granularity and start time are not rebuilt into a full `TrafficBucketKey`.
+    private func forEachBucket(
+        from: Date,
+        to: Date,
+        preferred: BucketGranularity?,
+        _ body: (SlotKey, TrafficTotals) -> Void
+    ) {
+        forEachSlot(from: from, to: to, preferred: preferred) { _, slot in
+            for (slotKey, totals) in slot {
+                body(slotKey, totals)
+            }
+        }
     }
 
     private func protocolLabel(_ flow: FlowDescriptor) -> String {

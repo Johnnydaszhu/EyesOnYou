@@ -20,6 +20,15 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     private var titleTimer: Timer?
     private var hostingController: NSHostingController<AnyView>?
     private var statusHostingView: NSHostingView<AnyView>?
+
+    /// What the status item's hosting view was last built for. Rebuilding is only
+    /// needed when one of these changes; the rates inside it update on their own.
+    private struct Chrome: Equatable {
+        let style: AppModel.MenuBarDisplayStyle
+        let width: CGFloat
+        let appearance: AppModel.AppearanceMode
+    }
+    private var renderedChrome: Chrome?
     private var didInstall = false
 
     private override init() {
@@ -153,25 +162,32 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         statusItem?.length = width
 
         let itemHeight: CGFloat = 18
-        let root = AnyView(
-            MenuBarStatusItemView(style: style)
-                .environmentObject(model)
-                .environmentObject(l10n)
-                .preferredColorScheme(model.appearanceMode.preferredColorScheme)
-                .frame(width: width, height: itemHeight)
-        )
-
-        if let existing = statusHostingView {
-            existing.rootView = root
-            existing.frame = NSRect(x: 0, y: 0, width: width, height: itemHeight)
-            existing.appearance = model.appearanceMode.nsAppearance
-        } else {
-            let host = NSHostingView(rootView: root)
-            host.frame = NSRect(x: 0, y: 0, width: width, height: itemHeight)
-            host.autoresizingMask = [.maxXMargin, .minYMargin, .maxYMargin]
-            host.appearance = model.appearanceMode.nsAppearance
-            button.addSubview(host)
-            statusHostingView = host
+        // `MenuBarStatusItemView` observes the model itself, so it re-renders its rates
+        // on its own. Reassigning `rootView` is only needed when the *shape* of the item
+        // changes — doing it on every tick threw the hosting view's state away once a
+        // second to draw the same thing.
+        let chrome = Chrome(style: style, width: width, appearance: model.appearanceMode)
+        if statusHostingView == nil || renderedChrome != chrome {
+            let root = AnyView(
+                MenuBarStatusItemView(style: style)
+                    .environmentObject(model)
+                    .environmentObject(l10n)
+                    .preferredColorScheme(model.appearanceMode.preferredColorScheme)
+                    .frame(width: width, height: itemHeight)
+            )
+            if let existing = statusHostingView {
+                existing.rootView = root
+                existing.frame = NSRect(x: 0, y: 0, width: width, height: itemHeight)
+                existing.appearance = model.appearanceMode.nsAppearance
+            } else {
+                let host = NSHostingView(rootView: root)
+                host.frame = NSRect(x: 0, y: 0, width: width, height: itemHeight)
+                host.autoresizingMask = [.maxXMargin, .minYMargin, .maxYMargin]
+                host.appearance = model.appearanceMode.nsAppearance
+                button.addSubview(host)
+                statusHostingView = host
+            }
+            renderedChrome = chrome
         }
 
         // Keep a bit of left padding so the custom view sits in the button.

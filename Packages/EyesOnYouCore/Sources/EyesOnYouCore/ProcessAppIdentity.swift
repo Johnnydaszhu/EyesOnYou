@@ -118,9 +118,27 @@ public enum ProcessAppIdentity {
         "Arc": ("company.thebrowser.Browser", "Arc"),
     ]
 
+    /// Last-resort identity from the process's short name.
+    ///
+    /// The name arrives truncated, but by how much depends on the source: `lsof` cuts
+    /// its COMMAND column at nine characters ("MacPacket"), the kernel's `p_comm` at
+    /// sixteen ("Google Chrome He"). Matching on a prefix in either direction resolves
+    /// both without a table entry per truncation width.
     private static func resolveFromTruncatedCommand(_ command: String) -> Resolved? {
         let key = command.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let hint = truncatedCommandHints[key] else { return nil }
+        guard !key.isEmpty else { return nil }
+        if let hint = truncatedCommandHints[key] {
+            return Resolved(signingIdentifier: hint.signing, displayName: hint.display)
+        }
+        let folded = key.lowercased()
+        // Longest match first: "Chromium" must not be claimed by a shorter "Chrome".
+        let match = truncatedCommandHints
+            .filter { entry in
+                let candidate = entry.key.lowercased()
+                return folded.hasPrefix(candidate) || candidate.hasPrefix(folded)
+            }
+            .max { $0.key.count < $1.key.count }
+        guard let hint = match?.value else { return nil }
         return Resolved(signingIdentifier: hint.signing, displayName: hint.display)
     }
 

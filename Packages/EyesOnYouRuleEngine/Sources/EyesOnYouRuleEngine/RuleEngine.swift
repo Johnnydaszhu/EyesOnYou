@@ -250,6 +250,16 @@ public final class PolicyStore: @unchecked Sendable {
         return appAssignments[app] ?? .inherit
     }
 
+    /// How many rules are enabled.
+    ///
+    /// The dashboard shows this once a second. Reading it off `compileSnapshot()`
+    /// meant compiling every rule into a matcher closure — and rebuilding a group
+    /// lookup table per rule — to produce an integer.
+    public func activeRuleCount() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        return rules.reduce(0) { $1.enabled ? $0 + 1 : $0 }
+    }
+
     // MARK: Compile snapshot
 
     public func compileSnapshot() -> RuleSnapshot {
@@ -260,9 +270,11 @@ public final class PolicyStore: @unchecked Sendable {
         let gen = generation
         lock.unlock()
 
+        // One lookup for the whole compile; it used to be rebuilt for every rule.
+        let groupLookup = Dictionary(uniqueKeysWithValues: groupsCopy.map { ($0.id, $0) })
         let compiled = rulesCopy
             .filter(\.enabled)
-            .map { Self.compile($0, groups: groupsCopy) }
+            .map { Self.compile($0, groupLookup: groupLookup) }
 
         let checksum = Self.checksum(generation: gen, ruleCount: compiled.count)
         return RuleSnapshot(
@@ -276,8 +288,10 @@ public final class PolicyStore: @unchecked Sendable {
 
     // MARK: - Compile helpers
 
-    private static func compile(_ rule: NetworkPolicyRule, groups: [AppGroup]) -> CompiledRule {
-        let groupLookup = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0) })
+    private static func compile(
+        _ rule: NetworkPolicyRule,
+        groupLookup: [UUID: AppGroup]
+    ) -> CompiledRule {
         let appMatcher = rule.app
         let destMatcher = rule.destination
         let portMatcher = rule.ports

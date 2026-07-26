@@ -99,6 +99,14 @@ final class LocalizationStore: ObservableObject {
     /// Bumps when language changes so SwiftUI views refresh.
     @Published private(set) var revision: UInt64 = 0
 
+    // Formatters are expensive to construct — `RelativeDateTimeFormatter` especially,
+    // since it loads locale data — and the date helpers below are called from view
+    // bodies: the ranking asks for one per row on every render. Cache them by the
+    // format they were built for and rebuild only when the language changes.
+    fileprivate var cachedDateFormatters: [String: DateFormatter] = [:]
+    fileprivate var cachedRelativeFormatter: RelativeDateTimeFormatter?
+    fileprivate var formatterLocaleIdentifier: String?
+
     init() {
         if let raw = UserDefaults.standard.string(forKey: Self.preferenceKey),
            let pref = AppLanguage(rawValue: raw) {
@@ -2851,15 +2859,37 @@ extension LocalizationStore {
         }
     }
 
-    func overviewRangeCaption(start: Date, end: Date) -> String {
+    private func invalidateFormattersIfLocaleChanged() {
+        let identifier = dateLocaleIdentifier
+        guard formatterLocaleIdentifier != identifier else { return }
+        formatterLocaleIdentifier = identifier
+        cachedDateFormatters.removeAll()
+        cachedRelativeFormatter = nil
+    }
+
+    private func dateFormatter(format: String) -> DateFormatter {
+        invalidateFormattersIfLocaleChanged()
+        if let hit = cachedDateFormatters[format] { return hit }
         let df = DateFormatter()
         df.locale = Locale(identifier: dateLocaleIdentifier)
+        df.dateFormat = format
+        cachedDateFormatters[format] = df
+        return df
+    }
+
+    private var relativeFormatter: RelativeDateTimeFormatter {
+        invalidateFormattersIfLocaleChanged()
+        if let hit = cachedRelativeFormatter { return hit }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale(identifier: dateLocaleIdentifier)
+        formatter.unitsStyle = .abbreviated
+        cachedRelativeFormatter = formatter
+        return formatter
+    }
+
+    func overviewRangeCaption(start: Date, end: Date) -> String {
         let span = end.timeIntervalSince(start)
-        if span <= 48 * 3600 {
-            df.dateFormat = shortDateTimeFormat
-        } else {
-            df.dateFormat = longDateFormat
-        }
+        let df = dateFormatter(format: span <= 48 * 3600 ? shortDateTimeFormat : longDateFormat)
         return String(format: t("overview.period.range"), df.string(from: start), df.string(from: end))
     }
 
@@ -2870,10 +2900,7 @@ extension LocalizationStore {
         if age < 5 {
             return t("ranking.lastSeen.now")
         }
-        let formatter = RelativeDateTimeFormatter()
-        formatter.locale = Locale(identifier: dateLocaleIdentifier)
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: date, relativeTo: Date())
+        return relativeFormatter.localizedString(for: date, relativeTo: Date())
     }
 
     func routeChip(_ label: String) -> String {

@@ -88,12 +88,35 @@ public enum ActiveAppSocketSampler {
         public var remotePort: Int
     }
 
-    /// Run `/usr/sbin/lsof` for ESTABLISHED TCP and attribute weights.
+    /// Read ESTABLISHED TCP sockets from the kernel and attribute weights.
     public static func sampleTCPEstablished(
         proxyPort: Int? = nil,
         directIndex: DirectDestinationIndex = .empty,
         resolvedHosts: [String: String] = [:]
     ) -> ActiveSocketSnapshot {
+        summarize(
+            currentConnections(),
+            proxyPort: proxyPort,
+            directIndex: directIndex,
+            resolvedHosts: resolvedHosts
+        )
+    }
+
+    /// This host's ESTABLISHED TCP sockets.
+    ///
+    /// `SocketTable` asks `libproc` directly. Spawning `/usr/sbin/lsof` and parsing its
+    /// text produced the same rows for ~90 ms of wall time against ~1.7 ms, and burned
+    /// 10–20 ms of CPU per call in the child process — once a second, forever. The
+    /// subprocess stays as a fallback for the case where the kernel walk yields nothing
+    /// at all.
+    public static func currentConnections() -> [ConnectionLine] {
+        let table = SocketTable.establishedTCP()
+        if !table.isEmpty { return table }
+        return parse(lsofOutput: lsofEstablishedText())
+    }
+
+    /// Raw `lsof` output for ESTABLISHED TCP; the fallback source.
+    static func lsofEstablishedText() -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
         process.arguments = ["-nP", "-iTCP", "-sTCP:ESTABLISHED"]
@@ -103,20 +126,12 @@ public enum ActiveAppSocketSampler {
         do {
             try process.run()
         } catch {
-            return ActiveSocketSnapshot()
+            return ""
         }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        guard process.terminationStatus == 0 || !data.isEmpty else {
-            return ActiveSocketSnapshot()
-        }
-        let text = String(data: data, encoding: .utf8) ?? ""
-        return summarize(
-            parse(lsofOutput: text),
-            proxyPort: proxyPort,
-            directIndex: directIndex,
-            resolvedHosts: resolvedHosts
-        )
+        guard process.terminationStatus == 0 || !data.isEmpty else { return "" }
+        return String(data: data, encoding: .utf8) ?? ""
     }
 
     public static func parse(lsofOutput: String) -> [ConnectionLine] {

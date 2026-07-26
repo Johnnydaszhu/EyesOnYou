@@ -26,7 +26,7 @@ public final class ConnectionOwnerResolver: @unchecked Sendable {
 
     public init(
         refreshInterval: TimeInterval = 1.0,
-        sampler: @escaping () -> [(pid: Int32, localPort: UInt16)] = ConnectionOwnerResolver.lsofLoopbackClients
+        sampler: @escaping () -> [(pid: Int32, localPort: UInt16)] = ConnectionOwnerResolver.loopbackClients
     ) {
         self.refreshInterval = refreshInterval
         self.sampler = sampler
@@ -122,9 +122,21 @@ public final class ConnectionOwnerResolver: @unchecked Sendable {
         return owner
     }
 
-    // MARK: - lsof sampling
+    // MARK: - Sampling
 
     /// All loopback TCP client sockets as (pid, localPort) pairs.
+    ///
+    /// Read from the kernel. The index is rebuilt on a miss as well as on a timer, so
+    /// a busy proxy used to fork `lsof` several times a second for this alone.
+    /// Unlike the `lsof -iTCP@127.0.0.1` form it replaces, this also sees clients that
+    /// dialed the proxy over `::1`.
+    public static func loopbackClients() -> [(pid: Int32, localPort: UInt16)] {
+        let table = SocketTable.loopbackClients()
+        if !table.isEmpty { return table }
+        return lsofLoopbackClients()
+    }
+
+    /// Fallback: same list via `lsof`.
     ///
     /// `-iTCP@127.0.0.1` restricts to loopback so the scan is small — the only
     /// sockets that matter are clients dialing our proxy on localhost.

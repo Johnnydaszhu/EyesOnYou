@@ -115,7 +115,8 @@ EYESONYOU_SKIP_PROXY_CONFIG_SCAN=1 <launch the app>
 
 | Goal | Location |
 |---|---|
-| Counter math / aggregation | `Packages/EyesOnYouCore` |
+| Counter math / aggregation | `Packages/EyesOnYouCore` (`TelemetryAggregator`; long-lived callers pass `retention: .live` so buckets stay bounded) |
+| Reading the host's ESTABLISHED TCP sockets | `Packages/EyesOnYouCore` (`SocketTable` via libproc; the `lsof` path is only a fallback) |
 | Codex / Cursor / Claude workspace discovery | `Packages/EyesOnYouCore` (`WorkspaceDiscovery`) |
 | Process → owning app / project attribution | `Packages/EyesOnYouCore` (`LiveAttribution`, `ProjectResolver`, `ProcessRuntimeInfo`, `AgentProcessCatalog`) |
 | Rules / groups / route toggle | `Packages/EyesOnYouRuleEngine` |

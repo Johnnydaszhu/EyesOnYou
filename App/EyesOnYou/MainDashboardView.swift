@@ -77,28 +77,34 @@ struct MainDashboardView: View {
 
             Spacer(minLength: 8)
 
-            headerVersionControl
-            Button {
-                model.openSettings()
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(EyesOnYouTheme.textSecondary)
-                    .frame(width: 28, height: 28)
-                    .background {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(Color.primary.opacity(0.05))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .strokeBorder(EyesOnYouTheme.cardBorder.opacity(0.8), lineWidth: 0.7)
-                            )
-                    }
-                    .contentShape(Rectangle())
+            // Keep trailing controls at intrinsic width. macOS `Menu` otherwise
+            // competes with Spacer for flexible space and drifts off the trailing edge.
+            HStack(spacing: 8) {
+                headerVersionControl
+                Button {
+                    model.openSettings()
+                } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(EyesOnYouTheme.textSecondary)
+                        .frame(width: 28, height: 28)
+                        .background {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color.primary.opacity(0.05))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .strokeBorder(EyesOnYouTheme.cardBorder.opacity(0.8), lineWidth: 0.7)
+                                )
+                        }
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(l10n.t("settings.title"))
+                AppearanceModePicker()
             }
-            .buttonStyle(.plain)
-            .help(l10n.t("settings.title"))
-            AppearanceModePicker()
+            .fixedSize(horizontal: true, vertical: false)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16)
         // Clear traffic lights only; keep inset tight so the titlebar band stays short.
         .padding(.top, model.appUpdateAvailable ? 6 : 28)

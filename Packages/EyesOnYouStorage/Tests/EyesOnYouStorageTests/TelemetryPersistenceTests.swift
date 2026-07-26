@@ -249,4 +249,47 @@ final class TelemetryStoreQueryTests: XCTestCase {
         XCTAssertEqual(try store.pruneOrphanedApps(), 1)
         XCTAssertEqual(try store.statistics().apps, 0)
     }
+
+    /// `mergeBucket` adds to the stored row, so forgetting a watermark while its bucket
+    /// is still in the aggregator makes the next flush re-add the bucket's whole total.
+    /// The aggregator's retention must therefore expire a bucket *before* the flusher
+    /// forgets its watermark — this is the ordering that keeps restarts idempotent.
+    func testWatermarkOutlivesTheBucketItDescribes() throws {
+        let now = Date()
+        // A minute bucket from 2.5 days ago: inside a restore window, older than a
+        // two-day watermark cutoff.
+        let old = now.addingTimeInterval(-2.5 * 86_400)
+        let restored = [
+            TrafficBucket(
+                key: TrafficBucketKey(
+                    granularity: .oneMinute,
+                    bucketStartMs: TelemetryAggregator.bucketStartMs(
+                        atMs: Int64(old.timeIntervalSince1970 * 1000),
+                        granularity: .oneMinute
+                    ),
+                    app: app,
+                    destinationKey: "project:EyesOnYou"
+                ),
+                totals: TrafficTotals(bytesUp: 1_000, bytesDown: 4_000)
+            )
+        ]
+        // Already on disk from the previous session.
+        for bucket in restored { try store.mergeBucket(bucket) }
+
+        let aggregator = TelemetryAggregator(retention: .live)
+        aggregator.importBuckets(restored)
+        let flusher = TelemetryFlusher(store: store)
+        flusher.seed(with: restored)
+
+        // What `pruneTelemetry` does right after a restore, then the next flush.
+        flusher.forgetWatermarks(endedBefore: now.addingTimeInterval(-3 * 86_400))
+        try flusher.flush(aggregator)
+
+        let rows = try store.loadBuckets(
+            granularity: .oneMinute,
+            from: old.addingTimeInterval(-120),
+            to: old.addingTimeInterval(120)
+        )
+        XCTAssertEqual(rows.reduce(UInt64(0)) { $0 &+ $1.totals.bytesUp }, 1_000)
+    }
 }

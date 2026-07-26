@@ -150,6 +150,18 @@ final class AppModel: ObservableObject {
     /// Resolved range used by totals / ranking (for UI caption).
     @Published private(set) var periodRangeStart: Date = Date()
     @Published private(set) var periodRangeEnd: Date = Date()
+
+    /// A coarse clock, published so relative "last seen" labels keep counting up.
+    ///
+    /// Nothing reads this value — publishing it *is* its job. The ranking renders
+    /// `relativeTrafficTime`, which derives its text from the wall clock rather than
+    /// from any published property. Every other write is gated on the value actually
+    /// changing, so an idle machine produces no `objectWillChange` at all and those
+    /// labels would freeze at whatever they said when traffic stopped. A row whose
+    /// label changes faster than this interval is a row with live traffic, and that
+    /// republishes on its own.
+    @Published private(set) var relativeTimeEpoch: Int = 0
+    private static let relativeTimeEpochInterval: TimeInterval = 5
     /// Network totals for the selected overview period.
     @Published var periodNetworkUp: UInt64 = 0
     @Published var periodNetworkDown: UInt64 = 0
@@ -180,7 +192,9 @@ final class AppModel: ObservableObject {
     /// Ranking filter query (supports combined tokens; see `RankingQuery`).
     @Published var rankingFilterQuery: String = ""
 
-    let aggregator = TelemetryAggregator()
+    // Bounded retention: this aggregator ingests for as long as the app runs, and
+    // one-second buckets only ever back live rates and sub-two-minute ranges.
+    let aggregator = TelemetryAggregator(retention: .live)
     let policyStore = PolicyStore()
     /// Host-wide interface sampler — fills live rates when NE telemetry is empty.
     private let hostNetworkSampler = HostNetworkSampler()
@@ -267,6 +281,8 @@ final class AppModel: ObservableObject {
     private static let archivedDefaultsKey = "eyesonyou.archivedAppKeys"
     /// How many apps to materialize into the ranking table.
     private static let rankingLimit = 64
+    /// Rows in the history table. Must not exceed `rankingLimit`, which it is sliced from.
+    private static let historyLimit = 50
 
     /// History range identity (titles come from LocalizationStore).
     enum HistoryRange: String, CaseIterable, Identifiable {
@@ -1105,14 +1121,27 @@ final class AppModel: ObservableObject {
 
     /// How far back to reload per granularity — enough for every dashboard range
     /// without pulling years of day rows into memory.
+    ///
+    /// Must not exceed `BucketRetention.live`, or the restore would load buckets the
+    /// aggregator immediately evicts.
     private static func restoreWindow(for granularity: BucketGranularity) -> TimeInterval {
         switch granularity {
         case .oneSecond: return 0
-        case .oneMinute: return 3 * 86_400
+        case .oneMinute: return 2 * 86_400
         case .oneHour: return 90 * 86_400
         case .oneDay: return 3 * 365 * 86_400
         }
     }
+
+    /// Watermarks must outlive the buckets they describe.
+    ///
+    /// `TelemetryFlusher` writes `current − watermark` and `TelemetryStore.mergeBucket`
+    /// **adds** to the stored row. Forgetting a watermark for a bucket that is still in
+    /// memory therefore makes the next flush re-add that bucket's whole total — the old
+    /// two-day cutoff did exactly that to the two-to-three-day-old minute buckets every
+    /// restore loaded, doubling them on each launch. One day past the aggregator's
+    /// retention guarantees a bucket is gone before its watermark is.
+    private static let watermarkRetention: TimeInterval = 3 * 86_400
 
     /// Write everything recorded since the last flush.
     private func flushTelemetry(now: Date = Date()) {
@@ -1133,7 +1162,7 @@ final class AppModel: ObservableObject {
             try store.prune(granularity: .oneMinute, olderThan: now.addingTimeInterval(-7 * 86_400))
             try store.prune(granularity: .oneHour, olderThan: now.addingTimeInterval(-365 * 86_400))
             try store.pruneOrphanedApps()
-            telemetryFlusher?.forgetWatermarks(endedBefore: now.addingTimeInterval(-2 * 86_400))
+            telemetryFlusher?.forgetWatermarks(endedBefore: now.addingTimeInterval(-Self.watermarkRetention))
             alertEngine.pruneState(now: now)
             persistAlertState()
             lastPruneAt = now
@@ -1742,7 +1771,9 @@ final class AppModel: ObservableObject {
     private func recomputeSearchResults() {
         let q = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard q.count >= 1 else {
-            searchResults = []
+            // Runs on every tick; republishing an already-empty array would invalidate
+            // the view tree for nothing.
+            publish(\.searchResults, [])
             return
         }
         let needle = q.lowercased()
@@ -1800,7 +1831,7 @@ final class AppModel: ObservableObject {
             }
         }
 
-        searchResults = Array(hits.prefix(24))
+        publish(\.searchResults, Array(hits.prefix(24)))
     }
 
     deinit {
@@ -1839,35 +1870,26 @@ final class AppModel: ObservableObject {
         let dDownShare = min(1, max(0, dFrac))
         let dUpShare = min(1, max(0, dFrac))
 
-        directDownBps = rateDownBps * dDownShare
-        proxyDownBps = max(0, rateDownBps - directDownBps)
-        directUpBps = rateUpBps * dUpShare
-        proxyUpBps = max(0, rateUpBps - directUpBps)
+        publish(\.directDownBps, rateDownBps * dDownShare)
+        publish(\.proxyDownBps, max(0, rateDownBps - directDownBps))
+        publish(\.directUpBps, rateUpBps * dUpShare)
+        publish(\.proxyUpBps, max(0, rateUpBps - directUpBps))
 
         let total = directDownBps + directUpBps + proxyDownBps + proxyUpBps
         if total > 1 {
-            directShare = (directDownBps + directUpBps) / total
-            proxyShare = (proxyDownBps + proxyUpBps) / total
+            publish(\.directShare, (directDownBps + directUpBps) / total)
+            publish(\.proxyShare, (proxyDownBps + proxyUpBps) / total)
         } else {
-            directShare = dFrac
-            proxyShare = pFrac
+            publish(\.directShare, dFrac)
+            publish(\.proxyShare, pFrac)
         }
 
-        sparklineDirect.append(directDownBps + directUpBps)
-        sparklineProxy.append(proxyDownBps + proxyUpBps)
-        if sparklineDirect.count > 40 {
-            sparklineDirect.removeFirst(sparklineDirect.count - 40)
-            sparklineProxy.removeFirst(sparklineProxy.count - 40)
-        }
+        publish(\.sparklineDirect, Self.appending(sparklineDirect, directDownBps + directUpBps, limit: 40))
+        publish(\.sparklineProxy, Self.appending(sparklineProxy, proxyDownBps + proxyUpBps, limit: 40))
 
-        sparklineRouteDirect.append(routeMix.directPercent)
-        sparklineRouteSystem.append(routeMix.systemProxyPercent)
-        sparklineRouteCustom.append(routeMix.customProxyPercent)
-        if sparklineRouteDirect.count > 40 {
-            sparklineRouteDirect.removeFirst(sparklineRouteDirect.count - 40)
-            sparklineRouteSystem.removeFirst(sparklineRouteSystem.count - 40)
-            sparklineRouteCustom.removeFirst(sparklineRouteCustom.count - 40)
-        }
+        publish(\.sparklineRouteDirect, Self.appending(sparklineRouteDirect, routeMix.directPercent, limit: 40))
+        publish(\.sparklineRouteSystem, Self.appending(sparklineRouteSystem, routeMix.systemProxyPercent, limit: 40))
+        publish(\.sparklineRouteCustom, Self.appending(sparklineRouteCustom, routeMix.customProxyPercent, limit: 40))
     }
 
     /// Header proxy status: 代理 / 配置 / 直连 / 无.
@@ -1983,10 +2005,13 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func refreshHistory() {
-        let range = overviewDateRange()
-        let rows = aggregator.topApps(from: range.start, to: range.end, limit: 50)
-        historyRows = Self.sortSnapshotsByFavorites(rows, favorites: favoriteKeys)
+    /// History table from an already-computed ranking pass.
+    ///
+    /// `topApps` sorts by bytes descending, so the first `historyLimit` rows of the
+    /// ranking query are exactly what a separate `limit: 50` query would return.
+    private func applyHistory(from snapshots: [AppTrafficSnapshot]) {
+        let rows = Array(snapshots.prefix(Self.historyLimit))
+        publish(\.historyRows, Self.sortSnapshotsByFavorites(rows, favorites: favoriteKeys))
         recomputeSearchResults()
     }
 
@@ -2017,22 +2042,58 @@ final class AppModel: ObservableObject {
         pruneTelemetry(now: now)
     }
 
+    /// Assign a published property only when the value actually changed.
+    ///
+    /// Every write to an `@Published` property fires `objectWillChange`, and a tick
+    /// writes about thirty of them. Re-publishing an identical value re-runs every
+    /// observing view body for nothing — which, on an idle machine, is the entire cost
+    /// of leaving the dashboard open.
+    @inline(__always)
+    private func publish<T: Equatable>(_ keyPath: ReferenceWritableKeyPath<AppModel, T>, _ value: T) {
+        if self[keyPath: keyPath] != value {
+            self[keyPath: keyPath] = value
+        }
+    }
+
+    /// Append to a fixed-length series, returning a new array.
+    ///
+    /// Mutating the published array in place would fire `objectWillChange` twice per
+    /// tick (append, then trim) even when the series is a flat line of zeros.
+    private static func appending(_ series: [Double], _ value: Double, limit: Int) -> [Double] {
+        var next = series
+        next.append(value)
+        if next.count > limit {
+            next.removeFirst(next.count - limit)
+        }
+        return next
+    }
+
+    /// The range caption never renders finer than `HH:mm`, so publishing a to-the-second
+    /// end date would invalidate the view every tick to draw the same string.
+    private static func minuteAligned(_ date: Date) -> Date {
+        Date(timeIntervalSince1970: (date.timeIntervalSince1970 / 60).rounded(.down) * 60)
+    }
+
     private func refreshPublishedState() {
         let now = Date()
         let range = overviewDateRange(now: now)
         let periodFrom = range.start
         let periodTo = range.end
-        periodRangeStart = periodFrom
-        periodRangeEnd = periodTo
+        publish(\.periodRangeStart, Self.minuteAligned(periodFrom))
+        publish(\.periodRangeEnd, Self.minuteAligned(periodTo))
+        publish(
+            \.relativeTimeEpoch,
+            Int(now.timeIntervalSince1970 / Self.relativeTimeEpochInterval)
+        )
         let dayFrom = now.addingTimeInterval(-86_400)
 
         // Resolve selected app identity early (may be nil).
         let selectedIdentity = selectedApp
 
         // OS system proxy first — drives route chips + socket attribution.
-        systemProxy = SystemProxyReader.current()
+        publish(\.systemProxy, SystemProxyReader.current())
         if !systemProxy.isEnabled {
-            systemProxyNodeIP = nil
+            publish(\.systemProxyNodeIP, nil)
         }
 
         let hostRates = hostNetworkSampler.sampleRates(now: now)
@@ -2053,36 +2114,32 @@ final class AppModel: ObservableObject {
 
         if rates.down > 0 || rates.up > 0 {
             // Prefer aggregator rates (NE or socket-fallback attribution).
-            rateDownBps = rates.down
-            rateUpBps = rates.up
+            publish(\.rateDownBps, rates.down)
+            publish(\.rateUpBps, rates.up)
         } else if selectedIdentity == nil {
             // Idle socket sample: still show raw host interface rates.
-            rateDownBps = hostRates.downBps
-            rateUpBps = hostRates.upBps
+            publish(\.rateDownBps, hostRates.downBps)
+            publish(\.rateUpBps, hostRates.upBps)
         } else {
-            rateDownBps = 0
-            rateUpBps = 0
+            publish(\.rateDownBps, 0)
+            publish(\.rateUpBps, 0)
         }
 
-        sparklineDown.append(rateDownBps)
-        sparklineUp.append(rateUpBps)
-        if sparklineDown.count > 40 {
-            sparklineDown.removeFirst(sparklineDown.count - 40)
-            sparklineUp.removeFirst(sparklineUp.count - 40)
-        }
+        publish(\.sparklineDown, Self.appending(sparklineDown, rateDownBps, limit: 40))
+        publish(\.sparklineUp, Self.appending(sparklineUp, rateUpBps, limit: 40))
 
         // Period network totals for active range (optionally scoped to selected app).
         let periodTotals = aggregator.totals(for: selectedIdentity, from: periodFrom, to: periodTo)
         if periodTotals.bytesUp > 0 || periodTotals.bytesDown > 0 {
-            periodNetworkUp = periodTotals.bytesUp
-            periodNetworkDown = periodTotals.bytesDown
+            publish(\.periodNetworkUp, periodTotals.bytesUp)
+            publish(\.periodNetworkDown, periodTotals.bytesDown)
         } else if selectedIdentity == nil {
             // Fallback: session host interface totals while NE telemetry is empty.
-            periodNetworkUp = hostSessionBytesUp
-            periodNetworkDown = hostSessionBytesDown
+            publish(\.periodNetworkUp, hostSessionBytesUp)
+            publish(\.periodNetworkDown, hostSessionBytesDown)
         } else {
-            periodNetworkUp = 0
-            periodNetworkDown = 0
+            publish(\.periodNetworkUp, 0)
+            publish(\.periodNetworkDown, 0)
         }
 
         // Cumulative trend: append running period totals each tick so the area chart moves.
@@ -2090,25 +2147,30 @@ final class AppModel: ObservableObject {
         let scopeKey = cumulativeTrendKey(app: selectedIdentity, from: periodFrom)
         if scopeKey != cumulativeTrendScopeKey {
             cumulativeTrendScopeKey = scopeKey
-            periodTrendDown = []
-            periodTrendUp = []
+            publish(\.periodTrendDown, [])
+            publish(\.periodTrendUp, [])
         }
 
         // Running cumulative totals — chart rises as traffic accrues in this period.
-        periodTrendDown.append(Double(periodNetworkDown))
-        periodTrendUp.append(Double(periodNetworkUp))
-        if periodTrendDown.count > Self.cumulativeTrendLimit {
-            periodTrendDown.removeFirst(periodTrendDown.count - Self.cumulativeTrendLimit)
-            periodTrendUp.removeFirst(periodTrendUp.count - Self.cumulativeTrendLimit)
-        }
+        publish(
+            \.periodTrendDown,
+            Self.appending(periodTrendDown, Double(periodNetworkDown), limit: Self.cumulativeTrendLimit)
+        )
+        publish(
+            \.periodTrendUp,
+            Self.appending(periodTrendUp, Double(periodNetworkUp), limit: Self.cumulativeTrendLimit)
+        )
 
-        var tops = aggregator.topApps(
+        // One pass covers both the ranking and the history table: `rankingLimit`
+        // exceeds the history's 50 rows and the sort is the same, so the history is a
+        // prefix of this result rather than a second full rollup over the same range.
+        let rawTops = aggregator.topApps(
             from: periodFrom,
             to: periodTo,
             limit: Self.rankingLimit,
             includeSitesForBrowsers: true
         )
-        tops = tops.map { snap in
+        let tops = rawTops.map { snap in
             let route = resolveRoute(for: snap.app)
             let firewall = resolveFirewall(for: snap.app)
             let name = AppIconCache.shared.displayName(
@@ -2128,8 +2190,8 @@ final class AppModel: ObservableObject {
                 sites: snap.sites
             )
         }
-        rules = policyStore.allRules()
-        groups = policyStore.allGroups()
+        publish(\.rules, policyStore.allRules())
+        publish(\.groups, policyStore.allGroups())
 
         let connectionPool = aggregator.recentConnections(limit: 40)
         let scopedConnections: [LiveConnection]
@@ -2138,7 +2200,7 @@ final class AppModel: ObservableObject {
         } else {
             scopedConnections = connectionPool
         }
-        liveConnections = Array(scopedConnections.prefix(12)).map { conn in
+        publish(\.liveConnections, Array(scopedConnections.prefix(12)).map { conn in
             LiveConnection(
                 id: conn.id,
                 app: conn.app,
@@ -2151,26 +2213,26 @@ final class AppModel: ObservableObject {
                 bytesUp: conn.bytesUp,
                 bytesDown: conn.bytesDown
             )
-        }
+        })
 
         let dayTotals = aggregator.totals(for: selectedIdentity, from: dayFrom, to: now)
-        blockedToday = dayTotals.flowsBlocked
-        allowedConnections = dayTotals.flowsOpened
+        publish(\.blockedToday, dayTotals.flowsBlocked)
+        publish(\.allowedConnections, dayTotals.flowsOpened)
 
-        let activeRuleCount = policyStore.compileSnapshot().activeRuleCount + groups.count
+        let activeRuleCount = policyStore.activeRuleCount() + groups.count
         let periodRouteShare = aggregator.routeByteShare(
             for: selectedIdentity,
             from: periodFrom,
             to: periodTo
         )
-        routeMix = Self.makeRouteMix(
+        publish(\.routeMix, Self.makeRouteMix(
             share: periodRouteShare,
             selectedRoute: selectedIdentity.flatMap { id in tops.first(where: { $0.app == id })?.route },
             proxyEnabled: proxyEnabled,
             systemProxyEnabled: systemProxy.isEnabled,
             blockedFallback: blockedToday,
             activeRules: activeRuleCount
-        )
+        ))
         recomputePathRates()
 
         // Build ranking rows with group + per-app proxy share.
@@ -2228,14 +2290,14 @@ final class AppModel: ObservableObject {
         }
 
         let unsorted = makeRows(from: activeTops, shareBase: netTotal)
-        rankingRows = Self.sortByFavorites(unsorted, favorites: favoriteKeys)
-        topApps = rankingRows.map(\.snapshot)
+        publish(\.rankingRows, Self.sortByFavorites(unsorted, favorites: favoriteKeys))
+        publish(\.topApps, rankingRows.map(\.snapshot))
 
         let archBase = max(1, archivedTops.reduce(UInt64(0)) { $0 &+ $1.totals.totalBytes })
-        archivedRankingRows = Self.sortByFavorites(
+        publish(\.archivedRankingRows, Self.sortByFavorites(
             makeRows(from: archivedTops, shareBase: archBase),
             favorites: favoriteKeys
-        )
+        ))
 
         // Drop stale selection if app vanished after purge / archive.
         if let app = selectedApp {
@@ -2246,7 +2308,7 @@ final class AppModel: ObservableObject {
             }
         }
 
-        sunburstRoot = Self.buildSunburst(from: rankingRows)
+        publish(\.sunburstRoot, Self.buildSunburst(from: rankingRows))
         // Drop path segments that no longer exist after data refresh.
         var validPath: [String] = []
         var cursor = sunburstRoot
@@ -2259,7 +2321,7 @@ final class AppModel: ObservableObject {
             sunburstPath = validPath
         }
 
-        refreshHistory()
+        applyHistory(from: rawTops)
     }
 
     private static func buildSunburst(from rows: [AppRankingRow]) -> SunburstNode {
@@ -2581,23 +2643,7 @@ final class AppModel: ObservableObject {
         let dnsCache = reverseDNSCache
         DispatchQueue.global(qos: .utility).async {
             // Collect connections first so we can reverse-DNS proxy egress IPs.
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-            process.arguments = ["-nP", "-iTCP", "-sTCP:ESTABLISHED"]
-            let pipe = Pipe()
-            process.standardOutput = pipe
-            process.standardError = Pipe()
-            var text = ""
-            do {
-                try process.run()
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                process.waitUntilExit()
-                text = String(data: data, encoding: .utf8) ?? ""
-            } catch {
-                text = ""
-            }
-
-            let connections = ActiveAppSocketSampler.parse(lsofOutput: text)
+            let connections = ActiveAppSocketSampler.currentConnections()
             var resolved = dnsCache
 
             // Resolve every peer we might label, not just proxy egress: without this a
