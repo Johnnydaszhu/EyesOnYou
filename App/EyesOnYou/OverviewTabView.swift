@@ -185,8 +185,17 @@ struct OverviewTabView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                Color.clear
-                    .frame(height: footerH)
+                metricTimeCaption(
+                    String(
+                        format: l10n.t("overview.cumulativePeriod"),
+                        l10n.overviewRangeCaption(
+                            start: model.periodRangeStart,
+                            end: model.periodRangeEnd
+                        )
+                    ),
+                    height: footerH,
+                    scale: m.typeScale
+                )
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .padding(.top, 8 * m.typeScale)
@@ -247,9 +256,11 @@ struct OverviewTabView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                // Spacer matching proxy card footer so chart bottoms align.
-                Color.clear
-                    .frame(height: footerH)
+                metricTimeCaption(
+                    l10n.t("overview.liveWindow"),
+                    height: footerH,
+                    scale: m.typeScale
+                )
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .padding(.top, 8 * m.typeScale)
@@ -286,6 +297,19 @@ struct OverviewTabView: View {
                     .lineLimit(1)
             }
         }
+    }
+
+    /// Short time scope directly inside each speed / total card, so a rate cannot be
+    /// mistaken for a cumulative value and the cumulative range remains visible after
+    /// the global picker scrolls out of view.
+    private func metricTimeCaption(_ text: String, height: CGFloat, scale: CGFloat) -> some View {
+        Text(text)
+            .font(.system(size: 9 * scale, weight: .medium, design: .rounded))
+            .foregroundStyle(EyesOnYouTheme.textSecondary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.65)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: height, alignment: .center)
     }
 
     // MARK: - Proxy routing

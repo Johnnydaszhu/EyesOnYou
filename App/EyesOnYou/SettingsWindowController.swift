@@ -37,8 +37,8 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         )
         window.title = LocalizationStore.shared.t("settings.title")
         window.contentViewController = hosting
-        window.setContentSize(NSSize(width: 660, height: 640))
-        window.minSize = NSSize(width: 540, height: 480)
+        window.setContentSize(NSSize(width: 760, height: 640))
+        window.minSize = NSSize(width: 640, height: 480)
         window.center()
         window.isReleasedWhenClosed = false
         window.delegate = self
@@ -51,6 +51,10 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         // Keep the window instance for fast reopen; content refreshes on next show.
     }
+
+    func refreshTitle() {
+        window?.title = LocalizationStore.shared.t("settings.title")
+    }
 }
 
 // MARK: - Settings UI
@@ -58,30 +62,73 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var l10n: LocalizationStore
+    @State private var selectedPane: Pane? = .general
 
     var body: some View {
-        TabView {
-            generalPane
-                .tabItem { Label(l10n.t("settings.tab.general"), systemImage: "gearshape") }
-
-            appearancePane
-                .tabItem { Label(l10n.t("settings.tab.appearance"), systemImage: "paintbrush") }
-
-            protectionPane
-                .tabItem { Label(l10n.t("settings.tab.protection"), systemImage: "shield") }
-
-            rankingPane
-                .tabItem { Label(l10n.t("settings.tab.ranking"), systemImage: "list.number") }
-
-            updatesPane
-                .tabItem { Label(l10n.t("settings.tab.updates"), systemImage: "arrow.down.circle") }
-
-            aboutPane
-                .tabItem { Label(l10n.t("settings.tab.about"), systemImage: "info.circle") }
+        NavigationSplitView {
+            List(selection: $selectedPane) {
+                ForEach(Pane.allCases) { pane in
+                    Label(l10n.t(pane.titleKey), systemImage: pane.systemImage)
+                        .tag(pane)
+                }
+            }
+            .listStyle(.sidebar)
+            .navigationTitle(l10n.t("settings.title"))
+            .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 260)
+        } detail: {
+            selectedPaneView
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 540, minHeight: 480)
-        .padding(4)
-        .id(l10n.revision)
+        .navigationSplitViewStyle(.balanced)
+        .frame(minWidth: 640, minHeight: 480)
+        .onChange(of: l10n.revision) { _ in
+            SettingsWindowController.shared.refreshTitle()
+        }
+    }
+
+    private enum Pane: CaseIterable, Hashable, Identifiable {
+        case general
+        case appearance
+        case protection
+        case ranking
+        case updates
+        case about
+
+        var id: Self { self }
+
+        var titleKey: String {
+            switch self {
+            case .general: return "settings.tab.general"
+            case .appearance: return "settings.tab.appearance"
+            case .protection: return "settings.tab.protection"
+            case .ranking: return "settings.tab.ranking"
+            case .updates: return "settings.tab.updates"
+            case .about: return "settings.tab.about"
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .general: return "gearshape"
+            case .appearance: return "paintbrush"
+            case .protection: return "shield"
+            case .ranking: return "list.number"
+            case .updates: return "arrow.down.circle"
+            case .about: return "info.circle"
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var selectedPaneView: some View {
+        switch selectedPane ?? .general {
+        case .general: generalPane
+        case .appearance: appearancePane
+        case .protection: protectionPane
+        case .ranking: rankingPane
+        case .updates: updatesPane
+        case .about: aboutPane
+        }
     }
 
     // MARK: Panes

@@ -27,6 +27,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         let style: AppModel.MenuBarDisplayStyle
         let width: CGFloat
         let appearance: AppModel.AppearanceMode
+        let localizationRevision: UInt64
     }
     private var renderedChrome: Chrome?
     private var didInstall = false
@@ -152,13 +153,15 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         guard let button = statusItem?.button, let model else { return }
         let l10n = LocalizationStore.shared
         let style = model.menuBarDisplayStyle
-
-        let width: CGFloat
-        switch style {
-        case .iconOnly: width = 26
-        case .compactRates: width = 72
-        case .dualPath: width = 132
-        }
+        let width = MenuBarStatusItemMetrics.width(
+            for: style,
+            directDownBps: model.directDownBps,
+            proxyDownBps: model.proxyDownBps,
+            totalDownBps: model.rateDownBps,
+            totalUpBps: model.rateUpBps,
+            directLabel: l10n.t("status.path.direct"),
+            proxyLabel: l10n.t("status.path.proxy")
+        )
         statusItem?.length = width
 
         let itemHeight: CGFloat = 18
@@ -166,7 +169,12 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         // on its own. Reassigning `rootView` is only needed when the *shape* of the item
         // changes — doing it on every tick threw the hosting view's state away once a
         // second to draw the same thing.
-        let chrome = Chrome(style: style, width: width, appearance: model.appearanceMode)
+        let chrome = Chrome(
+            style: style,
+            width: width,
+            appearance: model.appearanceMode,
+            localizationRevision: l10n.revision
+        )
         if statusHostingView == nil || renderedChrome != chrome {
             let root = AnyView(
                 MenuBarStatusItemView(style: style)
@@ -190,8 +198,9 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             renderedChrome = chrome
         }
 
-        // Keep a bit of left padding so the custom view sits in the button.
-        statusHostingView?.frame.origin = CGPoint(x: 2, y: (button.bounds.height - itemHeight) / 2)
+        // The view includes its own 2pt inset. Keeping it flush with the button
+        // prevents a second invisible strip from extending the status item.
+        statusHostingView?.frame.origin = CGPoint(x: 0, y: (button.bounds.height - itemHeight) / 2)
 
         let down = ByteFormat.rateMBps(bytesPerSecond: model.rateDownBps)
         let up = ByteFormat.rateMBps(bytesPerSecond: model.rateUpBps)
@@ -372,6 +381,61 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     }
 }
 
+// MARK: - Menu bar status item metrics
+
+private enum MenuBarStatusItemMetrics {
+    static let horizontalInset: CGFloat = 2
+    static let iconWidth: CGFloat = 16
+    static let sparklineWidth: CGFloat = 22
+    static let outerSpacing: CGFloat = 6
+    static let labelRateSpacing: CGFloat = 4
+    static let dualRateColumnWidth: CGFloat = 36
+
+    static func width(
+        for style: AppModel.MenuBarDisplayStyle,
+        directDownBps: Double,
+        proxyDownBps: Double,
+        totalDownBps: Double,
+        totalUpBps: Double,
+        directLabel: String,
+        proxyLabel: String
+    ) -> CGFloat {
+        let contentWidth: CGFloat
+        switch style {
+        case .iconOnly:
+            contentWidth = iconWidth
+        case .compactRates:
+            contentWidth = max(
+                textWidth("↓\(shortRate(totalDownBps))"),
+                textWidth("↑\(shortRate(totalUpBps))")
+            )
+        case .dualPath:
+            let labelWidth = max(textWidth(directLabel), textWidth(proxyLabel))
+            let rateWidth = max(
+                dualRateColumnWidth,
+                textWidth("↓\(shortRate(directDownBps))"),
+                textWidth("↓\(shortRate(proxyDownBps))")
+            )
+            contentWidth = sparklineWidth + outerSpacing + labelWidth + labelRateSpacing + rateWidth
+        }
+
+        // Round up and retain one point for font fallback / fractional metrics.
+        return ceil(contentWidth + horizontalInset * 2) + 1
+    }
+
+    static func shortRate(_ bps: Double) -> String {
+        ByteFormat.rateMBps(bytesPerSecond: bps)
+            .replacingOccurrences(of: " MB/s", with: "M")
+            .replacingOccurrences(of: " KB/s", with: "K")
+            .replacingOccurrences(of: " B/s", with: "B")
+    }
+
+    private static func textWidth(_ text: String) -> CGFloat {
+        let font = NSFont.monospacedSystemFont(ofSize: 8, weight: .semibold)
+        return (text as NSString).size(withAttributes: [.font: font]).width
+    }
+}
+
 // MARK: - Menu bar status item content (iStat-style mini)
 
 struct MenuBarStatusItemView: View {
@@ -418,7 +482,7 @@ struct MenuBarStatusItemView: View {
                         lineWidth: 0.7,
                         fillOpacity: 0.1
                     )
-                    .frame(width: 22, height: 10)
+                    .frame(width: MenuBarStatusItemMetrics.sparklineWidth, height: 10)
                     HStack(spacing: 4) {
                         VStack(alignment: .leading, spacing: -1) {
                             Text(l10n.t("status.path.direct"))
@@ -430,7 +494,7 @@ struct MenuBarStatusItemView: View {
                             Text("↓\(shortRate(model.directDownBps))")
                             Text("↓\(shortRate(model.proxyDownBps))")
                         }
-                        .frame(minWidth: 36, alignment: .trailing)
+                        .frame(minWidth: MenuBarStatusItemMetrics.dualRateColumnWidth, alignment: .trailing)
                     }
                     .font(.system(size: 8, weight: .semibold, design: .monospaced))
                     .monospacedDigit()
@@ -444,11 +508,6 @@ struct MenuBarStatusItemView: View {
     }
 
     private func shortRate(_ bps: Double) -> String {
-        // Prefer shorter form for menu bar width.
-        let s = ByteFormat.rateMBps(bytesPerSecond: bps)
-        return s
-            .replacingOccurrences(of: " MB/s", with: "M")
-            .replacingOccurrences(of: " KB/s", with: "K")
-            .replacingOccurrences(of: " B/s", with: "B")
+        MenuBarStatusItemMetrics.shortRate(bps)
     }
 }
