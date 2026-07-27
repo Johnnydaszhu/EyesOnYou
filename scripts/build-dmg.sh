@@ -115,6 +115,21 @@ fi
   || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string ${BUILD_NUMBER:-1}" \
     "$APP_PRODUCT/Contents/Info.plist"
 
+# Stamping Info.plist changes the sealed bundle after Xcode signs it. Refresh
+# only the outer app signature while preserving the entitlements and designated
+# requirement that Xcode produced for the selected identity.
+echo "==> refresh app signature after version stamp"
+RESIGN_ARGS=(
+  --force
+  --sign "$CODE_SIGN_IDENTITY"
+  --preserve-metadata=identifier,entitlements,requirements,flags,runtime
+)
+if [[ "$CODE_SIGN_IDENTITY" != "-" ]]; then
+  RESIGN_ARGS+=(--timestamp)
+fi
+/usr/bin/codesign "${RESIGN_ARGS[@]}" "$APP_PRODUCT"
+/usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_PRODUCT"
+
 echo "==> stage DMG contents"
 ditto "$APP_PRODUCT" "$STAGE/${APP_NAME}.app"
 ln -sf /Applications "$STAGE/Applications"
