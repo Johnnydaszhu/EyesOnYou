@@ -431,8 +431,16 @@ private enum MenuBarStatusItemMetrics {
     }
 
     private static func textWidth(_ text: String) -> CGFloat {
-        let font = NSFont.monospacedSystemFont(ofSize: 8, weight: .semibold)
-        return (text as NSString).size(withAttributes: [.font: font]).width
+        // Avoid AppKit/CoreText measurement here. This runs whenever live rates
+        // change, and macOS 26 can throw an Objective-C exception while applying
+        // the monospaced font fallback (not catchable from Swift). The status text
+        // uses an 8pt monospaced face, so a conservative per-character estimate is
+        // stable and still keeps the item fitted to its visible content.
+        let width = text.reduce(CGFloat.zero) { partial, character in
+            let isASCII = character.unicodeScalars.allSatisfy(\.isASCII)
+            return partial + (isASCII ? 5 : 8)
+        }
+        return ceil(width)
     }
 }
 
