@@ -6,6 +6,13 @@ enum AppUpdateService {
     static let githubOwner = "Johnnydaszhu"
     static let githubRepo = "EyesOnYou"
 
+    static var repositoryPageURL: URL {
+        if let url = URL(string: "https://github.com/\(githubOwner)/\(githubRepo)") {
+            return url
+        }
+        return URL(fileURLWithPath: "/")
+    }
+
     static var releasesAPIURL: URL {
         if let url = URL(string: "https://api.github.com/repos/\(githubOwner)/\(githubRepo)/releases/latest") {
             return url

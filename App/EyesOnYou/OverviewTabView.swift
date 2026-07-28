@@ -1089,6 +1089,16 @@ struct OverviewTabView: View {
                                 .font(.system(size: 8 * m.typeScale))
                                 .foregroundStyle(EyesOnYouTheme.gold)
                         }
+                        if !drilled, model.isTrafficLeader(app.app) {
+                            Image(systemName: "crown.fill")
+                                .font(.system(size: 8 * m.typeScale))
+                                .foregroundStyle(EyesOnYouTheme.gold)
+                                .help(l10n.t("ranking.trafficLeader"))
+                                .accessibilityLabel(l10n.t("ranking.trafficLeader"))
+                        }
+                        if !drilled {
+                            routeOverrideIcon(for: app.app, scale: m.typeScale)
+                        }
                     }
                     if !drilled && !app.sites.isEmpty {
                         Text(childCountLabel(app))
@@ -1198,6 +1208,40 @@ struct OverviewTabView: View {
     }
 
     @ViewBuilder
+    private func routeOverrideIcon(for app: AppIdentityKey, scale: CGFloat) -> some View {
+        switch model.configuredRoute(for: app) {
+        case .inherit:
+            EmptyView()
+        case .direct:
+            let state = model.isProxyEnforcementActive
+                ? l10n.t("enforcement.active")
+                : l10n.t("enforcement.off")
+            Image(systemName: "arrow.left.arrow.right.circle.fill")
+                .font(.system(size: 9 * scale))
+                .foregroundStyle(
+                    model.isProxyEnforcementActive
+                        ? EyesOnYouTheme.routeDirect
+                        : EyesOnYouTheme.textSecondary
+                )
+                .help("\(l10n.t("route.forceDirect")) · \(state)")
+                .accessibilityLabel(l10n.t("route.forceDirect"))
+        case .systemProxy, .proxy:
+            let state = model.isProxyEnforcementActive
+                ? l10n.t("enforcement.active")
+                : l10n.t("enforcement.off")
+            Image(systemName: "shield.lefthalf.filled")
+                .font(.system(size: 9 * scale))
+                .foregroundStyle(
+                    model.isProxyEnforcementActive
+                        ? EyesOnYouTheme.routeProxy
+                        : EyesOnYouTheme.textSecondary
+                )
+                .help("\(l10n.t("route.forceProxy")) · \(state)")
+                .accessibilityLabel(l10n.t("route.forceProxy"))
+        }
+    }
+
+    @ViewBuilder
     private func rankingContextMenu(
         for app: AppIdentityKey,
         displayName: String,
@@ -1226,6 +1270,45 @@ struct OverviewTabView: View {
             }
             .help(l10n.t("ranking.drill.help"))
         }
+
+        Divider()
+
+        Menu {
+            routeMenuButton(
+                app: app,
+                route: .inherit,
+                title: l10n.t("route.follow"),
+                systemImage: "arrow.triangle.branch"
+            )
+            routeMenuButton(
+                app: app,
+                route: .direct,
+                title: l10n.t("route.forceDirect"),
+                systemImage: "arrow.left.arrow.right"
+            )
+            routeMenuButton(
+                app: app,
+                route: .systemProxy,
+                title: l10n.t("route.forceProxy"),
+                systemImage: "network"
+            )
+
+            let enabledProfiles = model.proxyProfiles.filter(\.enabled)
+            if !enabledProfiles.isEmpty {
+                Divider()
+                ForEach(enabledProfiles) { profile in
+                    routeMenuButton(
+                        app: app,
+                        route: .proxy(profileID: profile.id),
+                        title: profile.name,
+                        systemImage: profile.kind == .socks5 ? "shield.lefthalf.filled" : "globe"
+                    )
+                }
+            }
+        } label: {
+            Label(l10n.t("route.policy"), systemImage: "point.3.connected.trianglepath.dotted")
+        }
+        .help(l10n.t("route.policy.help"))
 
         Divider()
 
@@ -1264,6 +1347,21 @@ struct OverviewTabView: View {
             Label(l10n.t("ranking.delete"), systemImage: "trash")
         }
         .help(l10n.t("ranking.delete.help"))
+    }
+
+    @ViewBuilder
+    private func routeMenuButton(
+        app: AppIdentityKey,
+        route: RouteAction,
+        title: String,
+        systemImage: String
+    ) -> some View {
+        let selected = model.configuredRoute(for: app) == route
+        Button {
+            model.setConfiguredRoute(route, for: app)
+        } label: {
+            Label(title, systemImage: selected ? "checkmark" : systemImage)
+        }
     }
 
     /// Measured egress. Read-only on purpose: the table states what traffic did,

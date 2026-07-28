@@ -29,9 +29,6 @@ targets:
         excludes:
           - Info.plist
           - "*.entitlements"
-          # Kept in the tree but out of the build: the app observes traffic and no
-          # longer takes over the system proxy. Re-add this line to restore it.
-          - ProxyEnforcementController.swift
     configFiles:
       Debug: config/Signing.xcconfig
     settings:

@@ -180,6 +180,45 @@ final class LocalProxyServerTests: XCTestCase {
         wait(for: [flowRecorded], timeout: 3)
         XCTAssertEqual(seen?.action, .block)
     }
+
+    func testForcedProxyWithoutUpstreamReturns502InsteadOfGoingDirect() throws {
+        let origin = try TinyOrigin(response: Data("MUST-NOT-ARRIVE".utf8))
+        origin.start()
+        defer { origin.stop() }
+
+        let store = PolicyStore()
+        store.upsert(rule: NetworkPolicyRule(
+            priority: 1,
+            app: .any,
+            destination: .any,
+            firewall: .allow,
+            route: .systemProxy
+        ))
+        let rules = LocalProxyRules(
+            snapshot: store.compileSnapshot(),
+            systemUpstream: nil,
+            profiles: []
+        )
+        let flowRecorded = expectation(description: "flow event")
+        let seen = LockedBox<ProxyFlowAction?>(nil)
+        let (server, port) = makeServer(rules: rules) { event in
+            seen.set(event.action)
+            flowRecorded.fulfill()
+        }
+        defer { server.stop() }
+
+        let reply = connectThrough(
+            proxyPort: port,
+            target: "127.0.0.1:\(origin.port)",
+            payload: Data("ping".utf8)
+        )
+        let text = String(data: reply, encoding: .utf8) ?? ""
+        XCTAssertTrue(text.contains("502 Bad Gateway"), "got: \(text)")
+        XCTAssertFalse(reply.contains(Data("MUST-NOT-ARRIVE".utf8)))
+
+        wait(for: [flowRecorded], timeout: 3)
+        XCTAssertEqual(seen.get(), .unavailable(.systemProxyMissing))
+    }
 }
 
 

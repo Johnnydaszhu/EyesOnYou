@@ -21,9 +21,11 @@ Native macOS network observability: per-app traffic, measured egress, and live c
   local proxy client, with the split when both paths carried traffic — observed, never
   a rule
 - Live connections: each app shows whether it is holding established sockets right now
-- Observe-only by design: the app never changes your system proxy or blocks a
-  connection, so nothing on the dashboard can mean two different things. Route and
-  firewall rules remain available headlessly via the CLI
+- Per-app HTTP / HTTPS routing: use each ranking row’s menu to follow the system,
+  force direct, or force a proxy. Enforcement is an explicit Settings opt-in and
+  restores the previous macOS proxy settings when disabled or when the app quits
+- Intent and evidence stay separate: route rules describe what should happen, while
+  the egress column continues to show only what was measured
 - Privacy first: metadata and counters only — no payload capture, no TLS MITM
   (browser page-title labelling is opt-in and off by default)
 - Traffic alerts: daily / cumulative / per-app budgets, burst detection, and

@@ -244,7 +244,7 @@ recorded history, which makes it useful the moment you install the CLI.
 
 | Surface | Role |
 |---|---|
-| Host app | SwiftUI dashboard, menu bar, system extension install |
+| Host app | SwiftUI dashboard, menu bar, per-app HTTP / HTTPS route control |
 | CLI | Scriptable query + evaluate + favorites for agents/CI |
 
 Both share pure packages (`EyesOnYouCore`, `RuleEngine`, `Storage`, …) and the favorites key.

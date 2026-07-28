@@ -54,7 +54,9 @@ final class AppModel: ObservableObject {
 
     @Published var selectedTab: Tab = .overview
     @Published var filterEnabled: Bool = true
-    @Published var proxyEnabled: Bool = true
+    /// User-controlled HTTP / HTTPS route enforcement. Off unless explicitly enabled.
+    @Published var proxyEnabled: Bool = false
+    @Published private(set) var proxyEnforcementStatus: ProxyEnforcementController.Status = .off
     @Published var alertsEnabled: Bool = true {
         didSet {
             guard alertsEnabled != oldValue else { return }
@@ -94,6 +96,9 @@ final class AppModel: ObservableObject {
     @Published var liveConnections: [LiveConnection] = []
     /// Unified ranking rows for Overview bento (traffic + route + group + status).
     @Published var rankingRows: [AppRankingRow] = []
+    /// Highest measured upload + download total in the selected overview range.
+    /// Automatic and range-scoped; it is not stored as a user favorite.
+    @Published private(set) var trafficLeaderApp: AppIdentityKey? = nil
     /// DaisyDisk-style sunburst root (apps → optional sites).
     @Published var sunburstRoot: SunburstNode = .empty
     /// Shared hover id between sunburst and ranking table (`AppRankingRow.id` / node.id).
@@ -126,12 +131,9 @@ final class AppModel: ObservableObject {
     @Published var sparklineRouteSystem: [Double] = []
     @Published var sparklineRouteCustom: [Double] = []
     @Published var sparklineRouteUnknown: [Double] = []
-    /// Cumulative traffic trend for the network card (upload / download), rolling samples.
+    /// Cumulative traffic history for the selected range (upload / download).
     @Published var periodTrendDown: [Double] = []
     @Published var periodTrendUp: [Double] = []
-    private static let cumulativeTrendLimit = 40
-    /// Identity of the series currently feeding `periodTrend*` (reset on period / app change).
-    private var cumulativeTrendScopeKey: String = ""
 
     /// Selected ranking app; nil = all apps. Filters totals / live / proxy cards with time range.
     @Published var selectedApp: AppIdentityKey? = nil
@@ -225,6 +227,18 @@ final class AppModel: ObservableObject {
     private var cachedOverviewRollupScope: String?
     private var overviewRollupInFlight = false
     let policyStore = PolicyStore()
+    private lazy var proxyEnforcementController: ProxyEnforcementController = {
+        let controller = ProxyEnforcementController(
+            backupURL: Self.supportDirectory.appendingPathComponent("system-proxy-backup.json")
+        )
+        controller.onStatus = { [weak self] status in
+            self?.proxyEnforcementStatus = status
+        }
+        controller.onFlow = { [weak self] event in
+            self?.noteEnforcedFlow(event)
+        }
+        return controller
+    }()
     /// Host-wide interface sampler — fills live rates when NE telemetry is empty.
     private let hostNetworkSampler = HostNetworkSampler()
     private let monitoringStartedAt = Date()
@@ -326,6 +340,7 @@ final class AppModel: ObservableObject {
     private static let alertThresholdsKey = "eyesonyou.alertThresholds"
     private static let alertStateKey = "eyesonyou.alertState"
     private static let onboardingShownKey = "eyesonyou.foregroundOnboardingShown"
+    private static let proxyEnforcementEnabledKey = "eyesonyou.proxyEnforcementEnabled"
     /// Seconds between telemetry flushes. Minute buckets are the finest thing
     /// persisted, so anything under a minute only costs writes.
     private static let telemetryFlushInterval: TimeInterval = 30
@@ -493,8 +508,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Column the ranking table is sorted by. `nil` = default order (pins first, then
-    /// measured bytes), which is what the `#` header restores.
+    /// Column the ranking table is sorted by. `nil` = default order (traffic leader,
+    /// pins, then measured bytes), which is what the `#` header restores.
     enum RankingSortKey: String, CaseIterable, Sendable {
         case name
         case down
@@ -683,11 +698,11 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Apply the header sort. Pinned apps stay on top so a pin is never lost in a sort.
+    /// Apply the header sort. The traffic leader stays first, followed by pinned apps.
     func sortedRankingRows(_ rows: [AppRankingRow]) -> [AppRankingRow] {
         guard let key = rankingSortKey else { return rows }
         let ascending = rankingSortAscending
-        return rows.sorted { a, b in
+        let sorted = rows.sorted { a, b in
             let af = favoriteKeys.contains(a.snapshot.app.storageKey)
             let bf = favoriteKeys.contains(b.snapshot.app.storageKey)
             if af != bf { return af && !bf }
@@ -701,6 +716,11 @@ final class AppModel: ObservableObject {
                     .localizedCaseInsensitiveCompare(b.snapshot.displayName) == .orderedAscending
             }
         }
+        return AppTrafficRanking.prioritizingLeader(
+            sorted,
+            leader: trafficLeaderApp,
+            app: { $0.snapshot.app }
+        )
     }
 
     private static func compareRankingRows(
@@ -1028,12 +1048,20 @@ final class AppModel: ObservableObject {
         // undo itself. Trust is enforced where sampling happens; the settings row
         // shows a warning when it is missing.
         tracksBrowserTabs = UserDefaults.standard.bool(forKey: Self.browserTabTrackingKey)
+        if UserDefaults.standard.object(forKey: Self.proxyEnforcementEnabledKey) != nil {
+            proxyEnabled = UserDefaults.standard.bool(forKey: Self.proxyEnforcementEnabledKey)
+        } else {
+            // Older builds showed this switch as on even though it did not control
+            // the network. Do not convert that visual default into a real takeover.
+            proxyEnabled = false
+        }
         Self.applyAppearance(appearanceMode)
         loadColorThemePreferences()
         applyColorTheme()
         loadFavorites()
         loadArchived()
         loadPersistedPolicies()
+        proxyEnforcementController.recoverFromCrashIfNeeded()
         openTelemetryStore()
         restorePersistedTelemetry()
         loadAlertPreferences()
@@ -1041,6 +1069,11 @@ final class AppModel: ObservableObject {
         refreshPublishedState()
         startTicker()
         scheduleInitialUpdateCheck()
+        if proxyEnabled {
+            DispatchQueue.main.async { [weak self] in
+                self?.startProxyEnforcement()
+            }
+        }
     }
 
     // MARK: - Traffic alerts
@@ -1296,6 +1329,7 @@ final class AppModel: ObservableObject {
 
     /// Flush before the app exits so the final minute is not lost.
     func persistBeforeTermination() {
+        proxyEnforcementController.disable()
         if let flusher = telemetryFlusher {
             let aggregator = aggregator
             telemetryPersistenceQueue.sync {
@@ -1454,6 +1488,10 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func openGitHubPage() {
+        AppUpdateService.openURL(AppUpdateService.repositoryPageURL)
+    }
+
     /// Push appearance to AppKit so NSVisualEffectView / window chrome match SwiftUI.
     static func applyAppearance(_ mode: AppearanceMode) {
         NSApp.appearance = mode.nsAppearance
@@ -1573,6 +1611,10 @@ final class AppModel: ObservableObject {
         favoriteKeys.contains(app.storageKey)
     }
 
+    func isTrafficLeader(_ app: AppIdentityKey) -> Bool {
+        trafficLeaderApp == app
+    }
+
     func toggleFavorite(_ app: AppIdentityKey) {
         let key = app.storageKey
         if favoriteKeys.contains(key) {
@@ -1597,15 +1639,25 @@ final class AppModel: ObservableObject {
     }
 
     private func applyFavoriteOrdering() {
-        rankingRows = Self.sortByFavorites(rankingRows, favorites: favoriteKeys)
+        trafficLeaderApp = AppTrafficRanking.leader(in: rankingRows.map(\.snapshot))
+        rankingRows = Self.sortByFavorites(
+            rankingRows,
+            favorites: favoriteKeys,
+            trafficLeader: trafficLeaderApp
+        )
         topApps = rankingRows.map(\.snapshot)
         historyRows = Self.sortSnapshotsByFavorites(historyRows, favorites: favoriteKeys)
         sunburstRoot = Self.buildSunburst(from: rankingRows)
     }
 
-    /// Ranking order: favorites first, then period total bytes, then live rate, then name.
-    private static func sortByFavorites(_ rows: [AppRankingRow], favorites: Set<String>) -> [AppRankingRow] {
-        rows.sorted { a, b in
+    /// Ranking order: traffic leader, favorites, period bytes, live rate, then name.
+    private static func sortByFavorites(
+        _ rows: [AppRankingRow],
+        favorites: Set<String>,
+        trafficLeader: AppIdentityKey? = nil,
+        prioritizeTrafficLeader: Bool = true
+    ) -> [AppRankingRow] {
+        let sorted = rows.sorted { a, b in
             let af = favorites.contains(a.snapshot.app.storageKey)
             let bf = favorites.contains(b.snapshot.app.storageKey)
             if af != bf { return af && !bf }
@@ -1620,6 +1672,13 @@ final class AppModel: ObservableObject {
             if ac != bc { return ac > bc }
             return a.snapshot.displayName.localizedCaseInsensitiveCompare(b.snapshot.displayName) == .orderedAscending
         }
+        guard prioritizeTrafficLeader else { return sorted }
+        let leader = trafficLeader ?? AppTrafficRanking.leader(in: rows.map(\.snapshot))
+        return AppTrafficRanking.prioritizingLeader(
+            sorted,
+            leader: leader,
+            app: { $0.snapshot.app }
+        )
     }
 
     // MARK: - Archive
@@ -2112,8 +2171,15 @@ final class AppModel: ObservableObject {
     }
 
     func setProxyEnabled(_ enabled: Bool) {
+        guard proxyEnabled != enabled else { return }
         proxyEnabled = enabled
         isRunning = filterEnabled || enabled
+        UserDefaults.standard.set(enabled, forKey: Self.proxyEnforcementEnabledKey)
+        if enabled {
+            startProxyEnforcement()
+        } else {
+            proxyEnforcementController.disable()
+        }
     }
 
     // MARK: - Groups
@@ -2177,8 +2243,80 @@ final class AppModel: ObservableObject {
         refreshPublishedState()
     }
 
-    /// Toggle selective proxy for an app using the **resolved** route (rules + groups),
-    /// not the raw assignment (which may be `.inherit` while UI shows Proxy).
+    /// Raw per-app override. `.inherit` removes the override and returns control to
+    /// destination rules, groups, and finally the macOS system route.
+    func configuredRoute(for app: AppIdentityKey) -> RouteAction {
+        policyStore.assignment(for: app)
+    }
+
+    var hasConfiguredAppRoutes: Bool {
+        !policyStore.allAssignments().isEmpty
+    }
+
+    var isProxyEnforcementActive: Bool {
+        if case .active = proxyEnforcementStatus { return true }
+        return false
+    }
+
+    /// Route resolved from saved policy only. Unlike `resolveRoute`, this is never
+    /// replaced with measured egress, so the UI cannot confuse intent with evidence.
+    func policyRoute(for app: AppIdentityKey) -> RouteAction {
+        policyStore.compileSnapshot().evaluateRoute(FlowDescriptor(app: app)).action
+    }
+
+    func setConfiguredRoute(_ route: RouteAction, for app: AppIdentityKey) {
+        policyStore.assignRoute(app: app, route: route)
+        savePoliciesIfChanged()
+        proxyEnforcementController.updateRules(
+            snapshot: policyStore.compileSnapshot(),
+            profiles: proxyProfiles
+        )
+        refreshPublishedState()
+    }
+
+    private func startProxyEnforcement() {
+        proxyEnforcementController.enable(
+            snapshot: policyStore.compileSnapshot(),
+            profiles: proxyProfiles,
+            systemUpstreamHint: fixedSystemProxyUpstream
+        )
+        proxyEnforcementStatus = proxyEnforcementController.status
+    }
+
+    /// Fixed upstream usable by the local enforcement proxy. PAC and WPAD are
+    /// intentionally omitted: forwarding to them requires evaluating a URL-specific
+    /// script, so an explicit force-proxy rule must report unavailable instead.
+    private var fixedSystemProxyUpstream: ProxyUpstream? {
+        guard systemProxy.configurationState == .enabled else { return nil }
+        if systemProxy.socksEnabled,
+           let host = systemProxy.socksHost,
+           let port = systemProxy.socksPort.flatMap(UInt16.init(exactly:)) {
+            return ProxyUpstream(kind: .socks5, host: host, port: port)
+        }
+        if systemProxy.httpsEnabled,
+           let host = systemProxy.httpsHost,
+           let port = systemProxy.httpsPort.flatMap(UInt16.init(exactly:)) {
+            return ProxyUpstream(kind: .http, host: host, port: port)
+        }
+        if systemProxy.httpEnabled,
+           let host = systemProxy.httpHost,
+           let port = systemProxy.httpPort.flatMap(UInt16.init(exactly:)) {
+            return ProxyUpstream(kind: .http, host: host, port: port)
+        }
+        return nil
+    }
+
+    private func noteEnforcedFlow(_ event: LocalProxyServer.FlowEvent) {
+        switch event.action {
+        case .direct:
+            socketObservedRoute[event.app.storageKey] = .direct
+        case .upstream:
+            socketObservedRoute[event.app.storageKey] = .systemProxy
+        case .block, .unavailable:
+            break
+        }
+    }
+
     func openDashboard() {
         selectedTab = .overview
         NSApp.activate(ignoringOtherApps: true)
@@ -2408,24 +2546,22 @@ final class AppModel: ObservableObject {
         publish(\.periodUnattributedUp, periodRoutes.unknown.bytesUp)
         publish(\.periodUnattributedDown, periodRoutes.unknown.bytesDown)
 
-        // Cumulative trend: append running period totals each tick so the area chart moves.
-        // Scope ignores `periodTo` (usually `now`) so the series is not reset every tick.
-        let scopeKey = cumulativeTrendKey(app: selectedIdentity, from: periodFrom)
-        if scopeKey != cumulativeTrendScopeKey {
-            cumulativeTrendScopeKey = scopeKey
+        // Historical cumulative checkpoints begin at zero and end at the displayed
+        // period totals. This keeps earlier traffic visible instead of sampling only
+        // near-identical totals from the few seconds since the dashboard opened.
+        if overviewResult.matchesScope {
+            publish(
+                \.periodTrendDown,
+                overviewRollup.cumulativeTraffic.bytesDown.map { Double($0) }
+            )
+            publish(
+                \.periodTrendUp,
+                overviewRollup.cumulativeTraffic.bytesUp.map { Double($0) }
+            )
+        } else {
             publish(\.periodTrendDown, [])
             publish(\.periodTrendUp, [])
         }
-
-        // Running cumulative totals — chart rises as traffic accrues in this period.
-        publish(
-            \.periodTrendDown,
-            Self.appending(periodTrendDown, Double(periodNetworkDown), limit: Self.cumulativeTrendLimit)
-        )
-        publish(
-            \.periodTrendUp,
-            Self.appending(periodTrendUp, Double(periodNetworkUp), limit: Self.cumulativeTrendLimit)
-        )
 
         // One pass covers both the ranking and the history table: `rankingLimit`
         // exceeds the history's 50 rows and the sort is the same, so the history is a
@@ -2453,6 +2589,11 @@ final class AppModel: ObservableObject {
         }
         publish(\.rules, policyStore.allRules())
         publish(\.groups, policyStore.allGroups())
+        proxyEnforcementController.updateRules(
+            snapshot: policyStore.compileSnapshot(),
+            profiles: proxyProfiles
+        )
+        publish(\.proxyEnforcementStatus, proxyEnforcementController.status)
 
         let connectionPool = aggregator.recentConnections(limit: 40)
         let scopedConnections: [LiveConnection]
@@ -2545,14 +2686,28 @@ final class AppModel: ObservableObject {
         }
 
         let unsorted = makeRows(from: activeTops, shareBase: netTotal)
-        publish(\.rankingRows, Self.sortByFavorites(unsorted, favorites: favoriteKeys))
+        let trafficLeader = AppTrafficRanking.leader(in: activeTops)
+        publish(\.trafficLeaderApp, trafficLeader)
+        publish(
+            \.rankingRows,
+            Self.sortByFavorites(
+                unsorted,
+                favorites: favoriteKeys,
+                trafficLeader: trafficLeader
+            )
+        )
         publish(\.topApps, rankingRows.map(\.snapshot))
 
         let archBase = max(1, archivedTops.reduce(UInt64(0)) { $0 &+ $1.totals.totalBytes })
-        publish(\.archivedRankingRows, Self.sortByFavorites(
-            makeRows(from: archivedTops, shareBase: archBase),
-            favorites: favoriteKeys
-        ))
+        publish(
+            \.archivedRankingRows,
+            Self.sortByFavorites(
+                makeRows(from: archivedTops, shareBase: archBase),
+                favorites: favoriteKeys,
+                trafficLeader: nil,
+                prioritizeTrafficLeader: false
+            )
+        )
 
         // Drop stale selection if app vanished after purge / archive.
         if overviewResult.matchesScope, let app = selectedApp {
@@ -2709,13 +2864,6 @@ final class AppModel: ObservableObject {
     var drilledAppTitle: String? {
         guard let id = sunburstPath.first else { return nil }
         return rankingRows.first(where: { $0.id == id })?.snapshot.displayName
-    }
-
-    private func cumulativeTrendKey(app: AppIdentityKey?, from: Date) -> String {
-        let appKey = app?.storageKey ?? "*"
-        // Bucket start to the minute so rolling windows don't thrash the series.
-        let startBucket = Int(from.timeIntervalSince1970) / 60
-        return "\(overviewPeriod.rawValue)|\(appKey)|\(startBucket)"
     }
 
     /// Build proxy-routing card mix from period-scoped byte shares (time range + optional app).

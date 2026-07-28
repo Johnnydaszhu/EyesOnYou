@@ -191,6 +191,9 @@ public final class LocalProxyServer: @unchecked Sendable {
         case .block:
             finish()
             respondAndClose(client, "HTTP/1.1 403 Forbidden\r\n\r\n")
+        case .unavailable:
+            finish()
+            respondAndClose(client, "HTTP/1.1 502 Bad Gateway\r\n\r\n")
         case .direct:
             openDirect(client: client, head: head, accounting: accounting, onClose: finish)
         case .upstream(let upstream) where upstream.kind == .http:

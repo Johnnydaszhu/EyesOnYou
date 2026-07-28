@@ -20,6 +20,7 @@ final class ProxyEnforcementController: ObservableObject {
     }
 
     @Published private(set) var status: Status = .off
+    var onStatus: ((Status) -> Void)?
 
     /// Emitted for every completed flow so the model can record exact byte counts.
     var onFlow: ((LocalProxyServer.FlowEvent) -> Void)?
@@ -67,9 +68,21 @@ final class ProxyEnforcementController: ObservableObject {
     }
 
     /// Start enforcing: bind the proxy, then take over the system proxy.
-    func enable(snapshot: RuleSnapshot, profiles: [ProxyProfile]) {
+    func enable(
+        snapshot: RuleSnapshot,
+        profiles: [ProxyProfile],
+        systemUpstreamHint: ProxyUpstream?
+    ) {
         guard case .off = status else { return }
-        status = .starting
+
+        let currentProxy = SystemProxyReader.current()
+        if currentProxy.socksEnabled
+            || currentProxy.autoConfigEnabled
+            || currentProxy.autoDiscoveryEnabled {
+            setStatus(.failed("automatic and SOCKS system proxies are not supported by HTTP/HTTPS routing"))
+            return
+        }
+        setStatus(.starting)
 
         server.start(preferredPort: 0)
         // Wait for the listener to report its port before touching system settings —
@@ -78,21 +91,26 @@ final class ProxyEnforcementController: ObservableObject {
             guard let self else { return }
             switch result {
             case .failed(let message):
-                self.status = .failed(message)
+                self.setStatus(.failed(message))
             case .ready(let port):
                 do {
                     let backup = try self.systemProxy.takeOver(localPort: port)
-                    self.currentUpstream = backup.upstream
+                    // Some proxy apps publish a live Dynamic Store override that
+                    // `networksetup` does not expose. Keep that upstream instead of
+                    // losing it during takeover.
+                    self.currentUpstream = backup.upstream ?? systemUpstreamHint
                     self.rulesBox.update(LocalProxyRules(
                         snapshot: snapshot,
-                        systemUpstream: backup.upstream,
+                        systemUpstream: self.currentUpstream,
                         profiles: profiles
                     ))
-                    self.status = .active(port: port, upstream: backup.upstream)
+                    // Do not claim success until CFNetwork — the same API client apps
+                    // use — actually sees EyesOnYou as the active proxy.
+                    self.waitForTakeover(port: port)
                 } catch {
                     // Could not save a restore point — refuse takeover, tear down.
                     self.server.stop()
-                    self.status = .failed("takeover: \(error)")
+                    self.setStatus(.failed("takeover: \(error)"))
                 }
             }
         }
@@ -103,7 +121,7 @@ final class ProxyEnforcementController: ObservableObject {
         _ = systemProxy.restoreIfNeeded()
         server.stop()
         currentUpstream = nil
-        status = .off
+        setStatus(.off)
     }
 
     // MARK: - Internals
@@ -111,6 +129,35 @@ final class ProxyEnforcementController: ObservableObject {
     private enum PortResult {
         case ready(UInt16)
         case failed(String)
+    }
+
+    private func setStatus(_ next: Status) {
+        status = next
+        onStatus?(next)
+    }
+
+    private func waitForTakeover(port: UInt16, attempt: Int = 0) {
+        let snapshot = SystemProxyReader.current()
+        let httpMatches = snapshot.httpEnabled
+            && snapshot.httpHost == "127.0.0.1"
+            && snapshot.httpPort == Int(port)
+        let httpsMatches = snapshot.httpsEnabled
+            && snapshot.httpsHost == "127.0.0.1"
+            && snapshot.httpsPort == Int(port)
+        if httpMatches && httpsMatches {
+            setStatus(.active(port: port, upstream: currentUpstream))
+            return
+        }
+        guard attempt < 20 else {
+            _ = systemProxy.restoreIfNeeded()
+            server.stop()
+            currentUpstream = nil
+            setStatus(.failed("macOS did not activate the EyesOnYou proxy"))
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.waitForTakeover(port: port, attempt: attempt + 1)
+        }
     }
 
     private func waitForRunningPort(

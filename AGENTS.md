@@ -48,9 +48,9 @@ xcodebuild -project EyesOnYou.xcodeproj -scheme EyesOnYou \
 
 ## Verify traffic enforcement without the GUI
 
-The CLI is now the only way to enforce routes — the GUI observes and never touches
-the system proxy. The local proxy is fully driveable from the CLI, so a change can
-still be proven end to end on a real machine:
+The GUI can opt into HTTP / HTTPS per-app routing from Settings. The local proxy is
+also fully driveable from the CLI, so a change can be proven end to end without
+opening the app:
 
 ```bash
 # 1. state a rule
@@ -125,7 +125,7 @@ EYESONYOU_SKIP_PROXY_CONFIG_SCAN=1 <launch the app>
 | CLI commands | `Sources/EyesOnYouCLI` |
 | Dashboard / sunburst / search UI | `App/EyesOnYou` |
 | Filter / proxy providers | `NetworkExtension` |
-| Local enforcement proxy + system-proxy takeover (CLI only) | `Packages/EyesOnYouProxyCore` (`LocalProxyServer`, `SystemProxyController`, `LocalProxyRules`). `App/EyesOnYou/ProxyEnforcementController.swift` is excluded from the app target in `project.yml` — the GUI observes only |
+| Local enforcement proxy + reversible system-proxy takeover | `Packages/EyesOnYouProxyCore` (`LocalProxyServer`, `SystemProxyController`, `LocalProxyRules`) and `App/EyesOnYou/ProxyEnforcementController.swift` |
 
 ## Do not
 

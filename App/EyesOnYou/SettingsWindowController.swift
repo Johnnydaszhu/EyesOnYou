@@ -324,6 +324,10 @@ struct SettingsView: View {
                     get: { model.proxyEnabled },
                     set: { model.setProxyEnabled($0) }
                 ))
+                proxyEnforcementStatus
+                Text(l10n.t("settings.proxyEnforcement.hint"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Toggle(l10n.t("settings.alertsEnabled"), isOn: $model.alertsEnabled)
             } header: {
                 Text(l10n.t("settings.protection"))
@@ -384,6 +388,34 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding()
+    }
+
+    private var proxyEnforcementStatus: some View {
+        let title: String
+        let systemImage: String
+        let tint: Color
+        switch model.proxyEnforcementStatus {
+        case .off:
+            title = l10n.t("enforcement.off")
+            systemImage = "pause.circle"
+            tint = .secondary
+        case .starting:
+            title = l10n.t("enforcement.starting")
+            systemImage = "clock.arrow.circlepath"
+            tint = .orange
+        case .active:
+            title = l10n.t("enforcement.active")
+            systemImage = "checkmark.shield.fill"
+            tint = .green
+        case .failed(let message):
+            title = "\(l10n.t("enforcement.failed")) · \(message)"
+            systemImage = "exclamationmark.triangle.fill"
+            tint = .orange
+        }
+        return Label(title, systemImage: systemImage)
+            .font(.caption)
+            .foregroundStyle(tint)
+            .textSelection(.enabled)
     }
 
     /// Thresholds are stored in bytes but edited in GB — a text field keeps `0`
@@ -526,8 +558,8 @@ struct SettingsView: View {
                 Button(l10n.t("menu.openDashboard")) {
                     model.openDashboard()
                 }
-                Button(l10n.t("update.openReleases")) {
-                    model.openReleasesPage()
+                Button(l10n.t("settings.about.github")) {
+                    model.openGitHubPage()
                 }
             } header: {
                 Text(l10n.t("settings.tab.about"))

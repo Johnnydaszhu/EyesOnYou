@@ -84,6 +84,16 @@ final class LocalProxyRulesTests: XCTestCase {
         XCTAssertEqual(r.action(for: chrome, host: "youtube.com", port: 443), .upstream(shadowrocket))
     }
 
+    func testExplicitSystemProxyDoesNotLeakDirectWhenUpstreamMissing() {
+        let r = rules(
+            configure: { $0.assignRoute(app: chrome, route: .systemProxy) }
+        )
+        XCTAssertEqual(
+            r.action(for: chrome, host: "youtube.com", port: 443),
+            .unavailable(.systemProxyMissing)
+        )
+    }
+
     func testExplicitDirectBypassesTheProxy() {
         let r = rules(
             configure: { $0.assignRoute(app: chrome, route: .direct) },
@@ -127,6 +137,18 @@ final class LocalProxyRulesTests: XCTestCase {
         XCTAssertEqual(
             r.action(for: chrome, host: "youtube.com", port: 443),
             .upstream(ProxyUpstream(kind: .http, host: "10.0.0.1", port: 3128))
+        )
+    }
+
+    func testMissingProfileDoesNotFallBackToAnotherProxyOrDirect() {
+        let missingID = UUID()
+        let r = rules(
+            configure: { $0.assignRoute(app: chrome, route: .proxy(profileID: missingID)) },
+            systemUpstream: shadowrocket
+        )
+        XCTAssertEqual(
+            r.action(for: chrome, host: "youtube.com", port: 443),
+            .unavailable(.profileMissing(missingID))
         )
     }
 }

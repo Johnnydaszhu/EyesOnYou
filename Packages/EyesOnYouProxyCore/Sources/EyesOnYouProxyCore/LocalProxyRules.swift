@@ -3,8 +3,8 @@ import EyesOnYouCore
 import EyesOnYouRuleEngine
 
 /// Where a proxied flow should be sent.
-public struct ProxyUpstream: Equatable, Sendable {
-    public enum Kind: Equatable, Sendable {
+public struct ProxyUpstream: Equatable, Codable, Sendable {
+    public enum Kind: String, Equatable, Codable, Sendable {
         case http
         case socks5
     }
@@ -20,11 +20,21 @@ public struct ProxyUpstream: Equatable, Sendable {
     }
 }
 
+/// Why an explicit force-proxy rule cannot be fulfilled.
+///
+/// An explicit route must never silently become direct traffic. The local proxy
+/// returns a failure for these actions so callers can surface the broken setup.
+public enum ProxyUnavailableReason: Equatable, Sendable {
+    case systemProxyMissing
+    case profileMissing(UUID)
+}
+
 /// Decision for one inbound proxy connection.
 public enum ProxyFlowAction: Equatable, Sendable {
     case block
     case direct
     case upstream(ProxyUpstream)
+    case unavailable(ProxyUnavailableReason)
 }
 
 /// Immutable rule snapshot the proxy server consults per connection.
@@ -72,9 +82,12 @@ public struct LocalProxyRules: Sendable {
     /// Route semantics with EyesOnYou holding the system-proxy slot:
     /// - `.direct`      → dial the origin ourselves (true bypass)
     /// - `.systemProxy` → the proxy that *was* the system proxy (upstream)
-    /// - `.proxy(id)`   → that profile, falling back to the system upstream
+    /// - `.proxy(id)`   → that exact profile
     /// - `.inherit`     → what the system would have done before we took the slot:
     ///                    upstream when one existed, else direct. Fail-open.
+    ///
+    /// Missing upstreams fail closed for explicit force-proxy routes. Otherwise the
+    /// UI could promise "Force Proxy" while the traffic silently escaped directly.
     public func action(for app: AppIdentityKey, host: String, port: UInt16) -> ProxyFlowAction {
         let flow = FlowDescriptor(app: app, remoteHostname: host, remotePort: port)
         if snapshot.evaluateFirewall(flow).action == .block {
@@ -83,13 +96,15 @@ public struct LocalProxyRules: Sendable {
         switch snapshot.evaluateRoute(flow).action {
         case .direct:
             return .direct
-        case .systemProxy, .inherit:
+        case .systemProxy:
+            return systemUpstream.map { .upstream($0) } ?? .unavailable(.systemProxyMissing)
+        case .inherit:
             return systemUpstream.map { .upstream($0) } ?? .direct
         case .proxy(let profileID):
-            if let upstream = profileUpstreams[profileID] ?? systemUpstream {
+            if let upstream = profileUpstreams[profileID] {
                 return .upstream(upstream)
             }
-            return .direct
+            return .unavailable(.profileMissing(profileID))
         }
     }
 }

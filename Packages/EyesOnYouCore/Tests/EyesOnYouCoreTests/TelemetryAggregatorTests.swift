@@ -317,6 +317,65 @@ final class TelemetryAggregatorTests: XCTestCase {
         XCTAssertEqual(rollup.routeShares[chrome]?.proxied, 100)
     }
 
+    func testOverviewRollupBuildsHistoricalCumulativeSeriesForSelectedApp() {
+        let agg = TelemetryAggregator()
+        let t0 = Date(timeIntervalSince1970: 1_700_100_000)
+
+        agg.recordDelta(
+            flowID: UUID(),
+            app: chrome,
+            up: 100,
+            down: 1_000,
+            at: t0.addingTimeInterval(1),
+            route: .direct
+        )
+        agg.recordDelta(
+            flowID: UUID(),
+            app: chrome,
+            up: 200,
+            down: 2_000,
+            at: t0.addingTimeInterval(21),
+            route: .systemProxy
+        )
+        agg.recordDelta(
+            flowID: UUID(),
+            app: safari,
+            up: 90_000,
+            down: 900_000,
+            at: t0.addingTimeInterval(31),
+            route: .direct
+        )
+
+        let rollup = agg.overviewRollup(
+            from: t0,
+            to: t0.addingTimeInterval(40),
+            limit: 10,
+            selectedApp: chrome,
+            preferredGranularity: .oneSecond,
+            cumulativePointLimit: 5
+        )
+
+        XCTAssertEqual(rollup.cumulativeTraffic.bytesUp, [0, 100, 100, 300, 300])
+        XCTAssertEqual(rollup.cumulativeTraffic.bytesDown, [0, 1_000, 1_000, 3_000, 3_000])
+        XCTAssertEqual(rollup.cumulativeTraffic.bytesUp.last, rollup.routeTotals.all.bytesUp)
+        XCTAssertEqual(rollup.cumulativeTraffic.bytesDown.last, rollup.routeTotals.all.bytesDown)
+    }
+
+    func testOverviewRollupLeavesCumulativeSeriesEmptyWithoutTraffic() {
+        let agg = TelemetryAggregator()
+        let t0 = Date(timeIntervalSince1970: 1_700_100_000)
+
+        let rollup = agg.overviewRollup(
+            from: t0,
+            to: t0.addingTimeInterval(60),
+            limit: 10,
+            selectedApp: nil,
+            preferredGranularity: .oneSecond
+        )
+
+        XCTAssertEqual(rollup.cumulativeTraffic, CumulativeTrafficSeries())
+    }
+
     func testRecordDeltaRouteKindOverrideStoresUnknownRoute() {
         let agg = TelemetryAggregator()
         let t0 = Date(timeIntervalSince1970: 1_700_100_100)

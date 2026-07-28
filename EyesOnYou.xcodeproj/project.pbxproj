@@ -20,6 +20,7 @@
 		4C512840FFAE97C1C3DCB72F /* ForegroundWindowSampler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26541805E0941FF1B62972EB /* ForegroundWindowSampler.swift */; };
 		4D82BEAC4D2F7E227DD5844F /* FilterManagerController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4609AF65E8D35D03F0155042 /* FilterManagerController.swift */; };
 		4F17008DA8A9B983726D89DD /* BrowserTabSampler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 671A7BE4F69B3670FE039FFB /* BrowserTabSampler.swift */; };
+		4F21197C7864C662DEC3F32A /* ProxyEnforcementController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2A76A53569AB0B5C5F7000A /* ProxyEnforcementController.swift */; };
 		507287A80FCD741DB887F257 /* SunburstChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C912ACCD2973BDEFB9A3C86 /* SunburstChart.swift */; };
 		53D46B10208DCA266A964301 /* GlobalTimeRangeBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7D0362C1496241E30A66CA1 /* GlobalTimeRangeBar.swift */; };
 		62E4B79F0C83E146439E4BA5 /* EyesOnYouNetworkExtension.systemextension in Embed Dependencies */ = {isa = PBXBuildFile; fileRef = 47C3F46F8008E7E80AA71546 /* EyesOnYouNetworkExtension.systemextension */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -96,6 +97,7 @@
 		7EEDF548435AE3B919D922B1 /* AppUpdateService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateService.swift; sourceTree = "<group>"; };
 		8FD16705AA37DFAF5C3151D2 /* AlertCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlertCenter.swift; sourceTree = "<group>"; };
 		A65CB4743D80D070A5599214 /* ExtensionRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionRuntime.swift; sourceTree = "<group>"; };
+		B2A76A53569AB0B5C5F7000A /* ProxyEnforcementController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProxyEnforcementController.swift; sourceTree = "<group>"; };
 		B7D0362C1496241E30A66CA1 /* GlobalTimeRangeBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalTimeRangeBar.swift; sourceTree = "<group>"; };
 		BFB7518FC4A69D11F6120F91 /* GlobalSearchBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalSearchBar.swift; sourceTree = "<group>"; };
 		C4FE3BCCCC1E44EDC1517019 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
@@ -171,6 +173,7 @@
 				4BEA1671CDEEC377B0676A34 /* MenuBarController.swift */,
 				5FF807FBC32679BB3FC967E2 /* MenuBarPopoverView.swift */,
 				0FA88181A021E5C7848D45FD /* OverviewTabView.swift */,
+				B2A76A53569AB0B5C5F7000A /* ProxyEnforcementController.swift */,
 				CDD99A0F47D6C3578B28701A /* SettingsWindowController.swift */,
 				7C912ACCD2973BDEFB9A3C86 /* SunburstChart.swift */,
 				69960448DF6DB837B1CDD200 /* Theme.swift */,
@@ -382,6 +385,7 @@
 				350F263D66BACDEE36F9200B /* MenuBarController.swift in Sources */,
 				FA348CCB4F78037185F93CA6 /* MenuBarPopoverView.swift in Sources */,
 				EB5498EA4F419FD06A396FFE /* OverviewTabView.swift in Sources */,
+				4F21197C7864C662DEC3F32A /* ProxyEnforcementController.swift in Sources */,
 				49349A2AE6853CF080834EEF /* SettingsWindowController.swift in Sources */,
 				507287A80FCD741DB887F257 /* SunburstChart.swift in Sources */,
 				D44412E6F7E7FE70ADF865D0 /* Theme.swift in Sources */,

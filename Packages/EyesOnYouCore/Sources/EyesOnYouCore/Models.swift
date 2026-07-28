@@ -230,6 +230,53 @@ public struct AppTrafficSnapshot: Sendable, Identifiable, Equatable {
     }
 }
 
+/// Shared ordering policy for the app that owns the most measured traffic in a range.
+///
+/// This is an automatic, range-scoped priority rather than a persisted favorite.
+/// Rows with no measured bytes do not produce a leader.
+public enum AppTrafficRanking {
+    public static func leader(in snapshots: [AppTrafficSnapshot]) -> AppIdentityKey? {
+        var leader: AppTrafficSnapshot?
+        for candidate in snapshots where candidate.totals.totalBytes > 0 {
+            guard let current = leader else {
+                leader = candidate
+                continue
+            }
+            let candidateBytes = candidate.totals.totalBytes
+            let currentBytes = current.totals.totalBytes
+            if candidateBytes > currentBytes
+                || (candidateBytes == currentBytes
+                    && candidate.app.storageKey < current.app.storageKey) {
+                leader = candidate
+            }
+        }
+        return leader?.app
+    }
+
+    /// Move the current traffic leader ahead of an existing order while preserving
+    /// the relative order of every other row.
+    public static func prioritizingLeader<Element>(
+        _ elements: [Element],
+        leader: AppIdentityKey?,
+        app: (Element) -> AppIdentityKey
+    ) -> [Element] {
+        guard let leader else { return elements }
+        var leaderRows: [Element] = []
+        var remainingRows: [Element] = []
+        leaderRows.reserveCapacity(1)
+        remainingRows.reserveCapacity(elements.count)
+        for element in elements {
+            if app(element) == leader {
+                leaderRows.append(element)
+            } else {
+                remainingRows.append(element)
+            }
+        }
+        guard !leaderRows.isEmpty else { return elements }
+        return leaderRows + remainingRows
+    }
+}
+
 /// What a drill-down child row represents under an app.
 public enum DrillSegmentKind: String, Sendable, Codable, Equatable {
     /// Browser website / hostname (no full URL path without MITM).

@@ -80,6 +80,10 @@ struct MainDashboardView: View {
             // Keep trailing controls at intrinsic width. macOS `Menu` otherwise
             // competes with Spacer for flexible space and drifts off the trailing edge.
             HStack(spacing: 8) {
+                if model.hasConfiguredAppRoutes || model.proxyEnabled {
+                    routeEnforcementStatusControl
+                }
+                systemProxyStatusControl
                 headerVersionControl
                 Button {
                     model.openSettings()
@@ -109,6 +113,91 @@ struct MainDashboardView: View {
         // Clear traffic lights only; keep inset tight so the titlebar band stays short.
         .padding(.top, model.appUpdateAvailable ? 6 : 28)
         .padding(.bottom, 2)
+    }
+
+    private var routeEnforcementStatusControl: some View {
+        let title: String
+        let detail: String?
+        let tint: Color
+        switch model.proxyEnforcementStatus {
+        case .off:
+            title = l10n.t("enforcement.badge.off")
+            detail = l10n.t("enforcement.off")
+            tint = EyesOnYouTheme.textSecondary
+        case .starting:
+            title = l10n.t("enforcement.badge.starting")
+            detail = l10n.t("enforcement.starting")
+            tint = EyesOnYouTheme.accentAmber
+        case .active:
+            title = l10n.t("enforcement.badge.active")
+            detail = l10n.t("enforcement.active")
+            tint = EyesOnYouTheme.accentGreen
+        case .failed(let message):
+            title = l10n.t("enforcement.badge.failed")
+            detail = "\(l10n.t("enforcement.failed"))\n\(message)"
+            tint = EyesOnYouTheme.accentAmber
+        }
+        return Label(title, systemImage: model.isProxyEnforcementActive ? "checkmark.shield.fill" : "shield.slash")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(tint)
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .frame(height: 28)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(tint.opacity(0.08))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(tint.opacity(0.28), lineWidth: 0.7)
+                    )
+            }
+            .help(detail ?? "")
+    }
+
+    private var systemProxyStatusControl: some View {
+        let state = model.systemProxy.configurationState
+        let tint: Color = {
+            switch state {
+            case .enabled: return EyesOnYouTheme.accentGreen
+            case .invalid: return EyesOnYouTheme.accentAmber
+            case .disabled, .unavailable: return EyesOnYouTheme.textSecondary
+            }
+        }()
+        let key: String = {
+            switch state {
+            case .enabled: return "systemProxy.state.enabled"
+            case .disabled: return "systemProxy.state.disabled"
+            case .invalid: return "systemProxy.state.invalid"
+            case .unavailable: return "systemProxy.state.unavailable"
+            }
+        }()
+        let detail = model.systemProxy.primaryEndpointLabel
+        return HStack(spacing: 5) {
+            Circle()
+                .fill(tint)
+                .frame(width: 6, height: 6)
+            Text(l10n.t(key))
+                .font(.system(size: 10, weight: .semibold))
+                .lineLimit(1)
+        }
+        .foregroundStyle(tint)
+        .padding(.horizontal, 8)
+        .frame(height: 28)
+        .background {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(tint.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(tint.opacity(0.28), lineWidth: 0.7)
+                )
+        }
+        .help(
+            [l10n.t("systemProxy.help"), detail]
+                .compactMap { $0 }
+                .joined(separator: "\n")
+        )
+        .accessibilityLabel(l10n.t(key))
+        .accessibilityValue(detail ?? "")
     }
 
     // MARK: - Update banner (only top chrome)

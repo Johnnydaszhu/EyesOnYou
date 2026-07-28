@@ -105,20 +105,38 @@ public struct AppRouteByteTotals: Sendable, Equatable {
     }
 }
 
-/// The three overview rollups that share the same time range and source buckets.
+/// Cumulative upload / download checkpoints across the requested overview range.
+///
+/// The first point is always zero and the final point equals the scoped period
+/// total. Intermediate points preserve when bytes were observed, so a large total
+/// recorded before the dashboard opened does not collapse the chart into a flat line.
+public struct CumulativeTrafficSeries: Sendable, Equatable {
+    public var bytesUp: [UInt64]
+    public var bytesDown: [UInt64]
+
+    public init(bytesUp: [UInt64] = [], bytesDown: [UInt64] = []) {
+        self.bytesUp = bytesUp
+        self.bytesDown = bytesDown
+    }
+}
+
+/// Overview values that share the same time range and source buckets.
 public struct TrafficOverviewRollup: Sendable {
     public var topApps: [AppTrafficSnapshot]
     public var routeTotals: RouteDirectionalTotals
     public var routeShares: [AppIdentityKey: AppRouteByteTotals]
+    public var cumulativeTraffic: CumulativeTrafficSeries
 
     public init(
         topApps: [AppTrafficSnapshot],
         routeTotals: RouteDirectionalTotals,
-        routeShares: [AppIdentityKey: AppRouteByteTotals]
+        routeShares: [AppIdentityKey: AppRouteByteTotals],
+        cumulativeTraffic: CumulativeTrafficSeries = CumulativeTrafficSeries()
     ) {
         self.topApps = topApps
         self.routeTotals = routeTotals
         self.routeShares = routeShares
+        self.cumulativeTraffic = cumulativeTraffic
     }
 }
 
@@ -224,6 +242,12 @@ public final class TelemetryAggregator: @unchecked Sendable {
         let liveRates: [AppIdentityKey: LiveRateSnapshot]
         let activeCountByApp: [AppIdentityKey: Int]
         let activeCountByAppSite: [AppIdentityKey: [String: Int]]
+    }
+
+    private struct TimedBucketRow {
+        let bucketStartMs: Int64
+        let key: SlotKey
+        let totals: TrafficTotals
     }
 
     private typealias Slot = [SlotKey: TrafficTotals]
@@ -450,7 +474,9 @@ public final class TelemetryAggregator: @unchecked Sendable {
 
         var byApp: [AppIdentityKey: TrafficTotals] = [:]
         var byAppSite: [AppIdentityKey: [String: TrafficTotals]] = [:]
-        for (key, totals) in rows {
+        for row in rows {
+            let key = row.key
+            let totals = row.totals
             byApp[key.app, default: TrafficTotals()].merge(totals)
             if includeSitesForBrowsers {
                 byAppSite[key.app, default: [:]][key.destinationKey, default: TrafficTotals()].merge(totals)
@@ -474,7 +500,8 @@ public final class TelemetryAggregator: @unchecked Sendable {
         limit: Int,
         selectedApp: AppIdentityKey?,
         preferredGranularity: BucketGranularity? = nil,
-        includeSites: Bool = true
+        includeSites: Bool = true,
+        cumulativePointLimit: Int = 40
     ) -> TrafficOverviewRollup {
         let (rows, context) = rankingSourceSnapshot(
             from: from,
@@ -486,14 +513,28 @@ public final class TelemetryAggregator: @unchecked Sendable {
         var byAppSite: [AppIdentityKey: [String: TrafficTotals]] = [:]
         var routeTotals = RouteDirectionalTotals()
         var routeShares: [AppIdentityKey: AppRouteByteTotals] = [:]
+        let pointCount = max(2, cumulativePointLimit)
+        var cumulativeUpSteps = Array(repeating: UInt64(0), count: pointCount)
+        var cumulativeDownSteps = Array(repeating: UInt64(0), count: pointCount)
 
-        for (key, totals) in rows {
+        for row in rows {
+            let key = row.key
+            let totals = row.totals
             byApp[key.app, default: TrafficTotals()].merge(totals)
             if includeSites {
                 byAppSite[key.app, default: [:]][key.destinationKey, default: TrafficTotals()].merge(totals)
             }
 
             if selectedApp == nil || selectedApp == key.app {
+                let point = Self.cumulativePointIndex(
+                    bucketStartMs: row.bucketStartMs,
+                    from: from,
+                    to: to,
+                    pointCount: pointCount
+                )
+                cumulativeUpSteps[point] &+= totals.bytesUp
+                cumulativeDownSteps[point] &+= totals.bytesDown
+
                 switch key.routeKind {
                 case .direct:
                     routeTotals.direct.merge(totals)
@@ -518,6 +559,7 @@ public final class TelemetryAggregator: @unchecked Sendable {
             }
         }
 
+        let hasTraffic = routeTotals.all.totalBytes > 0
         return TrafficOverviewRollup(
             topApps: makeTopApps(
                 byApp: byApp,
@@ -528,8 +570,36 @@ public final class TelemetryAggregator: @unchecked Sendable {
                 context: context
             ),
             routeTotals: routeTotals,
-            routeShares: routeShares
+            routeShares: routeShares,
+            cumulativeTraffic: hasTraffic
+                ? CumulativeTrafficSeries(
+                    bytesUp: Self.cumulativeValues(from: cumulativeUpSteps),
+                    bytesDown: Self.cumulativeValues(from: cumulativeDownSteps)
+                )
+                : CumulativeTrafficSeries()
         )
+    }
+
+    private static func cumulativePointIndex(
+        bucketStartMs: Int64,
+        from: Date,
+        to: Date,
+        pointCount: Int
+    ) -> Int {
+        let fromMs = Int64(from.timeIntervalSince1970 * 1_000)
+        let toMs = Int64(to.timeIntervalSince1970 * 1_000)
+        let span = max(Int64(1), toMs - fromMs)
+        let offset = min(max(Int64(0), bucketStartMs - fromMs), span - 1)
+        let progress = Double(offset) / Double(span)
+        return min(pointCount - 1, max(1, Int(progress * Double(pointCount - 1)) + 1))
+    }
+
+    private static func cumulativeValues(from steps: [UInt64]) -> [UInt64] {
+        var running: UInt64 = 0
+        return steps.map { value in
+            running &+= value
+            return running
+        }
     }
 
     private func makeTopApps(
@@ -1302,13 +1372,21 @@ public final class TelemetryAggregator: @unchecked Sendable {
         from: Date,
         to: Date,
         preferred: BucketGranularity?
-    ) -> (rows: [(SlotKey, TrafficTotals)], context: RankingContext) {
+    ) -> (rows: [TimedBucketRow], context: RankingContext) {
         lock.lock()
         defer { lock.unlock() }
 
-        var rows: [(SlotKey, TrafficTotals)] = []
-        forEachBucket(from: from, to: to, preferred: preferred) { key, totals in
-            rows.append((key, totals))
+        var rows: [TimedBucketRow] = []
+        forEachSlot(from: from, to: to, preferred: preferred) { bucketStartMs, slot in
+            for (key, totals) in slot {
+                rows.append(
+                    TimedBucketRow(
+                        bucketStartMs: bucketStartMs,
+                        key: key,
+                        totals: totals
+                    )
+                )
+            }
         }
 
         var activeCountByApp: [AppIdentityKey: Int] = [:]

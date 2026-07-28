@@ -1059,6 +1059,13 @@ private func actionName(_ action: ProxyFlowAction) -> String {
     case .block: return "block"
     case .direct: return "direct"
     case .upstream(let up): return "upstream:\(up.host):\(up.port)"
+    case .unavailable(let reason):
+        switch reason {
+        case .systemProxyMissing:
+            return "unavailable:system-proxy"
+        case .profileMissing(let id):
+            return "unavailable:profile:\(id.uuidString)"
+        }
     }
 }
 
@@ -1078,6 +1085,7 @@ private final class FlowLog: @unchecked Sendable {
         for event in events {
             switch event.action {
             case .block: blocked += 1
+            case .unavailable: blocked += 1
             case .direct: direct += 1
             case .upstream: proxied += 1
             }
