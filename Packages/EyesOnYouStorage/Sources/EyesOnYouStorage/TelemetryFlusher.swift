@@ -47,51 +47,59 @@ public final class TelemetryFlusher: @unchecked Sendable {
     /// - Returns: number of bucket rows written.
     @discardableResult
     public func flush(_ aggregator: TelemetryAggregator) throws -> Int {
+        // Keep snapshot selection, persistence, and watermark advancement serialized.
+        // Advancing only after the transaction commits makes a failed batch retryable.
+        lock.lock()
+        defer { lock.unlock() }
+
         // Persist product names alongside the counters; without this the catalog only
         // ever holds bundle identifiers and every reader has to re-resolve them.
-        lock.lock()
         let pendingNames = aggregator.exportDisplayNames()
             .filter { !$0.value.isEmpty && namesWritten[$0.key] != $0.value }
-        lock.unlock()
 
         for (app, name) in pendingNames {
             _ = try store.upsertApp(app, displayName: name)
-            lock.lock()
             namesWritten[app] = name
-            lock.unlock()
         }
 
         var pending: [TrafficBucket] = []
+        var writtenAfterCommit = written
 
-        lock.lock()
         for granularity in granularities {
             for bucket in aggregator.exportBuckets(granularity: granularity) {
-                let previous = written[bucket.key] ?? TrafficTotals()
+                let previous = writtenAfterCommit[bucket.key] ?? TrafficTotals()
                 guard let delta = Self.delta(current: bucket.totals, previous: previous) else {
                     continue
                 }
                 pending.append(TrafficBucket(key: bucket.key, totals: delta))
-                written[bucket.key] = bucket.totals
+                writtenAfterCommit[bucket.key] = bucket.totals
             }
         }
-        lock.unlock()
 
-        for bucket in pending {
-            try store.mergeBucket(bucket)
-        }
+        try store.mergeBuckets(pending)
+        written = writtenAfterCommit
         return pending.count
     }
 
-    /// Forget watermarks for buckets that ended before `cutoff`.
+    /// Forget watermarks only after their buckets have left the aggregator.
     ///
-    /// Without this the map grows for every minute the app stays open.
-    public func forgetWatermarks(endedBefore cutoff: Date) {
-        let cutoffMs = Int64(cutoff.timeIntervalSince1970 * 1000)
+    /// Time-based cleanup is unsafe because each granularity has a different
+    /// retention window. Dropping a watermark while its cumulative bucket still
+    /// exists makes the next flush merge that entire bucket into SQLite again.
+    @discardableResult
+    public func forgetWatermarks(notPresentIn aggregator: TelemetryAggregator) -> Int {
         lock.lock()
         defer { lock.unlock() }
-        written = written.filter { key, _ in
-            key.bucketStartMs + Int64(key.granularity.seconds) * 1000 >= cutoffMs
+
+        var retainedKeys = Set<TrafficBucketKey>()
+        for granularity in granularities {
+            retainedKeys.formUnion(
+                aggregator.exportBuckets(granularity: granularity).map(\.key)
+            )
         }
+        let previousCount = written.count
+        written = written.filter { retainedKeys.contains($0.key) }
+        return previousCount - written.count
     }
 
     /// Difference between two cumulative snapshots, or `nil` when nothing changed.

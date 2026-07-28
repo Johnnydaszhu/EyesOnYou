@@ -6,7 +6,7 @@ EyesOnYou ships UI builds as a **`.dmg`** attached to [GitHub Releases](https://
 
 ### A. GitHub Actions (recommended)
 
-1. Bump `CFBundleShortVersionString` in `App/EyesOnYou/Info.plist` when cutting a real version.
+1. Bump `CFBundleShortVersionString` and `CFBundleVersion` in both the host and Network Extension Info.plists.
 2. Push a version tag:
 
 ```bash
@@ -40,7 +40,7 @@ Or: **Actions → Release DMG → Run workflow** and enter a version (creates th
 | `Applications` | Symlink — drag-to-install |
 | `README.txt` | Short install notes |
 
-Default CI / script builds use **ad-hoc signing** (`CODE_SIGN_IDENTITY=-`). Those builds record real traffic through socket-level attribution, but macOS re-prompts for permissions after every rebuild because an ad-hoc identity changes each time — see CONTRIBUTING for the stable local certificate. Live Network Extension capture still needs a paid team, Developer ID, notarization, and user approval.
+Default CI / script builds use **ad-hoc signing** (`CODE_SIGN_IDENTITY=-`). Those builds record real traffic through socket attribution plus whole-host interface totals, and traffic that cannot be matched safely is kept as Unattributed. macOS re-prompts for permissions after every rebuild because an ad-hoc identity changes each time — see CONTRIBUTING for the stable local certificate. Live Network Extension capture still needs a paid team, Developer ID, notarization, and user approval.
 
 ## Signed + notarized builds (maintainer machine)
 

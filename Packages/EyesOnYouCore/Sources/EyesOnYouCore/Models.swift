@@ -443,6 +443,8 @@ public struct RouteMix: Sendable, Equatable {
     public var directPercent: Double
     public var systemProxyPercent: Double
     public var customProxyPercent: Double
+    /// Bytes whose route could not be established from socket/process evidence.
+    public var unknownPercent: Double
     public var blockedCount: UInt64
     public var activeRules: Int
 
@@ -450,12 +452,14 @@ public struct RouteMix: Sendable, Equatable {
         directPercent: Double = 0,
         systemProxyPercent: Double = 0,
         customProxyPercent: Double = 0,
+        unknownPercent: Double = 0,
         blockedCount: UInt64 = 0,
         activeRules: Int = 0
     ) {
         self.directPercent = directPercent
         self.systemProxyPercent = systemProxyPercent
         self.customProxyPercent = customProxyPercent
+        self.unknownPercent = unknownPercent
         self.blockedCount = blockedCount
         self.activeRules = activeRules
     }

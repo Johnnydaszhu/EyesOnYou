@@ -130,4 +130,37 @@ final class RouteByteShareByAppTests: XCTestCase {
         XCTAssertEqual(DestinationKey.make(hostname: "path:proxy", address: nil), "path:proxy")
         XCTAssertEqual(DestinationKey.make(hostname: "PATH:direct", address: nil), "path:direct")
     }
+
+    func testUnknownRouteBytesAreNotReportedAsDirect() {
+        let now = Date()
+        let aggregator = TelemetryAggregator()
+        let unknownApp = AppIdentityKey(
+            teamIdentifier: nil,
+            signingIdentifier: "com.example.unattributed"
+        )
+        aggregator.recordDelta(
+            flowID: UUID(),
+            app: unknownApp,
+            up: 10,
+            down: 90,
+            at: now,
+            routeKindOverride: .unknown
+        )
+
+        let byApp = aggregator.routeByteShareByApp(
+            from: now.addingTimeInterval(-1),
+            to: now.addingTimeInterval(1),
+            preferredGranularity: .oneSecond
+        )
+        XCTAssertNil(byApp[unknownApp])
+
+        let overall = aggregator.routeByteShare(
+            for: nil,
+            from: now.addingTimeInterval(-1),
+            to: now.addingTimeInterval(1)
+        )
+        XCTAssertEqual(overall.direct, 0)
+        XCTAssertEqual(overall.systemProxy, 0)
+        XCTAssertEqual(overall.customProxy, 0)
+    }
 }

@@ -71,7 +71,7 @@ public struct AttributedProcess: Sendable, Equatable {
 /// 1. its own working directory,
 /// 2. the workspace label of the editor window it belongs to,
 /// 3. the working directory of the ancestor that owns it,
-/// 4. the app's most recently active session on disk (weak; agents/IDEs only).
+/// 4. optionally, the app's most recently active session on disk (weak; agents/IDEs only).
 public final class LiveAttributionResolver: @unchecked Sendable {
     private struct CacheEntry {
         var startTime: UInt64?
@@ -85,6 +85,7 @@ public final class LiveAttributionResolver: @unchecked Sendable {
     private let projectResolver: ProjectResolver
     private let discoveryOptions: WorkspaceDiscoveryOptions
     private let sessionFallbackMaxAge: TimeInterval
+    private let usesSessionFallback: Bool
     private var cache: [Int32: CacheEntry] = [:]
     private var sessionProjects: [String: ProjectIdentity?] = [:]
     private let lock = NSLock()
@@ -92,11 +93,13 @@ public final class LiveAttributionResolver: @unchecked Sendable {
     public init(
         projectResolver: ProjectResolver,
         discoveryOptions: WorkspaceDiscoveryOptions = .default,
-        sessionFallbackMaxAge: TimeInterval = 900
+        sessionFallbackMaxAge: TimeInterval = 900,
+        usesSessionFallback: Bool = true
     ) {
         self.projectResolver = projectResolver
         self.discoveryOptions = discoveryOptions
         self.sessionFallbackMaxAge = sessionFallbackMaxAge
+        self.usesSessionFallback = usesSessionFallback
     }
 
     /// Drop cached per-process and per-app results (call after rediscovery).
@@ -184,7 +187,8 @@ public final class LiveAttributionResolver: @unchecked Sendable {
                   let inherited = projectResolver.project(forPID: owningPID) {
             project = inherited
             confidence = .ancestorDirectory
-        } else if let recent = sessionProject(forSigningID: signing, now: now) {
+        } else if usesSessionFallback,
+                  let recent = sessionProject(forSigningID: signing, now: now) {
             project = recent
             confidence = .recentSession
         }

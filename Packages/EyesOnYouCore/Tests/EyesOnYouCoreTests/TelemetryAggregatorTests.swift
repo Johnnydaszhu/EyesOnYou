@@ -157,6 +157,99 @@ final class TelemetryAggregatorTests: XCTestCase {
         XCTAssertEqual(multiTotals.flowsClosed, 3)
     }
 
+    func testRouteDirectionalTotalsPreserveAsymmetricUploadAndDownload() {
+        let agg = TelemetryAggregator()
+        let t0 = Date(timeIntervalSince1970: 1_700_100_000)
+
+        agg.recordDelta(
+            flowID: UUID(),
+            app: chrome,
+            up: 9_000,
+            down: 100,
+            at: t0,
+            route: .direct
+        )
+        agg.recordDelta(
+            flowID: UUID(),
+            app: chrome,
+            up: 50,
+            down: 8_000,
+            at: t0,
+            route: .systemProxy
+        )
+        agg.recordDelta(
+            flowID: UUID(),
+            app: chrome,
+            up: 700,
+            down: 20,
+            at: t0,
+            route: .proxy(profileID: UUID())
+        )
+        agg.recordDelta(
+            flowID: UUID(),
+            app: chrome,
+            up: 3,
+            down: 600,
+            at: t0,
+            routeKindOverride: .unknown
+        )
+
+        // Other apps must not leak into an app-scoped route breakdown.
+        agg.recordDelta(
+            flowID: UUID(),
+            app: safari,
+            up: 1_000_000,
+            down: 1_000_000,
+            at: t0,
+            route: .direct
+        )
+
+        let result = agg.routeDirectionalTotals(
+            for: chrome,
+            from: t0.addingTimeInterval(-1),
+            to: t0.addingTimeInterval(60),
+            preferredGranularity: .oneSecond
+        )
+
+        XCTAssertEqual(result.direct.bytesUp, 9_000)
+        XCTAssertEqual(result.direct.bytesDown, 100)
+        XCTAssertEqual(result.systemProxy.bytesUp, 50)
+        XCTAssertEqual(result.systemProxy.bytesDown, 8_000)
+        XCTAssertEqual(result.customProxy.bytesUp, 700)
+        XCTAssertEqual(result.customProxy.bytesDown, 20)
+        XCTAssertEqual(result.unknown.bytesUp, 3)
+        XCTAssertEqual(result.unknown.bytesDown, 600)
+        XCTAssertEqual(result.proxied.bytesUp, 750)
+        XCTAssertEqual(result.proxied.bytesDown, 8_020)
+        XCTAssertEqual(result.all.bytesUp, 9_753)
+        XCTAssertEqual(result.all.bytesDown, 8_720)
+    }
+
+    func testRecordDeltaRouteKindOverrideStoresUnknownRoute() {
+        let agg = TelemetryAggregator()
+        let t0 = Date(timeIntervalSince1970: 1_700_100_100)
+
+        agg.recordDelta(
+            flowID: UUID(),
+            app: chrome,
+            up: 321,
+            down: 654,
+            at: t0,
+            route: .systemProxy,
+            routeKindOverride: .unknown
+        )
+
+        let result = agg.routeDirectionalTotals(
+            for: nil,
+            from: t0.addingTimeInterval(-1),
+            to: t0.addingTimeInterval(60),
+            preferredGranularity: .oneSecond
+        )
+        XCTAssertEqual(result.unknown.bytesUp, 321)
+        XCTAssertEqual(result.unknown.bytesDown, 654)
+        XCTAssertEqual(result.systemProxy.totalBytes, 0)
+    }
+
     func testByteFormat() {
         XCTAssertEqual(ByteFormat.string(for: 512), "512 B")
         XCTAssertTrue(ByteFormat.string(for: 3_702_823_424).contains("GB") || ByteFormat.string(for: 3_702_823_424).contains("3."))

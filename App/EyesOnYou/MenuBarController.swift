@@ -72,7 +72,10 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             .environmentObject(LocalizationStore.shared)
 
         let host = NSHostingController(rootView: AnyView(root))
-        let size = preferredPopoverSize(appCount: currentMenuAppCount(in: model))
+        let size = preferredPopoverSize(
+            appCount: currentMenuAppCount(in: model),
+            showsUnattributed: hasUnattributedTraffic(in: model)
+        )
         host.view.frame = NSRect(origin: .zero, size: size)
 
         let pop = NSPopover()
@@ -95,20 +98,31 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     }
 
     /// Keep `NSPopover.contentSize` aligned with adaptive SwiftUI height.
-    func applyPopoverContentSize(appCount: Int) {
-        let size = preferredPopoverSize(appCount: appCount)
+    func applyPopoverContentSize(appCount: Int, showsUnattributed: Bool) {
+        let size = preferredPopoverSize(
+            appCount: appCount,
+            showsUnattributed: showsUnattributed
+        )
         if let host = hostingController {
             host.view.frame = NSRect(origin: .zero, size: size)
         }
         popover?.contentSize = size
     }
 
-    private func preferredPopoverSize(appCount: Int) -> NSSize {
+    private func preferredPopoverSize(
+        appCount: Int,
+        showsUnattributed: Bool
+    ) -> NSSize {
         let height = MenuBarPopoverSizing.preferredHeight(
             appCount: appCount,
-            screenHeight: popoverScreenVisibleHeight
+            screenHeight: popoverScreenVisibleHeight,
+            showsUnattributed: showsUnattributed
         )
         return NSSize(width: MenuBarPopoverSizing.width, height: height)
+    }
+
+    private func hasUnattributedTraffic(in model: AppModel) -> Bool {
+        model.unattributedDownBps + model.unattributedUpBps > 0
     }
 
     private func currentMenuAppCount(in model: AppModel) -> Int {
@@ -157,6 +171,8 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             for: style,
             directDownBps: model.directDownBps,
             proxyDownBps: model.proxyDownBps,
+            unattributedDownBps: model.unattributedDownBps,
+            unattributedUpBps: model.unattributedUpBps,
             totalDownBps: model.rateDownBps,
             totalUpBps: model.rateUpBps,
             directLabel: l10n.t("status.path.direct"),
@@ -206,13 +222,19 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         let up = ByteFormat.rateMBps(bytesPerSecond: model.rateUpBps)
         let dPct = Int((model.directShare * 100).rounded())
         let pPct = Int((model.proxyShare * 100).rounded())
-        button.toolTip = """
-        \(AppBrand.displayName)
-        \(l10n.t("status.path.total")) ↓ \(down)  ↑ \(up)
-        \(l10n.t("status.path.direct")) ↓ \(ByteFormat.rateMBps(bytesPerSecond: model.directDownBps))  ↑ \(ByteFormat.rateMBps(bytesPerSecond: model.directUpBps))  (\(dPct)%)
-        \(l10n.t("status.path.proxy")) ↓ \(ByteFormat.rateMBps(bytesPerSecond: model.proxyDownBps))  ↑ \(ByteFormat.rateMBps(bytesPerSecond: model.proxyUpBps))  (\(pPct)%)
-        \(l10n.t("menu.menuStyle")): \(l10n.t(style.localizationKey))
-        """
+        var tooltipLines = [
+            AppBrand.displayName,
+            "\(l10n.t("status.path.total")) ↓ \(down)  ↑ \(up)",
+            "\(l10n.t("status.path.direct")) ↓ \(ByteFormat.rateMBps(bytesPerSecond: model.directDownBps))  ↑ \(ByteFormat.rateMBps(bytesPerSecond: model.directUpBps))  (\(dPct)%)",
+            "\(l10n.t("status.path.proxy")) ↓ \(ByteFormat.rateMBps(bytesPerSecond: model.proxyDownBps))  ↑ \(ByteFormat.rateMBps(bytesPerSecond: model.proxyUpBps))  (\(pPct)%)"
+        ]
+        if model.unattributedDownBps + model.unattributedUpBps > 0 {
+            tooltipLines.append(
+                "\(l10n.t("status.path.unattributed")) ↓ \(ByteFormat.rateMBps(bytesPerSecond: model.unattributedDownBps))  ↑ \(ByteFormat.rateMBps(bytesPerSecond: model.unattributedUpBps))"
+            )
+        }
+        tooltipLines.append("\(l10n.t("menu.menuStyle")): \(l10n.t(style.localizationKey))")
+        button.toolTip = tooltipLines.joined(separator: "\n")
     }
 
     // MARK: - Click handling
@@ -250,7 +272,10 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
                     .environmentObject(model)
                     .environmentObject(LocalizationStore.shared)
             )
-            applyPopoverContentSize(appCount: currentMenuAppCount(in: model))
+            applyPopoverContentSize(
+                appCount: currentMenuAppCount(in: model),
+                showsUnattributed: hasUnattributedTraffic(in: model)
+            )
         }
         refreshPopoverAppearance()
 
@@ -395,6 +420,8 @@ private enum MenuBarStatusItemMetrics {
         for style: AppModel.MenuBarDisplayStyle,
         directDownBps: Double,
         proxyDownBps: Double,
+        unattributedDownBps: Double,
+        unattributedUpBps: Double,
         totalDownBps: Double,
         totalUpBps: Double,
         directLabel: String,
@@ -416,7 +443,15 @@ private enum MenuBarStatusItemMetrics {
                 textWidth("↓\(shortRate(directDownBps))"),
                 textWidth("↓\(shortRate(proxyDownBps))")
             )
-            contentWidth = sparklineWidth + outerSpacing + labelWidth + labelRateSpacing + rateWidth
+            let attributedWidth =
+                sparklineWidth + outerSpacing + labelWidth + labelRateSpacing + rateWidth
+            if unattributedDownBps + unattributedUpBps > 0 {
+                contentWidth = attributedWidth
+                    + outerSpacing
+                    + textWidth("?↓\(shortRate(unattributedDownBps))")
+            } else {
+                contentWidth = attributedWidth
+            }
         }
 
         // Round up and retain one point for font fallback / fractional metrics.
@@ -506,6 +541,13 @@ struct MenuBarStatusItemView: View {
                     }
                     .font(.system(size: 8, weight: .semibold, design: .monospaced))
                     .monospacedDigit()
+                    if model.unattributedDownBps + model.unattributedUpBps > 0 {
+                        Text("?↓\(shortRate(model.unattributedDownBps))")
+                            .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(EyesOnYouTheme.textSecondary)
+                            .monospacedDigit()
+                            .accessibilityLabel(l10n.t("status.path.unattributed"))
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             }

@@ -57,11 +57,12 @@ resolve_version() {
     normalize_version "${GITHUB_REF#refs/tags/}"
     return
   fi
-  if [[ -f "$DIST_DIR/version.txt" ]]; then
-    normalize_version "$(tr -d '[:space:]' < "$DIST_DIR/version.txt")"
+  if [[ -f "$ROOT/App/EyesOnYou/Info.plist" ]]; then
+    /usr/libexec/PlistBuddy -c \
+      'Print :CFBundleShortVersionString' "$ROOT/App/EyesOnYou/Info.plist"
     return
   fi
-  /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/App/EyesOnYou/Info.plist"
+  normalize_version "$(tr -d '[:space:]' < "$DIST_DIR/version.txt")"
 }
 
 need() {
@@ -86,18 +87,17 @@ if [[ "$SKIP_BUILD" -eq 0 ]]; then
 fi
 
 if [[ ! -f "$DMG_PATH" ]]; then
-  # Fallback: any EyesOnYou-*.dmg in dist
-  if compgen -G "$DIST_DIR/EyesOnYou-*.dmg" >/dev/null; then
-    DMG_PATH="$(ls -1t "$DIST_DIR"/EyesOnYou-*.dmg | head -1)"
-    echo "    using: $DMG_PATH"
-  else
-    echo "error: DMG not found. Run ./scripts/build-dmg.sh first or drop --skip-build." >&2
-    exit 1
-  fi
+  echo "error: expected DMG not found: $DMG_PATH" >&2
+  echo "Run ./scripts/build-dmg.sh $VERSION first or drop --skip-build." >&2
+  exit 1
 fi
 
 NOTES_FILE="$DIST_DIR/release-notes.md"
-cat > "$NOTES_FILE" <<EOF
+VERSION_NOTES="$ROOT/docs/releases/${TAG}.md"
+if [[ -f "$VERSION_NOTES" ]]; then
+  cp "$VERSION_NOTES" "$NOTES_FILE"
+else
+  cat > "$NOTES_FILE" <<EOF
 ## EyesOnYou ${VERSION}
 
 ### Install
@@ -106,15 +106,12 @@ cat > "$NOTES_FILE" <<EOF
 3. Launch from Applications
 
 ### Notes
-- CI / ad-hoc builds are for UI and demo telemetry. Live system-extension capture still needs Developer ID signing, notarization, and user approval.
+- EyesOnYou measures live socket activity and whole-Mac network totals while it is running.
+- Traffic that cannot be matched safely to an app or route is shown as **Unattributed** instead of being discarded.
+- The GitHub download is ad-hoc signed and is not notarized. Network Extension features still need Developer ID signing and user approval.
 - In-app update checks this Releases page for \`.dmg\` / \`.pkg\` / \`.zip\` assets.
-
-### Verify (signed builds)
-\`\`\`bash
-codesign --verify --deep --strict --verbose=4 /Applications/EyesOnYou.app
-spctl --assess --type execute --verbose=4 /Applications/EyesOnYou.app
-\`\`\`
 EOF
+fi
 
 GH_ARGS=(release create "$TAG" "$DMG_PATH" --title "EyesOnYou ${VERSION}" --notes-file "$NOTES_FILE")
 if [[ "$DRAFT" -eq 1 ]]; then
@@ -142,7 +139,7 @@ else
     if ! git rev-parse "$TAG" >/dev/null 2>&1; then
       git tag -a "$TAG" -m "EyesOnYou ${VERSION}"
     fi
-    git push origin "$TAG" 2>/dev/null || true
+    git push origin "$TAG"
   fi
   gh "${GH_ARGS[@]}"
 fi

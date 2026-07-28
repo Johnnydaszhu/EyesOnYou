@@ -98,6 +98,14 @@ public final class TelemetryStore: @unchecked Sendable {
 
     public func upsertApp(_ app: AppIdentityKey, displayName: String?, at: Date = Date()) throws -> Int64 {
         lock.lock(); defer { lock.unlock() }
+        return try upsertAppLocked(app, displayName: displayName, at: at)
+    }
+
+    private func upsertAppLocked(
+        _ app: AppIdentityKey,
+        displayName: String?,
+        at: Date = Date()
+    ) throws -> Int64 {
         // Only short-circuit when there is no name to record: the row may have been
         // created by a counter write that had no name yet, and skipping the UPDATE
         // would leave the catalog showing bundle identifiers forever.
@@ -121,9 +129,39 @@ public final class TelemetryStore: @unchecked Sendable {
     }
 
     public func mergeBucket(_ bucket: TrafficBucket) throws {
-        let appID = try upsertApp(bucket.key.app, displayName: nil)
+        try mergeBuckets([bucket])
+    }
+
+    /// Merge a snapshot delta as one SQLite transaction.
+    ///
+    /// A failed row rolls back every preceding row in the batch. Callers can retry
+    /// the complete batch without first discovering how far the previous write got.
+    public func mergeBuckets(_ buckets: [TrafficBucket]) throws {
+        guard !buckets.isEmpty else { return }
         lock.lock(); defer { lock.unlock() }
 
+        let cacheBeforeTransaction = appIDCache
+        var transactionStarted = false
+        do {
+            try exec("BEGIN IMMEDIATE TRANSACTION;")
+            transactionStarted = true
+            for bucket in buckets {
+                try mergeBucketLocked(bucket)
+            }
+            try exec("COMMIT;")
+            transactionStarted = false
+        } catch {
+            if transactionStarted {
+                try? exec("ROLLBACK;")
+            }
+            // App rows created inside the failed transaction no longer exist.
+            appIDCache = cacheBeforeTransaction
+            throw error
+        }
+    }
+
+    private func mergeBucketLocked(_ bucket: TrafficBucket) throws {
+        let appID = try upsertAppLocked(bucket.key.app, displayName: nil)
         let g = bucket.key.granularity.seconds
         let start = bucket.key.bucketStartMs
         let dest = bucket.key.destinationKey
@@ -150,9 +188,7 @@ public final class TelemetryStore: @unchecked Sendable {
 
     public func flushAggregator(_ aggregator: TelemetryAggregator, granularity: BucketGranularity) throws {
         let buckets = aggregator.exportBuckets(granularity: granularity)
-        for bucket in buckets {
-            try mergeBucket(bucket)
-        }
+        try mergeBuckets(buckets)
     }
 
     /// Delete buckets older than `cutoff` at one granularity.

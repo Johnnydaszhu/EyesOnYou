@@ -2,11 +2,20 @@ import Foundation
 import Combine
 import SwiftUI
 import AppKit
+import ServiceManagement
 import EyesOnYouCore
 import EyesOnYouRuleEngine
 import EyesOnYouIPC
 import EyesOnYouProxyCore
 import EyesOnYouStorage
+
+private let unattributedTrafficApp = AppIdentityKey(
+    teamIdentifier: nil,
+    signingIdentifier: "com.example.EyesOnYou.unattributed"
+)
+private let unattributedTrafficFlowID = UUID(
+    uuidString: "E505A115-0000-4000-8000-000000000001"
+)!
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -75,7 +84,10 @@ final class AppModel: ObservableObject {
     @Published var directUpBps: Double = 0
     @Published var proxyDownBps: Double = 0
     @Published var proxyUpBps: Double = 0
-    /// Share of total bandwidth on each path (0...1), sums to ~1 when traffic exists.
+    /// Host bytes whose app or route could not be established from socket evidence.
+    @Published var unattributedDownBps: Double = 0
+    @Published var unattributedUpBps: Double = 0
+    /// Share of total bandwidth on each known path (0...1). The remainder is unattributed.
     @Published var directShare: Double = 1
     @Published var proxyShare: Double = 0
     @Published var topApps: [AppTrafficSnapshot] = []
@@ -113,6 +125,7 @@ final class AppModel: ObservableObject {
     @Published var sparklineRouteDirect: [Double] = []
     @Published var sparklineRouteSystem: [Double] = []
     @Published var sparklineRouteCustom: [Double] = []
+    @Published var sparklineRouteUnknown: [Double] = []
     /// Cumulative traffic trend for the network card (upload / download), rolling samples.
     @Published var periodTrendDown: [Double] = []
     @Published var periodTrendUp: [Double] = []
@@ -165,6 +178,19 @@ final class AppModel: ObservableObject {
     /// Network totals for the selected overview period.
     @Published var periodNetworkUp: UInt64 = 0
     @Published var periodNetworkDown: UInt64 = 0
+    @Published var periodDirectUp: UInt64 = 0
+    @Published var periodDirectDown: UInt64 = 0
+    @Published var periodProxyUp: UInt64 = 0
+    @Published var periodProxyDown: UInt64 = 0
+    @Published var periodUnattributedUp: UInt64 = 0
+    @Published var periodUnattributedDown: UInt64 = 0
+    /// The selected period began before this monitoring process, so it may contain gaps.
+    @Published private(set) var periodMayBeIncomplete = false
+
+    /// Login-item state. Keeping the app running is required for continuous host totals.
+    @Published private(set) var launchAtLoginEnabled = false
+    @Published private(set) var launchAtLoginNeedsApproval = false
+    @Published private(set) var launchAtLoginError: String?
     @Published var rules: [NetworkPolicyRule] = []
     @Published var groups: [AppGroup] = []
     @Published var proxyProfiles: [ProxyProfile] = [] {
@@ -198,11 +224,14 @@ final class AppModel: ObservableObject {
     let policyStore = PolicyStore()
     /// Host-wide interface sampler — fills live rates when NE telemetry is empty.
     private let hostNetworkSampler = HostNetworkSampler()
-    /// Session accumulation of host interface bytes (fallback period totals).
-    private var hostSessionBytesDown: UInt64 = 0
-    private var hostSessionBytesUp: UInt64 = 0
+    private let monitoringStartedAt = Date()
     /// Latest `lsof` socket sample (filled off the main thread).
     private var cachedSocketSnapshot = ActiveSocketSnapshot()
+    /// Process and project attribution for the same socket sample.
+    ///
+    /// Workspace fallback can walk session directories, so it must stay off the
+    /// main actor with the rest of socket collection.
+    private var cachedAttributedSocketProcesses: [AttributedProcess] = []
     private var socketSampleInFlight = false
     /// Apps that already received a synthetic `recordOpen` from socket fallback.
     private var socketOpenedApps: Set<String> = []
@@ -243,7 +272,12 @@ final class AppModel: ObservableObject {
     let alertCenter = AlertCenter()
     private var lastAlertEvaluation: Date?
     private let projectResolver = ProjectResolver()
-    private lazy var attributionResolver = LiveAttributionResolver(projectResolver: projectResolver)
+    private lazy var attributionResolver = LiveAttributionResolver(
+        projectResolver: projectResolver,
+        // Session discovery walks large on-disk histories. The GUI refreshes that
+        // index independently, so the live socket sampler must never wait for it.
+        usesSessionFallback: false
+    )
     private var workspacesRefreshedAt: Date? = nil
     private var workspaceRefreshInFlight = false
     /// Reverse-DNS cache for proxy egress IPs.
@@ -781,6 +815,7 @@ final class AppModel: ObservableObject {
 
         /// Where this row's bytes actually left the machine, measured — never an intent.
         var observedEgress: ObservedEgress {
+            if snapshot.app == unattributedTrafficApp { return .unattributed }
             guard let share = proxyShare else { return .noTraffic }
             if share <= 0.005 { return .direct }
             if share >= 0.995 { return .proxy }
@@ -807,6 +842,8 @@ final class AppModel: ObservableObject {
         case proxy
         /// Both paths carried bytes; the associated value is the proxied fraction.
         case mixed(proxyShare: Double)
+        /// Host bytes were preserved, but socket evidence could not establish the path.
+        case unattributed
     }
 
     /// Live connection state for a ranking row.
@@ -970,6 +1007,7 @@ final class AppModel: ObservableObject {
         openTelemetryStore()
         restorePersistedTelemetry()
         loadAlertPreferences()
+        refreshLaunchAtLoginState()
         refreshPublishedState()
         startTicker()
         scheduleInitialUpdateCheck()
@@ -1018,18 +1056,25 @@ final class AppModel: ObservableObject {
         let dayStart = now.addingTimeInterval(-86_400)
         let dailyTotals = aggregator.topApps(from: dayStart, to: now, limit: 200,
                                              includeSitesForBrowsers: false)
+        let dailyTotalBytes = dailyTotals.reduce(UInt64(0)) {
+            $0 &+ $1.totals.totalBytes
+        }
+        let alertableDailyTotals = dailyTotals.filter {
+            $0.app != unattributedTrafficApp
+        }
         let dailyByApp = Dictionary(
-            dailyTotals.map { ($0.app, $0.totals.totalBytes) },
+            alertableDailyTotals.map { ($0.app, $0.totals.totalBytes) },
             uniquingKeysWith: { a, _ in a }
         )
         let names = Dictionary(
-            dailyTotals.map { ($0.app, $0.displayName) },
+            alertableDailyTotals.map { ($0.app, $0.displayName) },
             uniquingKeysWith: { a, _ in a }
         )
         let burstStart = now.addingTimeInterval(-alertThresholds.burstWindow)
         let burstByApp = Dictionary(
             aggregator.topApps(from: burstStart, to: now, limit: 200,
                                includeSitesForBrowsers: false)
+                .filter { $0.app != unattributedTrafficApp }
                 .map { ($0.app, $0.totals.totalBytes) },
             uniquingKeysWith: { a, _ in a }
         )
@@ -1044,12 +1089,14 @@ final class AppModel: ObservableObject {
                 to: now.addingTimeInterval(86_400),
                 limit: 200
             )) ?? []
-            for row in rows { cumulativeByApp[row.0] = row.2.totalBytes }
+            for row in rows where row.0 != unattributedTrafficApp {
+                cumulativeByApp[row.0] = row.2.totalBytes
+            }
         }
 
         let input = TrafficAlertInput(
             now: now,
-            dailyTotalBytes: dailyByApp.values.reduce(0, &+),
+            dailyTotalBytes: dailyTotalBytes,
             dailyByApp: dailyByApp,
             cumulativeByApp: cumulativeByApp,
             burstByApp: burstByApp,
@@ -1133,16 +1180,6 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// Watermarks must outlive the buckets they describe.
-    ///
-    /// `TelemetryFlusher` writes `current − watermark` and `TelemetryStore.mergeBucket`
-    /// **adds** to the stored row. Forgetting a watermark for a bucket that is still in
-    /// memory therefore makes the next flush re-add that bucket's whole total — the old
-    /// two-day cutoff did exactly that to the two-to-three-day-old minute buckets every
-    /// restore loaded, doubling them on each launch. One day past the aggregator's
-    /// retention guarantees a bucket is gone before its watermark is.
-    private static let watermarkRetention: TimeInterval = 3 * 86_400
-
     /// Write everything recorded since the last flush.
     private func flushTelemetry(now: Date = Date()) {
         guard let flusher = telemetryFlusher else { return }
@@ -1162,7 +1199,9 @@ final class AppModel: ObservableObject {
             try store.prune(granularity: .oneMinute, olderThan: now.addingTimeInterval(-7 * 86_400))
             try store.prune(granularity: .oneHour, olderThan: now.addingTimeInterval(-365 * 86_400))
             try store.pruneOrphanedApps()
-            telemetryFlusher?.forgetWatermarks(endedBefore: now.addingTimeInterval(-Self.watermarkRetention))
+            if let flusher = telemetryFlusher {
+                flusher.forgetWatermarks(notPresentIn: aggregator)
+            }
             alertEngine.pruneState(now: now)
             persistAlertState()
             lastPruneAt = now
@@ -1606,7 +1645,7 @@ final class AppModel: ObservableObject {
                 case .proxy: hit = egress.contains("proxy")
                 // Mixed rows carry bytes on both paths, so either filter should find them.
                 case .mixed: hit = !egress.isDisjoint(with: ["mixed", "direct", "proxy"])
-                case .noTraffic: hit = false
+                case .noTraffic, .unattributed: hit = false
                 }
                 if !hit { return false }
             }
@@ -1846,42 +1885,63 @@ final class AppModel: ObservableObject {
 
     /// Open the dedicated Settings window (language, appearance, protection, updates).
     func openSettings() {
+        refreshLaunchAtLoginState()
         SettingsWindowController.shared.show(model: self)
     }
 
-    /// Split total live rates into direct vs proxy using current route mix shares.
-    private func recomputePathRates() {
-        // Proxy path = system proxy + custom proxy profiles.
-        var dFrac = max(0, routeMix.directPercent) / 100
-        var pFrac = max(0, routeMix.systemProxyPercent + routeMix.customProxyPercent) / 100
-        if !proxyEnabled {
-            dFrac = 1
-            pFrac = 0
+    func setLaunchAtLoginEnabled(_ enabled: Bool) {
+        let service = SMAppService.mainApp
+        launchAtLoginError = nil
+        do {
+            if enabled {
+                if service.status != .enabled {
+                    try service.register()
+                }
+            } else if service.status != .notRegistered {
+                try service.unregister()
+            }
+        } catch {
+            launchAtLoginError = error.localizedDescription
         }
-        let sum = dFrac + pFrac
-        if sum <= 0.000_1 {
-            dFrac = 1
-            pFrac = 0
-        } else {
-            dFrac /= sum
-            pFrac /= sum
+        refreshLaunchAtLoginState()
+    }
+
+    private func refreshLaunchAtLoginState() {
+        switch SMAppService.mainApp.status {
+        case .enabled:
+            publish(\.launchAtLoginEnabled, true)
+            publish(\.launchAtLoginNeedsApproval, false)
+        case .requiresApproval:
+            publish(\.launchAtLoginEnabled, false)
+            publish(\.launchAtLoginNeedsApproval, true)
+        case .notRegistered, .notFound:
+            publish(\.launchAtLoginEnabled, false)
+            publish(\.launchAtLoginNeedsApproval, false)
+        @unknown default:
+            publish(\.launchAtLoginEnabled, false)
+            publish(\.launchAtLoginNeedsApproval, false)
         }
+    }
 
-        let dDownShare = min(1, max(0, dFrac))
-        let dUpShare = min(1, max(0, dFrac))
+    /// Publish direction-preserving live path rates from the current one-second bucket.
+    private func recomputePathRates(_ routes: RouteDirectionalTotals) {
+        let proxied = routes.proxied
+        publish(\.directDownBps, Double(routes.direct.bytesDown))
+        publish(\.directUpBps, Double(routes.direct.bytesUp))
+        publish(\.proxyDownBps, Double(proxied.bytesDown))
+        publish(\.proxyUpBps, Double(proxied.bytesUp))
+        publish(\.unattributedDownBps, Double(routes.unknown.bytesDown))
+        publish(\.unattributedUpBps, Double(routes.unknown.bytesUp))
 
-        publish(\.directDownBps, rateDownBps * dDownShare)
-        publish(\.proxyDownBps, max(0, rateDownBps - directDownBps))
-        publish(\.directUpBps, rateUpBps * dUpShare)
-        publish(\.proxyUpBps, max(0, rateUpBps - directUpBps))
-
-        let total = directDownBps + directUpBps + proxyDownBps + proxyUpBps
-        if total > 1 {
-            publish(\.directShare, (directDownBps + directUpBps) / total)
-            publish(\.proxyShare, (proxyDownBps + proxyUpBps) / total)
+        let total = Double(routes.all.totalBytes)
+        if total > 0 {
+            publish(\.directShare, Double(routes.direct.totalBytes) / total)
+            publish(\.proxyShare, Double(proxied.totalBytes) / total)
         } else {
-            publish(\.directShare, dFrac)
-            publish(\.proxyShare, pFrac)
+            let direct = max(0, routeMix.directPercent) / 100
+            let proxy = max(0, routeMix.systemProxyPercent + routeMix.customProxyPercent) / 100
+            publish(\.directShare, direct)
+            publish(\.proxyShare, proxy)
         }
 
         publish(\.sparklineDirect, Self.appending(sparklineDirect, directDownBps + directUpBps, limit: 40))
@@ -1890,6 +1950,7 @@ final class AppModel: ObservableObject {
         publish(\.sparklineRouteDirect, Self.appending(sparklineRouteDirect, routeMix.directPercent, limit: 40))
         publish(\.sparklineRouteSystem, Self.appending(sparklineRouteSystem, routeMix.systemProxyPercent, limit: 40))
         publish(\.sparklineRouteCustom, Self.appending(sparklineRouteCustom, routeMix.customProxyPercent, limit: 40))
+        publish(\.sparklineRouteUnknown, Self.appending(sparklineRouteUnknown, routeMix.unknownPercent, limit: 40))
     }
 
     /// Header proxy status: 代理 / 配置 / 直连 / 无.
@@ -2081,6 +2142,7 @@ final class AppModel: ObservableObject {
         let periodTo = range.end
         publish(\.periodRangeStart, Self.minuteAligned(periodFrom))
         publish(\.periodRangeEnd, Self.minuteAligned(periodTo))
+        publish(\.periodMayBeIncomplete, periodFrom < monitoringStartedAt.addingTimeInterval(-1))
         publish(
             \.relativeTimeEpoch,
             Int(now.timeIntervalSince1970 / Self.relativeTimeEpochInterval)
@@ -2097,9 +2159,6 @@ final class AppModel: ObservableObject {
         }
 
         let hostRates = hostNetworkSampler.sampleRates(now: now)
-        // Accumulate host deltas for period totals when NE has nothing to show.
-        hostSessionBytesDown &+= hostRates.deltaIn
-        hostSessionBytesUp &+= hostRates.deltaOut
 
         // Without NE telemetry, discover apps via ESTABLISHED sockets and
         // split host interface bytes across them by connection weight.
@@ -2125,22 +2184,35 @@ final class AppModel: ObservableObject {
             publish(\.rateUpBps, 0)
         }
 
+        let liveBucketStart = Date(
+            timeIntervalSince1970: now.timeIntervalSince1970.rounded(.down)
+        )
+        let liveRouteTotals = aggregator.routeDirectionalTotals(
+            for: selectedIdentity,
+            from: liveBucketStart,
+            to: liveBucketStart.addingTimeInterval(1),
+            preferredGranularity: .oneSecond
+        )
+
         publish(\.sparklineDown, Self.appending(sparklineDown, rateDownBps, limit: 40))
         publish(\.sparklineUp, Self.appending(sparklineUp, rateUpBps, limit: 40))
 
-        // Period network totals for active range (optionally scoped to selected app).
-        let periodTotals = aggregator.totals(for: selectedIdentity, from: periodFrom, to: periodTo)
-        if periodTotals.bytesUp > 0 || periodTotals.bytesDown > 0 {
-            publish(\.periodNetworkUp, periodTotals.bytesUp)
-            publish(\.periodNetworkDown, periodTotals.bytesDown)
-        } else if selectedIdentity == nil {
-            // Fallback: session host interface totals while NE telemetry is empty.
-            publish(\.periodNetworkUp, hostSessionBytesUp)
-            publish(\.periodNetworkDown, hostSessionBytesDown)
-        } else {
-            publish(\.periodNetworkUp, 0)
-            publish(\.periodNetworkDown, 0)
-        }
+        // Period totals and path totals come from the same route-preserving rollup.
+        let periodRoutes = aggregator.routeDirectionalTotals(
+            for: selectedIdentity,
+            from: periodFrom,
+            to: periodTo
+        )
+        let periodTotals = periodRoutes.all
+        let periodProxied = periodRoutes.proxied
+        publish(\.periodNetworkUp, periodTotals.bytesUp)
+        publish(\.periodNetworkDown, periodTotals.bytesDown)
+        publish(\.periodDirectUp, periodRoutes.direct.bytesUp)
+        publish(\.periodDirectDown, periodRoutes.direct.bytesDown)
+        publish(\.periodProxyUp, periodProxied.bytesUp)
+        publish(\.periodProxyDown, periodProxied.bytesDown)
+        publish(\.periodUnattributedUp, periodRoutes.unknown.bytesUp)
+        publish(\.periodUnattributedDown, periodRoutes.unknown.bytesDown)
 
         // Cumulative trend: append running period totals each tick so the area chart moves.
         // Scope ignores `periodTo` (usually `now`) so the series is not reset every tick.
@@ -2220,20 +2292,14 @@ final class AppModel: ObservableObject {
         publish(\.allowedConnections, dayTotals.flowsOpened)
 
         let activeRuleCount = policyStore.activeRuleCount() + groups.count
-        let periodRouteShare = aggregator.routeByteShare(
-            for: selectedIdentity,
-            from: periodFrom,
-            to: periodTo
-        )
         publish(\.routeMix, Self.makeRouteMix(
-            share: periodRouteShare,
+            routes: periodRoutes,
             selectedRoute: selectedIdentity.flatMap { id in tops.first(where: { $0.app == id })?.route },
-            proxyEnabled: proxyEnabled,
             systemProxyEnabled: systemProxy.isEnabled,
             blockedFallback: blockedToday,
             activeRules: activeRuleCount
         ))
-        recomputePathRates()
+        recomputePathRates(liveRouteTotals)
 
         // Build ranking rows with group + per-app proxy share.
         // Share is relative to the *active* (non-archived) set so pie + rank stay consistent.
@@ -2466,34 +2532,25 @@ final class AppModel: ObservableObject {
     /// Build proxy-routing card mix from period-scoped byte shares (time range + optional app).
     /// When no flow bytes yet, fall back to selected app route or live macOS system proxy.
     private static func makeRouteMix(
-        share: (direct: UInt64, systemProxy: UInt64, customProxy: UInt64, blockedFlows: UInt64),
+        routes: RouteDirectionalTotals,
         selectedRoute: RouteAction?,
-        proxyEnabled: Bool,
         systemProxyEnabled: Bool,
         blockedFallback: UInt64,
         activeRules: Int
     ) -> RouteMix {
-        let blocked = share.blockedFlows > 0 ? share.blockedFlows : blockedFallback
-
-        if !proxyEnabled {
-            return RouteMix(
-                directPercent: 100,
-                systemProxyPercent: 0,
-                customProxyPercent: 0,
-                blockedCount: blocked,
-                activeRules: activeRules
-            )
-        }
-
-        let total = share.direct &+ share.systemProxy &+ share.customProxy
+        let blocked = routes.all.flowsBlocked > 0 ? routes.all.flowsBlocked : blockedFallback
+        let total = routes.all.totalBytes
         if total > 0 {
-            let d = Double(share.direct) / Double(total) * 100
-            let s = Double(share.systemProxy) / Double(total) * 100
-            let c = max(0, 100 - d - s)
+            let denominator = Double(total)
+            let d = Double(routes.direct.totalBytes) / denominator * 100
+            let s = Double(routes.systemProxy.totalBytes) / denominator * 100
+            let c = Double(routes.customProxy.totalBytes) / denominator * 100
+            let u = max(0, 100 - d - s - c)
             return RouteMix(
                 directPercent: d,
                 systemProxyPercent: s,
                 customProxyPercent: c,
+                unknownPercent: u,
                 blockedCount: blocked,
                 activeRules: activeRules
             )
@@ -2641,6 +2698,7 @@ final class AppModel: ObservableObject {
         let port = systemProxy.httpPort ?? systemProxy.httpsPort ?? systemProxy.socksPort
         let index = directDestinationIndex
         let dnsCache = reverseDNSCache
+        let attributionResolver = attributionResolver
         DispatchQueue.global(qos: .utility).async {
             // Collect connections first so we can reverse-DNS proxy egress IPs.
             let connections = ActiveAppSocketSampler.currentConnections()
@@ -2670,9 +2728,14 @@ final class AppModel: ObservableObject {
                 directIndex: index,
                 resolvedHosts: resolved
             )
+            let attributed = attributionResolver.attribute(
+                snapshot.processes.filter { !$0.isProxyProcess },
+                now: Date()
+            )
             Task { @MainActor in
                 self.reverseDNSCache = resolved
                 self.cachedSocketSnapshot = snapshot
+                self.cachedAttributedSocketProcesses = attributed
                 self.systemProxyNodeIP = snapshot.primaryProxyNodeIP
                 self.socketSampleInFlight = false
             }
@@ -2689,18 +2752,22 @@ final class AppModel: ObservableObject {
         refreshDirectIndexIfNeeded(now: at)
         refreshWorkspacesIfNeeded(now: at)
         scheduleSocketSampleIfNeeded()
+        let totalDown = hostRates.deltaIn
+        let totalUp = hostRates.deltaOut
         let snapshot = cachedSocketSnapshot
-        let samples = snapshot.processes.filter { !$0.isProxyProcess }
-        guard !samples.isEmpty || snapshot.proxyDirectEgress > 0 || snapshot.proxyRemoteEgress > 0 else {
+        let attributedSamples = cachedAttributedSocketProcesses
+        guard !attributedSamples.isEmpty
+                || snapshot.proxyDirectEgress > 0
+                || snapshot.proxyRemoteEgress > 0
+        else {
+            recordUnattributedDelta(down: totalDown, up: totalUp, at: at)
             return
         }
 
         let selfPID = ProcessInfo.processInfo.processIdentifier
         let selfBundle = Bundle.main.bundleIdentifier
         let tunnelActive = HostNetworkSampler.hasActiveTunnelInterface()
-        let localProxyActive = snapshot.hasLocalProxyClient
-            || snapshot.proxyDirectEgress + snapshot.proxyRemoteEgress > 0
-        let weakBypassEvidence = localProxyActive || tunnelActive
+        let weakBypassEvidence = tunnelActive
 
         struct Row {
             var key: AppIdentityKey
@@ -2715,7 +2782,7 @@ final class AppModel: ObservableObject {
         }
 
         var merged: [String: Row] = [:]
-        for attributed in attributionResolver.attribute(samples, now: at) {
+        for attributed in attributedSamples {
             if attributed.pid == selfPID { continue }
             let identity = resolveSocketAppIdentity(attributed)
             let signing = identity.signingIdentifier
@@ -2769,7 +2836,7 @@ final class AppModel: ObservableObject {
             return path
         }
 
-        let rows = Array(merged.values)
+        let rows = merged.values.sorted { $0.key.storageKey < $1.key.storageKey }
         let bypassWeight = rows.reduce(0) { $0 + $1.direct }
         let clientViaWeight = rows.reduce(0) { $0 + $1.viaProxy }
         let proxyDirect = snapshot.proxyDirectEgress
@@ -2791,10 +2858,6 @@ final class AppModel: ObservableObject {
             bytePoolBypass = 0
         }
         let byteTotal = bytePoolDirect + bytePoolProxy + bytePoolBypass
-        guard byteTotal > 0 || !rows.isEmpty else { return }
-
-        let totalDown = hostRates.deltaIn
-        let totalUp = hostRates.deltaOut
 
         // Per-app score: prefer proxy-node (翻墙) vs rule/true direct from observed egress.
         var routeScore: [String: (direct: Int, proxy: Int)] = [:]
@@ -2833,24 +2896,46 @@ final class AppModel: ObservableObject {
             }
         }
 
-        guard totalDown > 0 || totalUp > 0, byteTotal > 0 else {
+        guard totalDown > 0 || totalUp > 0 else {
+            applyObservedRouteScores(routeScore)
+            return
+        }
+        guard byteTotal > 0 else {
+            recordUnattributedDelta(down: totalDown, up: totalUp, at: at)
             applyObservedRouteScores(routeScore)
             return
         }
 
-        let directBytesDown = UInt64((Double(totalDown) * Double(bytePoolDirect) / Double(byteTotal)).rounded())
-        let directBytesUp = UInt64((Double(totalUp) * Double(bytePoolDirect) / Double(byteTotal)).rounded())
-        let proxyBytesDown = UInt64((Double(totalDown) * Double(bytePoolProxy) / Double(byteTotal)).rounded())
-        let proxyBytesUp = UInt64((Double(totalUp) * Double(bytePoolProxy) / Double(byteTotal)).rounded())
-        let bypassBytesDown = UInt64((Double(totalDown) * Double(bytePoolBypass) / Double(byteTotal)).rounded())
-        let bypassBytesUp = UInt64((Double(totalUp) * Double(bytePoolBypass) / Double(byteTotal)).rounded())
+        let poolWeights = [bytePoolDirect, bytePoolProxy, bytePoolBypass].map {
+            UInt64(max(0, $0))
+        }
+        let downPools = ProportionalByteAllocator.split(total: totalDown, weights: poolWeights)
+        let upPools = ProportionalByteAllocator.split(total: totalUp, weights: poolWeights)
+        let directBytesDown = downPools[0]
+        let directBytesUp = upPools[0]
+        let proxyBytesDown = downPools[1]
+        let proxyBytesUp = upPools[1]
+        let bypassBytesDown = downPools[2]
+        let bypassBytesUp = upPools[2]
+        var attributedDown: UInt64 = 0
+        var attributedUp: UInt64 = 0
 
         // Distribute proxy-process DIRECT egress across clients that talk to the local proxy.
-        if clientViaWeight > 0, directBytesDown > 0 || directBytesUp > 0 {
-            for item in rows where item.viaProxy > 0 {
-                let share = Double(item.viaProxy) / Double(clientViaWeight)
-                let down = UInt64((Double(directBytesDown) * share).rounded())
-                let up = UInt64((Double(directBytesUp) * share).rounded())
+        let proxyClients = rows.filter { $0.viaProxy > 0 }
+        let proxyClientWeights = proxyClients.map { UInt64(max(0, $0.viaProxy)) }
+        if useProxyEgressSplit, !proxyClients.isEmpty,
+           directBytesDown > 0 || directBytesUp > 0 {
+            let downs = ProportionalByteAllocator.split(
+                total: directBytesDown,
+                weights: proxyClientWeights
+            )
+            let ups = ProportionalByteAllocator.split(
+                total: directBytesUp,
+                weights: proxyClientWeights
+            )
+            for (index, item) in proxyClients.enumerated() {
+                let down = downs[index]
+                let up = ups[index]
                 // These bytes exited via the proxy's DIRECT rules (e.g. bilibili).
                 // The client's own socket peers are unrelated to this path, and the
                 // proxy's egress hosts belong to the proxy, not any one client — so
@@ -2866,6 +2951,8 @@ final class AppModel: ObservableObject {
                     route: .direct,
                     at: at
                 )
+                attributedDown &+= down
+                attributedUp &+= up
                 let sk = item.key.storageKey
                 var score = routeScore[sk] ?? (direct: 0, proxy: 0)
                 score.direct += Int(min(UInt64(Int.max), down &+ up))
@@ -2873,11 +2960,18 @@ final class AppModel: ObservableObject {
             }
         }
 
-        if clientViaWeight > 0, proxyBytesDown > 0 || proxyBytesUp > 0 {
-            for item in rows where item.viaProxy > 0 {
-                let share = Double(item.viaProxy) / Double(clientViaWeight)
-                let down = UInt64((Double(proxyBytesDown) * share).rounded())
-                let up = UInt64((Double(proxyBytesUp) * share).rounded())
+        if !proxyClients.isEmpty, proxyBytesDown > 0 || proxyBytesUp > 0 {
+            let downs = ProportionalByteAllocator.split(
+                total: proxyBytesDown,
+                weights: proxyClientWeights
+            )
+            let ups = ProportionalByteAllocator.split(
+                total: proxyBytesUp,
+                weights: proxyClientWeights
+            )
+            for (index, item) in proxyClients.enumerated() {
+                let down = downs[index]
+                let up = ups[index]
                 recordSocketDelta(
                     app: item.key,
                     name: item.name,
@@ -2889,6 +2983,8 @@ final class AppModel: ObservableObject {
                     route: .systemProxy,
                     at: at
                 )
+                attributedDown &+= down
+                attributedUp &+= up
                 let sk = item.key.storageKey
                 var score = routeScore[sk] ?? (direct: 0, proxy: 0)
                 score.proxy += Int(min(UInt64(Int.max), down &+ up))
@@ -2902,10 +2998,19 @@ final class AppModel: ObservableObject {
             || (!useProxyEgressSplit && (directBytesDown > 0 || directBytesUp > 0)) {
             let downPool = useProxyEgressSplit ? bypassBytesDown : directBytesDown
             let upPool = useProxyEgressSplit ? bypassBytesUp : directBytesUp
-            for item in rows where item.direct > 0 {
-                let share = Double(item.direct) / Double(bypassWeight)
-                let down = UInt64((Double(downPool) * share).rounded())
-                let up = UInt64((Double(upPool) * share).rounded())
+            let directClients = rows.filter { $0.direct > 0 }
+            let directClientWeights = directClients.map { UInt64(max(0, $0.direct)) }
+            let downs = ProportionalByteAllocator.split(
+                total: downPool,
+                weights: directClientWeights
+            )
+            let ups = ProportionalByteAllocator.split(
+                total: upPool,
+                weights: directClientWeights
+            )
+            for (index, item) in directClients.enumerated() {
+                let down = downs[index]
+                let up = ups[index]
                 recordSocketDelta(
                     app: item.key,
                     name: item.name,
@@ -2917,6 +3022,8 @@ final class AppModel: ObservableObject {
                     route: .direct,
                     at: at
                 )
+                attributedDown &+= down
+                attributedUp &+= up
                 let sk = item.key.storageKey
                 var score = routeScore[sk] ?? (direct: 0, proxy: 0)
                 score.direct += Int(min(UInt64(Int.max), down &+ up))
@@ -2924,6 +3031,12 @@ final class AppModel: ObservableObject {
             }
         }
 
+        assert(attributedDown <= totalDown && attributedUp <= totalUp)
+        recordUnattributedDelta(
+            down: totalDown >= attributedDown ? totalDown - attributedDown : 0,
+            up: totalUp >= attributedUp ? totalUp - attributedUp : 0,
+            at: at
+        )
         applyObservedRouteScores(routeScore)
     }
 
@@ -3009,6 +3122,26 @@ final class AppModel: ObservableObject {
         socketOpenedApps.insert(key)
     }
 
+    /// Preserve host-interface bytes that cannot be assigned without guessing.
+    private func recordUnattributedDelta(down: UInt64, up: UInt64, at: Date) {
+        guard down > 0 || up > 0 else { return }
+        aggregator.setDisplayName(
+            LocalizationStore.shared.t("traffic.unattributed"),
+            for: unattributedTrafficApp
+        )
+        aggregator.recordDelta(
+            flowID: unattributedTrafficFlowID,
+            app: unattributedTrafficApp,
+            up: up,
+            down: down,
+            at: at,
+            route: .inherit,
+            transport: .other,
+            destinationKey: DestinationKey.unknown,
+            routeKindOverride: .unknown
+        )
+    }
+
     /// Split an app's byte delta across its drill-down segments.
     ///
     /// Projects win over hostnames when both are known: an agent talks to the same
@@ -3040,18 +3173,12 @@ final class AppModel: ObservableObject {
             segments = hosts.map { (label: Optional($0), weight: UInt64(1)) }
         }
 
-        let totalWeight = segments.reduce(UInt64(0)) { $0 &+ $1.weight }
-        guard totalWeight > 0 else { return }
-
-        var remainingDown = down
-        var remainingUp = up
+        let weights = segments.map(\.weight)
+        let downParts = ProportionalByteAllocator.split(total: down, weights: weights)
+        let upParts = ProportionalByteAllocator.split(total: up, weights: weights)
         for (index, segment) in segments.enumerated() {
-            let isLast = index == segments.count - 1
-            // Multiply first: a byte delta can be smaller than the weight total.
-            let partDown = isLast ? remainingDown : min(remainingDown, down * segment.weight / totalWeight)
-            let partUp = isLast ? remainingUp : min(remainingUp, up * segment.weight / totalWeight)
-            remainingDown -= partDown
-            remainingUp -= partUp
+            let partDown = downParts[index]
+            let partUp = upParts[index]
             let host = segment.label
             guard partDown > 0 || partUp > 0 else { continue }
             ensureSocketOpen(app: app, name: name, host: host, route: route, at: at)

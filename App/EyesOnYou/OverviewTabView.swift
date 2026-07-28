@@ -166,6 +166,17 @@ struct OverviewTabView: View {
                         title: l10n.t("overview.netUp"),
                         value: ByteFormat.string(for: model.periodNetworkUp)
                     )
+                    if model.periodUnattributedDown > 0 || model.periodUnattributedUp > 0 {
+                        rateInline(
+                            m,
+                            icon: "questionmark.circle",
+                            tint: EyesOnYouTheme.textSecondary,
+                            title: l10n.t("overview.netUnattributedIncluded"),
+                            value: ByteFormat.string(
+                                for: model.periodUnattributedDown &+ model.periodUnattributedUp
+                            )
+                        )
+                    }
                     Spacer(minLength: 0)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -185,16 +196,22 @@ struct OverviewTabView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-                metricTimeCaption(
-                    String(
+                let periodCaption = String(
                         format: l10n.t("overview.cumulativePeriod"),
                         l10n.overviewRangeCaption(
                             start: model.periodRangeStart,
                             end: model.periodRangeEnd
                         )
-                    ),
+                    )
+                metricTimeCaption(
+                    model.periodMayBeIncomplete
+                        ? "\(periodCaption) · \(l10n.t("overview.coveragePartial"))"
+                        : periodCaption,
                     height: footerH,
-                    scale: m.typeScale
+                    scale: m.typeScale,
+                    color: model.periodMayBeIncomplete
+                        ? EyesOnYouTheme.accentAmber
+                        : EyesOnYouTheme.textSecondary
                 )
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -302,10 +319,15 @@ struct OverviewTabView: View {
     /// Short time scope directly inside each speed / total card, so a rate cannot be
     /// mistaken for a cumulative value and the cumulative range remains visible after
     /// the global picker scrolls out of view.
-    private func metricTimeCaption(_ text: String, height: CGFloat, scale: CGFloat) -> some View {
+    private func metricTimeCaption(
+        _ text: String,
+        height: CGFloat,
+        scale: CGFloat,
+        color: Color = EyesOnYouTheme.textSecondary
+    ) -> some View {
         Text(text)
             .font(.system(size: 9 * scale, weight: .medium, design: .rounded))
-            .foregroundStyle(EyesOnYouTheme.textSecondary)
+            .foregroundStyle(color)
             .lineLimit(1)
             .minimumScaleFactor(0.65)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -322,7 +344,9 @@ struct OverviewTabView: View {
         if model.rankingRows.contains(where: { $0.snapshot.totals.totalBytes > 0 }) { return true }
         // Proxy off → 100% direct is the real fail-open policy, not a placeholder.
         if !model.proxyEnabled { return true }
-        return model.routeMix.systemProxyPercent > 0 || model.routeMix.customProxyPercent > 0
+        return model.routeMix.systemProxyPercent > 0
+            || model.routeMix.customProxyPercent > 0
+            || model.routeMix.unknownPercent > 0
     }
 
     private func proxyRoutingCard(_ m: BentoMetrics) -> some View {
@@ -349,6 +373,14 @@ struct OverviewTabView: View {
                         title: l10n.t("overview.routeCustomProxy"),
                         percent: model.routeMix.customProxyPercent
                     )
+                    if model.routeMix.unknownPercent > 0 {
+                        routeLegendChip(
+                            m,
+                            tint: EyesOnYouTheme.textSecondary,
+                            title: l10n.t("overview.routeUnknown"),
+                            percent: model.routeMix.unknownPercent
+                        )
+                    }
                     Spacer(minLength: 0)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -358,7 +390,8 @@ struct OverviewTabView: View {
                     RouteMixAreaChartView(
                         direct: model.sparklineRouteDirect,
                         system: model.sparklineRouteSystem,
-                        custom: model.sparklineRouteCustom
+                        custom: model.sparklineRouteCustom,
+                        unknown: model.sparklineRouteUnknown
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .opacity(hasRouteTrafficSamples ? 1 : 0.28)
@@ -950,6 +983,8 @@ struct OverviewTabView: View {
             return l10n.t("overview.egressProxy")
         case .mixed(let share):
             return "\(l10n.t("overview.egressProxy")) \(Int((share * 100).rounded()))%"
+        case .unattributed:
+            return l10n.t("status.path.unattributed")
         }
     }
 
@@ -957,7 +992,8 @@ struct OverviewTabView: View {
     static func egressWidthSamples(_ l10n: LocalizationStore) -> [String] {
         [
             l10n.t("overview.routeDirect"),
-            "\(l10n.t("overview.egressProxy")) 100%"
+            "\(l10n.t("overview.egressProxy")) 100%",
+            l10n.t("status.path.unattributed")
         ]
     }
 
@@ -1243,6 +1279,7 @@ struct OverviewTabView: View {
         case .noTraffic: tint = EyesOnYouTheme.textSecondary
         case .direct: tint = EyesOnYouTheme.routeDirect
         case .proxy, .mixed: tint = EyesOnYouTheme.routeProxy
+        case .unattributed: tint = EyesOnYouTheme.textSecondary
         }
         return Text(Self.egressLabel(egress, l10n: l10n))
             .font(.system(size: fontSize, weight: .medium))
@@ -1315,7 +1352,7 @@ struct OverviewTabView: View {
             return EyesOnYouTheme.routeProxy
         case .direct:
             return EyesOnYouTheme.routeDirect
-        case .noTraffic:
+        case .noTraffic, .unattributed:
             return EyesOnYouTheme.textSecondary
         }
     }
@@ -1633,11 +1670,12 @@ struct MiniAreaChartView: View {
     }
 }
 
-/// Stacked area chart for proxy routing mix: direct / system / custom shares over time.
+/// Stacked area chart for proxy routing mix, including preserved unknown-route bytes.
 struct RouteMixAreaChartView: View {
     let direct: [Double]
     let system: [Double]
     let custom: [Double]
+    let unknown: [Double]
     var lineWidth: CGFloat = 1.5
     @Environment(\.colorScheme) private var colorScheme
 
@@ -1645,13 +1683,18 @@ struct RouteMixAreaChartView: View {
         GeometryReader { geo in
             let w = max(geo.size.width, 1)
             let h = max(geo.size.height, 1)
-            let count = max(2, max(direct.count, max(system.count, custom.count)))
+            let count = max(
+                2,
+                max(direct.count, max(system.count, max(custom.count, unknown.count)))
+            )
+            let unknownP = padded(unknown, count: count)
             let customP = padded(custom, count: count)
             let systemP = padded(system, count: count)
             let directP = padded(direct, count: count)
-            let customEdge = customP
-            let systemEdge = zipSum(customP, systemP)
-            let directEdge = zipSum(systemEdge, directP)
+            let unknownEdge = unknownP
+            let customEdge = zipSum(unknownEdge, customP)
+            let shiftedSystemEdge = zipSum(customEdge, systemP)
+            let directEdge = zipSum(shiftedSystemEdge, directP)
             let isLight = colorScheme == .light
 
             ZStack {
@@ -1664,7 +1707,15 @@ struct RouteMixAreaChartView: View {
                     .stroke(EyesOnYouTheme.hairline.opacity(0.7), lineWidth: 0.5)
                 }
 
-                stackedBand(lower: Array(repeating: 0.0, count: count), upper: customEdge, width: w, height: h)
+                stackedBand(
+                    lower: Array(repeating: 0.0, count: count),
+                    upper: unknownEdge,
+                    width: w,
+                    height: h
+                )
+                    .fill(EyesOnYouTheme.textSecondary.opacity(isLight ? 0.18 : 0.25))
+
+                stackedBand(lower: unknownEdge, upper: customEdge, width: w, height: h)
                     .fill(
                         LinearGradient(
                             colors: [
@@ -1676,7 +1727,7 @@ struct RouteMixAreaChartView: View {
                         )
                     )
 
-                stackedBand(lower: customEdge, upper: systemEdge, width: w, height: h)
+                stackedBand(lower: customEdge, upper: shiftedSystemEdge, width: w, height: h)
                     .fill(
                         LinearGradient(
                             colors: [
@@ -1688,7 +1739,7 @@ struct RouteMixAreaChartView: View {
                         )
                     )
 
-                stackedBand(lower: systemEdge, upper: directEdge, width: w, height: h)
+                stackedBand(lower: shiftedSystemEdge, upper: directEdge, width: w, height: h)
                     .fill(
                         LinearGradient(
                             colors: [
@@ -1705,7 +1756,7 @@ struct RouteMixAreaChartView: View {
                         EyesOnYouTheme.routeDirect.opacity(isLight ? 0.65 : 0.85),
                         style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
                     )
-                linePath(values: systemEdge, width: w, height: h)
+                linePath(values: shiftedSystemEdge, width: w, height: h)
                     .stroke(
                         EyesOnYouTheme.routeSystem.opacity(isLight ? 0.7 : 0.9),
                         style: StrokeStyle(lineWidth: lineWidth * 0.85, lineCap: .round, lineJoin: .round)
@@ -1714,6 +1765,11 @@ struct RouteMixAreaChartView: View {
                     .stroke(
                         EyesOnYouTheme.routeProxy.opacity(isLight ? 0.7 : 0.9),
                         style: StrokeStyle(lineWidth: lineWidth * 0.85, lineCap: .round, lineJoin: .round)
+                    )
+                linePath(values: unknownEdge, width: w, height: h)
+                    .stroke(
+                        EyesOnYouTheme.textSecondary.opacity(isLight ? 0.55 : 0.75),
+                        style: StrokeStyle(lineWidth: lineWidth * 0.75, lineCap: .round, lineJoin: .round)
                     )
             }
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))

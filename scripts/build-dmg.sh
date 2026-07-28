@@ -12,7 +12,7 @@
 #   DIST_DIR              default <repo>/dist
 #   CODE_SIGN_IDENTITY    default "-" (ad-hoc)
 #   DEVELOPMENT_TEAM      Team ID when using a real signing identity
-#   BUILD_NUMBER          CFBundleVersion (default 1)
+#   BUILD_NUMBER          CFBundleVersion (default from App/EyesOnYou/Info.plist)
 #   NOTARIZE=1            submit DMG with notarytool (needs APPLE_ID / APPLE_TEAM_ID / APPLE_APP_SPECIFIC_PASSWORD)
 set -euo pipefail
 
@@ -30,6 +30,10 @@ plist_version() {
   /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/App/EyesOnYou/Info.plist"
 }
 
+plist_build_number() {
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$ROOT/App/EyesOnYou/Info.plist"
+}
+
 normalize_version() {
   local v="${1:-}"
   v="${v#v}"
@@ -44,6 +48,7 @@ elif [[ -n "${VERSION:-}" ]]; then
 else
   VERSION="$(plist_version)"
 fi
+BUILD_NUMBER="${BUILD_NUMBER:-$(plist_build_number)}"
 
 TAG="v${VERSION}"
 DMG_NAME="${APP_NAME}-${VERSION}.dmg"
@@ -95,7 +100,7 @@ xcodebuild \
   -derivedDataPath "$DERIVED_DATA" \
   -destination "platform=macOS" \
   "MARKETING_VERSION=$VERSION" \
-  "CURRENT_PROJECT_VERSION=${BUILD_NUMBER:-1}" \
+  "CURRENT_PROJECT_VERSION=$BUILD_NUMBER" \
   "${SIGN_ARGS[@]}" \
   build
 
@@ -105,20 +110,31 @@ if [[ ! -d "$APP_PRODUCT" ]]; then
   exit 1
 fi
 
-# Info.plist is static in-repo; stamp the marketing version onto the built bundle.
-/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" \
-  "$APP_PRODUCT/Contents/Info.plist" 2>/dev/null \
-  || /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $VERSION" \
-    "$APP_PRODUCT/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUILD_NUMBER:-1}" \
-  "$APP_PRODUCT/Contents/Info.plist" 2>/dev/null \
-  || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string ${BUILD_NUMBER:-1}" \
-    "$APP_PRODUCT/Contents/Info.plist"
+EXTENSION_PRODUCT="$APP_PRODUCT/Contents/Library/SystemExtensions/EyesOnYouNetworkExtension.systemextension"
 
-# Stamping Info.plist changes the sealed bundle after Xcode signs it. Refresh
-# only the outer app signature while preserving the entitlements and designated
-# requirement that Xcode produced for the selected identity.
-echo "==> refresh app signature after version stamp"
+stamp_bundle_version() {
+  local bundle="$1"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" \
+    "$bundle/Contents/Info.plist" 2>/dev/null \
+    || /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $VERSION" \
+      "$bundle/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" \
+    "$bundle/Contents/Info.plist" 2>/dev/null \
+    || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $BUILD_NUMBER" \
+      "$bundle/Contents/Info.plist"
+}
+
+# Both bundles use static Info.plists. Stamp them together so the embedded
+# extension can never ship with a stale version or build number.
+stamp_bundle_version "$APP_PRODUCT"
+if [[ -d "$EXTENSION_PRODUCT" ]]; then
+  stamp_bundle_version "$EXTENSION_PRODUCT"
+fi
+
+# Stamping changes sealed resources. Re-sign the nested extension first, then
+# the outer app, preserving the entitlements and designated requirements Xcode
+# produced for the selected identity.
+echo "==> refresh signatures after version stamp"
 RESIGN_ARGS=(
   --force
   --sign "$CODE_SIGN_IDENTITY"
@@ -126,6 +142,9 @@ RESIGN_ARGS=(
 )
 if [[ "$CODE_SIGN_IDENTITY" != "-" ]]; then
   RESIGN_ARGS+=(--timestamp)
+fi
+if [[ -d "$EXTENSION_PRODUCT" ]]; then
+  /usr/bin/codesign "${RESIGN_ARGS[@]}" "$EXTENSION_PRODUCT"
 fi
 /usr/bin/codesign "${RESIGN_ARGS[@]}" "$APP_PRODUCT"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_PRODUCT"
@@ -139,8 +158,9 @@ ${APP_NAME} ${VERSION}
 
 1. Drag ${APP_NAME}.app into Applications.
 2. Launch ${APP_NAME} from Applications (or Spotlight).
-3. System extension / filter features require a signed build and user approval.
-   Ad-hoc CI builds run in demo-telemetry mode for UI development.
+3. Keep ${APP_NAME} running to measure live network traffic.
+4. Traffic that cannot be matched to an app is shown as Unattributed.
+5. Network Extension features require Developer ID signing and user approval.
 
 https://github.com/Johnnydaszhu/EyesOnYou
 EOF

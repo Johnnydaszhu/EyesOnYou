@@ -174,6 +174,24 @@ struct SettingsView: View {
             }
 
             Section {
+                Toggle(l10n.t("settings.launchAtLogin"), isOn: Binding(
+                    get: { model.launchAtLoginEnabled },
+                    set: { model.setLaunchAtLoginEnabled($0) }
+                ))
+                Text(l10n.t("settings.launchAtLogin.hint"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if model.launchAtLoginNeedsApproval {
+                    Text(l10n.t("settings.launchAtLogin.approval"))
+                        .font(.caption)
+                        .foregroundStyle(EyesOnYouTheme.accentAmber)
+                }
+                if let error = model.launchAtLoginError {
+                    Text(error)
+                        .font(.caption2)
+                        .foregroundStyle(EyesOnYouTheme.accentRed)
+                        .textSelection(.enabled)
+                }
                 Text(l10n.t("settings.extensionNote"))
                     .font(.caption)
                     .foregroundStyle(.secondary)

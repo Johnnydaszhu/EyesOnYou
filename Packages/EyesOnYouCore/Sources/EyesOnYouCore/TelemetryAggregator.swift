@@ -46,6 +46,38 @@ public struct TrafficBucket: Sendable, Equatable {
     }
 }
 
+/// Direction-preserving byte totals for each observable network route.
+///
+/// Keeping upload and download separate here avoids deriving both directions from
+/// one combined route percentage. `unknown` also absorbs the impossible case of
+/// bytes recorded on a blocked route so callers never silently lose byte totals.
+public struct RouteDirectionalTotals: Sendable, Equatable {
+    public var direct: TrafficTotals
+    public var systemProxy: TrafficTotals
+    public var customProxy: TrafficTotals
+    public var unknown: TrafficTotals
+
+    public init(
+        direct: TrafficTotals = TrafficTotals(),
+        systemProxy: TrafficTotals = TrafficTotals(),
+        customProxy: TrafficTotals = TrafficTotals(),
+        unknown: TrafficTotals = TrafficTotals()
+    ) {
+        self.direct = direct
+        self.systemProxy = systemProxy
+        self.customProxy = customProxy
+        self.unknown = unknown
+    }
+
+    public var proxied: TrafficTotals {
+        systemProxy + customProxy
+    }
+
+    public var all: TrafficTotals {
+        direct + systemProxy + customProxy + unknown
+    }
+}
+
 /// How much history each granularity keeps **in memory**.
 ///
 /// A process that ingests continuously would otherwise grow without bound: nothing
@@ -209,7 +241,8 @@ public final class TelemetryAggregator: @unchecked Sendable {
         at: Date = Date(),
         route: RouteAction = .direct,
         transport: TransportProtocol = .tcp,
-        destinationKey: String? = nil
+        destinationKey: String? = nil,
+        routeKindOverride: RouteKind? = nil
     ) {
         guard up > 0 || down > 0 else { return }
         lock.lock()
@@ -223,7 +256,7 @@ public final class TelemetryAggregator: @unchecked Sendable {
         let slotKey = SlotKey(
             app: app,
             destinationKey: dest,
-            routeKind: RouteKind(action: route),
+            routeKind: routeKindOverride ?? RouteKind(action: route),
             transport: transport
         )
         for granularity in BucketGranularity.allCases {
@@ -524,10 +557,11 @@ public final class TelemetryAggregator: @unchecked Sendable {
     }
 
     /// Byte share by route kind over a wall-clock range (optionally scoped to one app).
-    /// Per-app byte totals split into direct vs proxied, in one pass over the buckets.
+    /// Per-app known-route byte totals split into direct vs proxied, in one pass.
     ///
     /// Backs the per-app "proxy share" label: `proxied` is systemProxy + customProxy
-    /// route bytes, `direct` is everything else the app actually moved.
+    /// route bytes. Unknown and blocked-route bytes are omitted instead of being
+    /// mislabeled as direct.
     public func routeByteShareByApp(
         from: Date,
         to: Date,
@@ -544,8 +578,10 @@ public final class TelemetryAggregator: @unchecked Sendable {
             switch key.routeKind {
             case .systemProxy, .customProxy:
                 entry.proxied &+= bytes
-            case .direct, .blocked, .unknown:
+            case .direct:
                 entry.direct &+= bytes
+            case .blocked, .unknown:
+                return
             }
             byApp[key.app] = entry
         }
@@ -570,18 +606,48 @@ public final class TelemetryAggregator: @unchecked Sendable {
             let bytes = totals.totalBytes
             blocked &+= totals.flowsBlocked
             switch key.routeKind {
-            case .direct, .unknown:
+            case .direct:
                 direct &+= bytes
             case .systemProxy:
                 system &+= bytes
             case .customProxy:
                 custom &+= bytes
-            case .blocked:
-                // Blocked path still counts under share as non-routed; fold into direct for mix UI.
-                direct &+= bytes
+            case .blocked, .unknown:
+                return
             }
         }
         return (direct, system, custom, blocked)
+    }
+
+    /// Upload and download totals split by route over a wall-clock range.
+    ///
+    /// Unlike `routeByteShare`, this result does not collapse directions into one
+    /// percentage. Callers can therefore present asymmetric direct/proxy rates
+    /// without applying the same route ratio to upload and download.
+    public func routeDirectionalTotals(
+        for app: AppIdentityKey?,
+        from: Date,
+        to: Date,
+        preferredGranularity: BucketGranularity? = nil
+    ) -> RouteDirectionalTotals {
+        lock.lock()
+        defer { lock.unlock() }
+
+        var result = RouteDirectionalTotals()
+        forEachBucket(from: from, to: to, preferred: preferredGranularity) { key, totals in
+            if let app, key.app != app { return }
+            switch key.routeKind {
+            case .direct:
+                result.direct.merge(totals)
+            case .systemProxy:
+                result.systemProxy.merge(totals)
+            case .customProxy:
+                result.customProxy.merge(totals)
+            case .unknown, .blocked:
+                result.unknown.merge(totals)
+            }
+        }
+        return result
     }
 
     public func recentConnections(limit: Int = 20) -> [LiveConnection] {

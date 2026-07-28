@@ -1,6 +1,7 @@
 import XCTest
 @testable import EyesOnYouStorage
 import EyesOnYouCore
+import SQLite3
 
 final class TelemetryFlusherTests: XCTestCase {
     private var directory: URL!
@@ -37,6 +38,35 @@ final class TelemetryFlusherTests: XCTestCase {
         )
     }
 
+    private func executeSQL(_ sql: String) throws {
+        var db: OpaquePointer?
+        let path = directory.appendingPathComponent("telemetry.sqlite").path
+        guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+            let message = db.map { String(cString: sqlite3_errmsg($0)) } ?? "unknown"
+            if let db { sqlite3_close(db) }
+            throw NSError(
+                domain: "TelemetryFlusherTests.SQLite",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: message]
+            )
+        }
+        defer { sqlite3_close(db) }
+
+        var error: UnsafeMutablePointer<CChar>?
+        let result = sqlite3_exec(db, sql, nil, nil, &error)
+        guard result == SQLITE_OK else {
+            let message = error.map { String(cString: $0) }
+                ?? db.map { String(cString: sqlite3_errmsg($0)) }
+                ?? "unknown"
+            sqlite3_free(error)
+            throw NSError(
+                domain: "TelemetryFlusherTests.SQLite",
+                code: Int(result),
+                userInfo: [NSLocalizedDescriptionKey: message]
+            )
+        }
+    }
+
     func testFlushingTwiceDoesNotDoubleCount() throws {
         let now = Date()
         let aggregator = makeAggregator(up: 100, down: 900, at: now)
@@ -68,6 +98,56 @@ final class TelemetryFlusherTests: XCTestCase {
         let totals = try storedTotals(around: now)
         XCTAssertEqual(totals.bytesUp, 150)
         XCTAssertEqual(totals.bytesDown, 1_000)
+    }
+
+    func testFailedBatchRollsBackAndCanBeRetriedWithoutLosingWatermarks() throws {
+        let now = Date()
+        let aggregator = TelemetryAggregator()
+        for (destination, up, down) in [
+            ("project:First", UInt64(100), UInt64(900)),
+            ("project:Second", UInt64(50), UInt64(150)),
+        ] {
+            let flow = FlowDescriptor(app: app, remoteHostname: destination, openedAt: now)
+            aggregator.recordOpen(flow, route: .direct)
+            aggregator.recordDelta(
+                flowID: flow.id,
+                app: app,
+                up: up,
+                down: down,
+                at: now,
+                route: .direct
+            )
+        }
+        let flusher = TelemetryFlusher(store: store, granularities: [.oneMinute])
+
+        // Abort the second row after the first row has already been inserted inside
+        // the transaction. The whole batch must disappear, including its app row.
+        try executeSQL("""
+        CREATE TRIGGER fail_second_bucket
+        BEFORE INSERT ON traffic_buckets
+        WHEN (SELECT COUNT(*) FROM traffic_buckets) = 1
+        BEGIN
+            SELECT RAISE(ABORT, 'injected bucket failure');
+        END;
+        """)
+
+        XCTAssertThrowsError(try flusher.flush(aggregator))
+        let failedTotals = try storedTotals(around: now)
+        XCTAssertEqual(failedTotals.bytesUp, 0)
+        XCTAssertEqual(failedTotals.bytesDown, 0)
+        XCTAssertEqual(try store.statistics().buckets, 0)
+        XCTAssertEqual(try store.statistics().apps, 0)
+
+        try executeSQL("DROP TRIGGER fail_second_bucket;")
+
+        // A failed flush must retain the previous watermark so the complete snapshot
+        // is retried. Once committed, the next identical flush must be a no-op.
+        XCTAssertEqual(try flusher.flush(aggregator), 2)
+        let retriedTotals = try storedTotals(around: now)
+        XCTAssertEqual(retriedTotals.bytesUp, 150)
+        XCTAssertEqual(retriedTotals.bytesDown, 1_050)
+        XCTAssertEqual(try flusher.flush(aggregator), 0)
+        XCTAssertEqual(try storedTotals(around: now).bytesDown, 1_050)
     }
 
     func testSeedingPreventsRestoredHistoryFromBeingWrittenAgain() throws {
@@ -139,17 +219,97 @@ final class TelemetryFlusherTests: XCTestCase {
         XCTAssertEqual(shrunk?.bytesDown, 100)
     }
 
-    func testForgetWatermarksDropsOnlyOldBuckets() throws {
+    func testForgetWatermarksDropsOnlyBucketsNoLongerInAggregator() throws {
         let now = Date()
-        let old = now.addingTimeInterval(-86_400)
+        let removedApp = AppIdentityKey(
+            teamIdentifier: "TEAM",
+            signingIdentifier: "com.example.Removed"
+        )
+        let aggregator = TelemetryAggregator()
+        let removedFlow = FlowDescriptor(
+            app: removedApp,
+            remoteHostname: "project:Removed",
+            openedAt: now
+        )
+        let retainedFlow = FlowDescriptor(
+            app: app,
+            remoteHostname: "project:Retained",
+            openedAt: now
+        )
+        aggregator.recordOpen(removedFlow, route: .direct)
+        aggregator.recordDelta(
+            flowID: removedFlow.id,
+            app: removedApp,
+            up: 10,
+            down: 20,
+            at: now,
+            route: .direct
+        )
+        aggregator.recordOpen(retainedFlow, route: .direct)
+        aggregator.recordDelta(
+            flowID: retainedFlow.id,
+            app: app,
+            up: 30,
+            down: 40,
+            at: now,
+            route: .direct
+        )
         let flusher = TelemetryFlusher(store: store)
-        try flusher.flush(makeAggregator(up: 10, down: 20, at: old))
-        try flusher.flush(makeAggregator(up: 30, down: 40, at: now))
+        try flusher.flush(aggregator)
 
-        flusher.forgetWatermarks(endedBefore: now.addingTimeInterval(-3_600))
-        // The recent bucket keeps its watermark, so re-flushing it writes nothing.
-        let recent = makeAggregator(up: 30, down: 40, at: now)
-        XCTAssertEqual(try flusher.flush(recent), 0)
+        aggregator.purge(app: removedApp)
+        XCTAssertGreaterThan(flusher.forgetWatermarks(notPresentIn: aggregator), 0)
+
+        // The retained bucket keeps its watermark, so reconciling and flushing it is a no-op.
+        XCTAssertEqual(try flusher.flush(aggregator), 0)
+        XCTAssertEqual(try storedTotals(around: now).bytesDown, 60)
+    }
+
+    func testWatermarkReconciliationDoesNotReplayRetainedHourOrDayBuckets() throws {
+        let now = Date()
+        let old = now.addingTimeInterval(-10 * 86_400)
+        let aggregator = TelemetryAggregator(retention: .live)
+        let flow = FlowDescriptor(
+            app: app,
+            remoteHostname: "project:Historical",
+            openedAt: old
+        )
+        aggregator.recordOpen(flow, route: .direct)
+        aggregator.recordDelta(
+            flowID: flow.id,
+            app: app,
+            up: 1_000,
+            down: 4_000,
+            at: old,
+            route: .direct
+        )
+
+        let flusher = TelemetryFlusher(
+            store: store,
+            granularities: [.oneHour, .oneDay]
+        )
+        XCTAssertEqual(try flusher.flush(aggregator), 2)
+        XCTAssertEqual(flusher.forgetWatermarks(notPresentIn: aggregator), 0)
+        XCTAssertEqual(try flusher.flush(aggregator), 0)
+
+        let from = old.addingTimeInterval(-86_400)
+        let to = old.addingTimeInterval(86_400)
+        let hourly = try store.queryTotals(
+            app: nil,
+            granularity: .oneHour,
+            from: from,
+            to: to
+        )
+        let daily = try store.queryTotals(
+            app: nil,
+            granularity: .oneDay,
+            from: from,
+            to: to
+        )
+        XCTAssertEqual(hourly.bytesUp, 1_000)
+        XCTAssertEqual(hourly.bytesDown, 4_000)
+        XCTAssertEqual(daily.bytesUp, 1_000)
+        XCTAssertEqual(daily.bytesDown, 4_000)
     }
 }
 
@@ -282,7 +442,7 @@ final class TelemetryStoreQueryTests: XCTestCase {
         flusher.seed(with: restored)
 
         // What `pruneTelemetry` does right after a restore, then the next flush.
-        flusher.forgetWatermarks(endedBefore: now.addingTimeInterval(-3 * 86_400))
+        flusher.forgetWatermarks(notPresentIn: aggregator)
         try flusher.flush(aggregator)
 
         let rows = try store.loadBuckets(

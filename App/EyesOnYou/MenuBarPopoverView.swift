@@ -8,23 +8,35 @@ enum MenuBarPopoverSizing {
     static let rowHeight: CGFloat = 32
     /// Section title above the scrollable rows.
     static let listHeaderHeight: CGFloat = 18
+    /// Extra path row shown when host bytes cannot be assigned to an app.
+    static let unattributedRowHeight: CGFloat = 20
     /// Traffic block + list/footer paddings + footer (excludes list header & rows).
     static let chromeHeight: CGFloat = 235
     /// Cap popover at 3/5 of the hosting screen's visible height.
     static let maxScreenFraction: CGFloat = 3.0 / 5.0
 
-    private static var baseHeight: CGFloat {
-        chromeHeight + listHeaderHeight
+    private static func baseHeight(showsUnattributed: Bool) -> CGFloat {
+        chromeHeight + listHeaderHeight + (showsUnattributed ? unattributedRowHeight : 0)
     }
 
-    static func preferredHeight(appCount: Int, screenHeight: CGFloat) -> CGFloat {
+    static func preferredHeight(
+        appCount: Int,
+        screenHeight: CGFloat,
+        showsUnattributed: Bool
+    ) -> CGFloat {
         let rows = CGFloat(max(appCount, 0))
+        let baseHeight = baseHeight(showsUnattributed: showsUnattributed)
         let ideal = baseHeight + rows * rowHeight
         let maxHeight = max(screenHeight * maxScreenFraction, baseHeight)
         return min(ideal, maxHeight)
     }
 
-    static func listRowsHeight(appCount: Int, popoverHeight: CGFloat) -> CGFloat {
+    static func listRowsHeight(
+        appCount: Int,
+        popoverHeight: CGFloat,
+        showsUnattributed: Bool
+    ) -> CGFloat {
+        let baseHeight = baseHeight(showsUnattributed: showsUnattributed)
         let available = max(0, popoverHeight - baseHeight)
         let ideal = CGFloat(max(appCount, 0)) * rowHeight
         return min(ideal, available)
@@ -45,7 +57,8 @@ struct MenuBarPopoverView: View {
     private var popoverHeight: CGFloat {
         MenuBarPopoverSizing.preferredHeight(
             appCount: visibleApps.count,
-            screenHeight: MenuBarController.shared.popoverScreenVisibleHeight
+            screenHeight: MenuBarController.shared.popoverScreenVisibleHeight,
+            showsUnattributed: showsUnattributed
         )
     }
 
@@ -84,10 +97,16 @@ struct MenuBarPopoverView: View {
         .onChange(of: visibleApps.count) { _ in
             syncPopoverContentSize()
         }
+        .onChange(of: showsUnattributed) { _ in
+            syncPopoverContentSize()
+        }
     }
 
     private func syncPopoverContentSize() {
-        MenuBarController.shared.applyPopoverContentSize(appCount: visibleApps.count)
+        MenuBarController.shared.applyPopoverContentSize(
+            appCount: visibleApps.count,
+            showsUnattributed: showsUnattributed
+        )
     }
 
     // MARK: - Main panel
@@ -139,6 +158,15 @@ struct MenuBarPopoverView: View {
                     share: pathShare(isDirect: false),
                     color: EyesOnYouTheme.routeProxy
                 )
+                if unattributedTotal > 0 {
+                    pathRateLine(
+                        label: l10n.t("status.path.unattributed"),
+                        downText: unattributedDownText,
+                        upText: unattributedUpText,
+                        share: unattributedShare,
+                        color: EyesOnYouTheme.textSecondary
+                    )
+                }
             }
 
             periodSegmentedControl
@@ -160,8 +188,7 @@ struct MenuBarPopoverView: View {
                 bytesPerSecond: isDirect ? model.directDownBps : model.proxyDownBps
             )
         }
-        let share = pathShare(isDirect: isDirect)
-        let bytes = UInt64((Double(model.periodNetworkDown) * share).rounded())
+        let bytes = isDirect ? model.periodDirectDown : model.periodProxyDown
         return ByteFormat.string(for: bytes)
     }
 
@@ -171,8 +198,7 @@ struct MenuBarPopoverView: View {
                 bytesPerSecond: isDirect ? model.directUpBps : model.proxyUpBps
             )
         }
-        let share = pathShare(isDirect: isDirect)
-        let bytes = UInt64((Double(model.periodNetworkUp) * share).rounded())
+        let bytes = isDirect ? model.periodDirectUp : model.periodProxyUp
         return ByteFormat.string(for: bytes)
     }
 
@@ -180,16 +206,52 @@ struct MenuBarPopoverView: View {
         if isRealtime {
             return isDirect ? model.directShare : model.proxyShare
         }
-        let direct = max(0, model.routeMix.directPercent) / 100
-        let proxy = max(
-            0,
-            (model.routeMix.systemProxyPercent + model.routeMix.customProxyPercent) / 100
-        )
-        let sum = direct + proxy
-        if sum <= 0.000_1 {
+        let direct = Double(model.periodDirectDown &+ model.periodDirectUp)
+        let proxy = Double(model.periodProxyDown &+ model.periodProxyUp)
+        let unknown = Double(model.periodUnattributedDown &+ model.periodUnattributedUp)
+        let total = direct + proxy + unknown
+        if total <= 0.000_1 {
             return isDirect ? 1 : 0
         }
-        return isDirect ? (direct / sum) : (proxy / sum)
+        return isDirect ? (direct / total) : (proxy / total)
+    }
+
+    private var unattributedTotal: Double {
+        if isRealtime {
+            return model.unattributedDownBps + model.unattributedUpBps
+        }
+        return Double(model.periodUnattributedDown &+ model.periodUnattributedUp)
+    }
+
+    private var showsUnattributed: Bool {
+        unattributedTotal > 0
+    }
+
+    private var unattributedShare: Double {
+        if isRealtime {
+            let total = model.directDownBps + model.directUpBps
+                + model.proxyDownBps + model.proxyUpBps
+                + unattributedTotal
+            return total > 0 ? unattributedTotal / total : 0
+        }
+        let total = Double(
+            model.periodDirectDown &+ model.periodDirectUp
+                &+ model.periodProxyDown &+ model.periodProxyUp
+                &+ model.periodUnattributedDown &+ model.periodUnattributedUp
+        )
+        return total > 0 ? unattributedTotal / total : 0
+    }
+
+    private var unattributedDownText: String {
+        isRealtime
+            ? ByteFormat.rateMBps(bytesPerSecond: model.unattributedDownBps)
+            : ByteFormat.string(for: model.periodUnattributedDown)
+    }
+
+    private var unattributedUpText: String {
+        isRealtime
+            ? ByteFormat.rateMBps(bytesPerSecond: model.unattributedUpBps)
+            : ByteFormat.string(for: model.periodUnattributedUp)
     }
 
     private func pathRateLine(
@@ -302,7 +364,8 @@ struct MenuBarPopoverView: View {
     private var appList: some View {
         let rowsHeight = MenuBarPopoverSizing.listRowsHeight(
             appCount: visibleApps.count,
-            popoverHeight: popoverHeight
+            popoverHeight: popoverHeight,
+            showsUnattributed: showsUnattributed
         )
         return VStack(alignment: .leading, spacing: 2) {
             Text(l10n.t("menu.topApps"))
