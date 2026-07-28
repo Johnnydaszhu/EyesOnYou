@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import Combine
 import EyesOnYouCore
 
 /// Persistent menu-bar status item + click-to-toggle popover (menu extra).
@@ -15,8 +14,6 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     private var positioningWindow: NSWindow?
     private var model: AppModel?
     private var eventMonitor: Any?
-    private var rateCancellable: AnyCancellable?
-    private var styleCancellable: AnyCancellable?
     private var titleTimer: Timer?
     private var hostingController: NSHostingController<AnyView>?
     private var statusHostingView: NSHostingView<AnyView>?
@@ -43,7 +40,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             createStatusItem()
         }
         rebuildPopoverContent()
-        bindLiveTitle(to: model)
+        bindLiveTitle()
         refreshStatusItemAppearance()
         didInstall = true
     }
@@ -143,12 +140,7 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             ?? NSApp.effectiveAppearance
     }
 
-    private func bindLiveTitle(to model: AppModel) {
-        rateCancellable = model.objectWillChange
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                self?.refreshStatusItemAppearance()
-            }
+    private func bindLiveTitle() {
         if titleTimer == nil {
             titleTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
                 Task { @MainActor in

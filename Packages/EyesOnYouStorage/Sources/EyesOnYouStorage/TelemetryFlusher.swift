@@ -62,22 +62,30 @@ public final class TelemetryFlusher: @unchecked Sendable {
             namesWritten[app] = name
         }
 
+        let changes = aggregator.exportChangedBuckets(granularities: granularities)
         var pending: [TrafficBucket] = []
-        var writtenAfterCommit = written
+        var committedTotals: [TrafficBucketKey: TrafficTotals] = [:]
+        pending.reserveCapacity(changes.buckets.count)
+        committedTotals.reserveCapacity(changes.buckets.count)
 
-        for granularity in granularities {
-            for bucket in aggregator.exportBuckets(granularity: granularity) {
-                let previous = writtenAfterCommit[bucket.key] ?? TrafficTotals()
-                guard let delta = Self.delta(current: bucket.totals, previous: previous) else {
-                    continue
-                }
+        for bucket in changes.buckets {
+            let previous = written[bucket.key] ?? TrafficTotals()
+            if let delta = Self.delta(current: bucket.totals, previous: previous) {
                 pending.append(TrafficBucket(key: bucket.key, totals: delta))
-                writtenAfterCommit[bucket.key] = bucket.totals
             }
+            committedTotals[bucket.key] = bucket.totals
         }
 
-        try store.mergeBuckets(pending)
-        written = writtenAfterCommit
+        if !pending.isEmpty {
+            try store.mergeBuckets(pending)
+        }
+        for (key, totals) in committedTotals {
+            written[key] = totals
+        }
+        aggregator.acknowledgeChangedBuckets(
+            through: changes.revision,
+            granularities: granularities
+        )
         return pending.count
     }
 
@@ -99,6 +107,39 @@ public final class TelemetryFlusher: @unchecked Sendable {
         }
         let previousCount = written.count
         written = written.filter { retainedKeys.contains($0.key) }
+        return previousCount - written.count
+    }
+
+    /// Forget one app after its persisted rows were deliberately deleted.
+    ///
+    /// This is explicit rather than presence-based because an app can create fresh
+    /// traffic again before the asynchronous deletion transaction finishes.
+    @discardableResult
+    public func forgetWatermarks(for app: AppIdentityKey) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return forgetWatermarksLocked(for: app)
+    }
+
+    /// Serialize deletion with older queued flushes, then re-queue any traffic that
+    /// arrived after the in-memory purge so it cannot be acknowledged and erased.
+    @discardableResult
+    public func deleteApp(
+        _ app: AppIdentityKey,
+        preservingCurrentBucketsIn aggregator: TelemetryAggregator
+    ) throws -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        let deleted = try store.deleteApp(app)
+        _ = forgetWatermarksLocked(for: app)
+        aggregator.markBucketsChanged(for: app, granularities: granularities)
+        return deleted
+    }
+
+    private func forgetWatermarksLocked(for app: AppIdentityKey) -> Int {
+        let previousCount = written.count
+        written = written.filter { $0.key.app != app }
+        namesWritten.removeValue(forKey: app)
         return previousCount - written.count
     }
 

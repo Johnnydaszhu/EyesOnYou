@@ -107,6 +107,49 @@ final class TelemetryAggregatorTests: XCTestCase {
         XCTAssertTrue(recent.contains { $0.host == "www.google.com" })
     }
 
+    func testObservedSocketCensusOverridesSyntheticFlowCount() {
+        let agg = TelemetryAggregator()
+        let now = Date()
+        let flow = FlowDescriptor(
+            app: chrome,
+            remoteHostname: "example.com",
+            openedAt: now
+        )
+        agg.recordOpen(flow, displayName: "Chrome")
+        agg.setObservedActiveConnectionCounts([chrome: 7])
+
+        let row = agg.topApps(
+            from: now.addingTimeInterval(-1),
+            to: now.addingTimeInterval(1),
+            preferredGranularity: .oneSecond
+        ).first
+        XCTAssertEqual(row?.activeConnections, 7)
+        XCTAssertEqual(agg.activeConnectionCount(), 7)
+    }
+
+    func testObservedSocketCensusMergesWithOtherSyntheticApps() {
+        let agg = TelemetryAggregator()
+        let now = Date()
+        agg.recordOpen(
+            FlowDescriptor(app: chrome, remoteHostname: "chrome.example", openedAt: now),
+            displayName: "Chrome"
+        )
+        agg.recordOpen(
+            FlowDescriptor(app: safari, remoteHostname: "safari.example", openedAt: now),
+            displayName: "Safari"
+        )
+        agg.setObservedActiveConnectionCounts([chrome: 7])
+
+        let rows = agg.topApps(
+            from: now.addingTimeInterval(-1),
+            to: now.addingTimeInterval(1),
+            preferredGranularity: .oneSecond
+        )
+        XCTAssertEqual(rows.first { $0.app == chrome }?.activeConnections, 7)
+        XCTAssertEqual(rows.first { $0.app == safari }?.activeConnections, 1)
+        XCTAssertEqual(agg.activeConnectionCount(), 8)
+    }
+
     func testHistoryRollupsAcrossGranularities() {
         let agg = TelemetryAggregator()
         let base = Date(timeIntervalSince1970: 1_700_000_000)
@@ -225,6 +268,55 @@ final class TelemetryAggregatorTests: XCTestCase {
         XCTAssertEqual(result.all.bytesDown, 8_720)
     }
 
+    func testOverviewRollupMatchesIndependentRouteAndRankingQueries() {
+        let agg = TelemetryAggregator()
+        let now = Date()
+        agg.recordDelta(
+            flowID: UUID(),
+            app: chrome,
+            up: 100,
+            down: 300,
+            at: now,
+            route: .direct
+        )
+        agg.recordDelta(
+            flowID: UUID(),
+            app: chrome,
+            up: 20,
+            down: 80,
+            at: now,
+            route: .systemProxy
+        )
+        agg.recordDelta(
+            flowID: UUID(),
+            app: safari,
+            up: 9_000,
+            down: 1_000,
+            at: now,
+            route: .direct
+        )
+        let from = now.addingTimeInterval(-1)
+        let to = now.addingTimeInterval(1)
+
+        let rollup = agg.overviewRollup(
+            from: from,
+            to: to,
+            limit: 10,
+            selectedApp: chrome,
+            preferredGranularity: .oneSecond
+        )
+        let routes = agg.routeDirectionalTotals(
+            for: chrome,
+            from: from,
+            to: to,
+            preferredGranularity: .oneSecond
+        )
+        XCTAssertEqual(rollup.routeTotals, routes)
+        XCTAssertEqual(rollup.topApps.map(\.app), [safari, chrome])
+        XCTAssertEqual(rollup.routeShares[chrome]?.direct, 400)
+        XCTAssertEqual(rollup.routeShares[chrome]?.proxied, 100)
+    }
+
     func testRecordDeltaRouteKindOverrideStoresUnknownRoute() {
         let agg = TelemetryAggregator()
         let t0 = Date(timeIntervalSince1970: 1_700_100_100)
@@ -248,6 +340,160 @@ final class TelemetryAggregatorTests: XCTestCase {
         XCTAssertEqual(result.unknown.bytesUp, 321)
         XCTAssertEqual(result.unknown.bytesDown, 654)
         XCTAssertEqual(result.systemProxy.totalBytes, 0)
+    }
+
+    func testSampleIntervalNormalizesLiveRateAcrossDestinations() {
+        let agg = TelemetryAggregator()
+        let now = Date()
+
+        agg.recordDelta(
+            flowID: UUID(),
+            app: chrome,
+            up: 100,
+            down: 600,
+            at: now,
+            destinationKey: "one.example",
+            sampleInterval: 2
+        )
+        agg.recordDelta(
+            flowID: UUID(),
+            app: chrome,
+            up: 300,
+            down: 200,
+            at: now,
+            destinationKey: "two.example",
+            sampleInterval: 2
+        )
+
+        let rate = agg.liveRateBps(for: chrome)
+        XCTAssertEqual(rate.up, 200, accuracy: 0.001)
+        XCTAssertEqual(rate.down, 400, accuracy: 0.001)
+    }
+
+    func testSampleIntervalSplitsBytesAcrossMinuteBoundaryWithoutLoss() {
+        let agg = TelemetryAggregator()
+        // An exact minute boundary.
+        let boundary = Date(timeIntervalSince1970: 1_700_000_040)
+        agg.recordDelta(
+            flowID: UUID(),
+            app: chrome,
+            up: 100,
+            down: 300,
+            at: boundary.addingTimeInterval(1),
+            sampleInterval: 2
+        )
+
+        let before = agg.totals(
+            for: chrome,
+            from: boundary.addingTimeInterval(-60),
+            to: boundary,
+            preferredGranularity: .oneMinute
+        )
+        let after = agg.totals(
+            for: chrome,
+            from: boundary,
+            to: boundary.addingTimeInterval(60),
+            preferredGranularity: .oneMinute
+        )
+        XCTAssertEqual(before.bytesUp, 50)
+        XCTAssertEqual(before.bytesDown, 150)
+        XCTAssertEqual(after.bytesUp, 50)
+        XCTAssertEqual(after.bytesDown, 150)
+        XCTAssertEqual(before.bytesUp + after.bytesUp, 100)
+        XCTAssertEqual(before.bytesDown + after.bytesDown, 300)
+    }
+
+    func testLongSampleIntervalStaysConsistentAcrossMinuteAndHourViews() {
+        let agg = TelemetryAggregator(retention: .live)
+        let end = Date(timeIntervalSince1970: 1_700_042_400)
+        let start = end.addingTimeInterval(-10 * 3_600)
+        agg.recordDelta(
+            flowID: UUID(),
+            app: chrome,
+            up: 36_000,
+            down: 72_000,
+            at: end,
+            destinationKey: "sleep.example",
+            sampleInterval: 10 * 3_600
+        )
+
+        let lastHourMinute = agg.totals(
+            for: chrome,
+            from: end.addingTimeInterval(-3_600),
+            to: end,
+            preferredGranularity: .oneMinute
+        )
+        XCTAssertEqual(lastHourMinute.bytesUp, 3_600)
+        XCTAssertEqual(lastHourMinute.bytesDown, 7_200)
+
+        let fullMinute = agg.totals(
+            for: chrome,
+            from: start,
+            to: end,
+            preferredGranularity: .oneMinute
+        )
+        let fullHour = agg.totals(
+            for: chrome,
+            from: start,
+            to: end,
+            preferredGranularity: .oneHour
+        )
+        XCTAssertEqual(fullMinute.bytesUp, 36_000)
+        XCTAssertEqual(fullMinute.bytesDown, 72_000)
+        XCTAssertEqual(fullHour, fullMinute)
+    }
+
+    func testChangedBucketSnapshotScalesWithNewTraffic() {
+        let agg = TelemetryAggregator()
+        let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+        for index in 0..<200 {
+            agg.recordDelta(
+                flowID: UUID(),
+                app: chrome,
+                up: 1,
+                down: 2,
+                at: t0.addingTimeInterval(Double(index) * 60),
+                destinationKey: "site-\(index).example"
+            )
+        }
+
+        let initial = agg.exportChangedBuckets(granularities: [.oneMinute])
+        XCTAssertEqual(initial.buckets.count, 200)
+        XCTAssertEqual(initial.inspectedBucketCount, 200)
+        agg.acknowledgeChangedBuckets(
+            through: initial.revision,
+            granularities: [.oneMinute]
+        )
+
+        agg.recordDelta(
+            flowID: UUID(),
+            app: chrome,
+            up: 7,
+            down: 9,
+            at: t0,
+            destinationKey: "site-0.example"
+        )
+        let incremental = agg.exportChangedBuckets(granularities: [.oneMinute])
+        XCTAssertEqual(incremental.buckets.count, 1)
+        XCTAssertEqual(incremental.inspectedBucketCount, 1)
+    }
+
+    func testAcknowledgementDoesNotClearTrafficRecordedAfterSnapshot() {
+        let agg = TelemetryAggregator()
+        let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+        agg.recordDelta(flowID: UUID(), app: chrome, up: 10, down: 20, at: t0)
+        let snapshot = agg.exportChangedBuckets(granularities: [.oneMinute])
+
+        agg.recordDelta(flowID: UUID(), app: chrome, up: 30, down: 40, at: t0)
+        agg.acknowledgeChangedBuckets(
+            through: snapshot.revision,
+            granularities: [.oneMinute]
+        )
+
+        let stillPending = agg.exportChangedBuckets(granularities: [.oneMinute])
+        XCTAssertEqual(stillPending.buckets.count, 1)
+        XCTAssertEqual(stillPending.buckets.first?.totals.bytesUp, 40)
+        XCTAssertEqual(stillPending.buckets.first?.totals.bytesDown, 60)
     }
 
     func testByteFormat() {
@@ -350,6 +596,24 @@ final class TelemetryAggregatorTests: XCTestCase {
         XCTAssertEqual(agg.totals(for: chrome, from: t0, to: end).bytesUp, 3_600 * 10)
     }
 
+    func testLiveRetentionBoundsHourlyBucketsToDashboardWindow() {
+        let agg = TelemetryAggregator(retention: .live)
+        let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+        for hour in 0..<(10 * 24) {
+            agg.recordDelta(
+                flowID: UUID(),
+                app: chrome,
+                up: 1,
+                down: 1,
+                at: t0.addingTimeInterval(Double(hour) * 3_600),
+                destinationKey: "hour-\(hour).example"
+            )
+        }
+
+        XCTAssertLessThanOrEqual(agg.bucketCount(granularity: .oneHour), 73)
+        XCTAssertGreaterThanOrEqual(agg.bucketCount(granularity: .oneHour), 72)
+    }
+
     func testUnlimitedRetentionKeepsEverySecondBucket() {
         let agg = TelemetryAggregator()
         let t0 = Date(timeIntervalSince1970: 1_700_000_000)
@@ -390,5 +654,34 @@ final class TelemetryAggregatorTests: XCTestCase {
 
         // `.live` keeps two days of minute buckets: days 3, 4 and 5 survive.
         XCTAssertEqual(agg.bucketCount(granularity: .oneMinute), 3)
+        let latestBucketStart = Date(
+            timeIntervalSince1970: ((t0.timeIntervalSince1970 + 5 * 86_400.0) / 60).rounded(.down) * 60
+        )
+        XCTAssertEqual(
+            agg.lastTrafficAt(for: chrome),
+            latestBucketStart
+        )
+    }
+
+    func testImportedPersistedBucketsStartClean() {
+        let agg = TelemetryAggregator()
+        let at = Date(timeIntervalSince1970: 1_700_000_000)
+        agg.importBuckets([
+            TrafficBucket(
+                key: TrafficBucketKey(
+                    granularity: .oneMinute,
+                    bucketStartMs: TelemetryAggregator.bucketStartMs(
+                        atMs: Int64(at.timeIntervalSince1970 * 1_000),
+                        granularity: .oneMinute
+                    ),
+                    app: chrome
+                ),
+                totals: TrafficTotals(bytesUp: 10, bytesDown: 20)
+            )
+        ])
+
+        let changes = agg.exportChangedBuckets(granularities: [.oneMinute])
+        XCTAssertEqual(changes.inspectedBucketCount, 0)
+        XCTAssertEqual(changes.buckets, [])
     }
 }

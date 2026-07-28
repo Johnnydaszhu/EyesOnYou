@@ -18,26 +18,42 @@ public enum TelemetryStoreError: Error, CustomStringConvertible {
     }
 }
 
-/// Single-writer SQLite telemetry store (WAL). Foundation + SQLite3 only.
+public enum TelemetryStoreAccessMode: Sendable {
+    case readWrite
+    case readOnly
+}
+
+/// SQLite telemetry store (WAL writer or query-only reader). Foundation + SQLite3 only.
 public final class TelemetryStore: @unchecked Sendable {
     private var db: OpaquePointer?
     private let lock = NSLock()
     private var appIDCache: [AppIdentityKey: Int64] = [:]
 
-    public init(path: String) throws {
+    public init(path: String, mode: TelemetryStoreAccessMode = .readWrite) throws {
         var handle: OpaquePointer?
-        let flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
+        let flags: Int32
+        switch mode {
+        case .readWrite:
+            flags = SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX
+        case .readOnly:
+            flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
+        }
         if sqlite3_open_v2(path, &handle, flags, nil) != SQLITE_OK {
             let message = handle.flatMap { String(cString: sqlite3_errmsg($0)) } ?? "unknown"
             if let handle { sqlite3_close(handle) }
             throw TelemetryStoreError.openFailed(message)
         }
         db = handle
-        try exec("PRAGMA journal_mode = WAL;")
-        try exec("PRAGMA synchronous = NORMAL;")
-        try exec("PRAGMA foreign_keys = ON;")
         try exec("PRAGMA busy_timeout = 2500;")
-        try createSchema()
+        switch mode {
+        case .readWrite:
+            try exec("PRAGMA journal_mode = WAL;")
+            try exec("PRAGMA synchronous = NORMAL;")
+            try exec("PRAGMA foreign_keys = ON;")
+            try createSchema()
+        case .readOnly:
+            try exec("PRAGMA query_only = ON;")
+        }
     }
 
     deinit {
@@ -220,6 +236,31 @@ public final class TelemetryStore: @unchecked Sendable {
         return Int(sqlite3_changes(db))
     }
 
+    /// Permanently remove one app and all of its stored traffic.
+    @discardableResult
+    public func deleteApp(_ app: AppIdentityKey) throws -> Int {
+        lock.lock(); defer { lock.unlock() }
+        let team = app.teamIdentifier ?? ""
+        let predicate = """
+        team_id = \(sqlString(team)) AND signing_id = \(sqlString(app.signingIdentifier))
+        """
+        try exec("BEGIN IMMEDIATE TRANSACTION;")
+        do {
+            try exec("""
+            DELETE FROM traffic_buckets
+            WHERE app_id IN (SELECT app_id FROM apps WHERE \(predicate));
+            """)
+            let deletedBuckets = Int(sqlite3_changes(db))
+            try exec("DELETE FROM apps WHERE \(predicate);")
+            try exec("COMMIT;")
+            appIDCache.removeValue(forKey: app)
+            return deletedBuckets
+        } catch {
+            try? exec("ROLLBACK;")
+            throw error
+        }
+    }
+
     // MARK: - Reads
 
     /// Every stored bucket in a range, for restoring an aggregator on launch.
@@ -250,7 +291,8 @@ public final class TelemetryStore: @unchecked Sendable {
         defer { sqlite3_finalize(stmt) }
 
         var results: [TrafficBucket] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        var stepResult = sqlite3_step(stmt)
+        while stepResult == SQLITE_ROW {
             let team = String(cString: sqlite3_column_text(stmt, 0))
             let signing = String(cString: sqlite3_column_text(stmt, 1))
             let key = TrafficBucketKey(
@@ -272,7 +314,9 @@ public final class TelemetryStore: @unchecked Sendable {
                 flowsBlocked: UInt64(sqlite3_column_int64(stmt, 10))
             )
             results.append(TrafficBucket(key: key, totals: totals))
+            stepResult = sqlite3_step(stmt)
         }
+        try requireDone(stepResult)
         return results
     }
 
@@ -287,14 +331,18 @@ public final class TelemetryStore: @unchecked Sendable {
         defer { sqlite3_finalize(stmt) }
 
         var names: [AppIdentityKey: String] = [:]
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        var stepResult = sqlite3_step(stmt)
+        while stepResult == SQLITE_ROW {
             let team = String(cString: sqlite3_column_text(stmt, 0))
             let signing = String(cString: sqlite3_column_text(stmt, 1))
-            guard let raw = sqlite3_column_text(stmt, 2) else { continue }
-            names[
-                AppIdentityKey(teamIdentifier: team.isEmpty ? nil : team, signingIdentifier: signing)
-            ] = String(cString: raw)
+            if let raw = sqlite3_column_text(stmt, 2) {
+                names[
+                    AppIdentityKey(teamIdentifier: team.isEmpty ? nil : team, signingIdentifier: signing)
+                ] = String(cString: raw)
+            }
+            stepResult = sqlite3_step(stmt)
         }
+        try requireDone(stepResult)
         return names
     }
 
@@ -306,22 +354,24 @@ public final class TelemetryStore: @unchecked Sendable {
         to: Date,
         limit: Int = 50
     ) throws -> [(destinationKey: String, totals: TrafficTotals)] {
-        let appID = try upsertApp(app, displayName: nil)
         let fromMs = Int64(from.timeIntervalSince1970 * 1000)
         let toMs = Int64(to.timeIntervalSince1970 * 1000)
+        let team = app.teamIdentifier ?? ""
 
         let sql = """
-        SELECT destination_key,
-               COALESCE(SUM(bytes_up),0), COALESCE(SUM(bytes_down),0),
-               COALESCE(SUM(flows_opened),0), COALESCE(SUM(flows_closed),0),
-               COALESCE(SUM(flows_blocked),0)
-        FROM traffic_buckets
-        WHERE granularity_sec = \(granularity.seconds)
-          AND app_id = \(appID)
-          AND bucket_start_ms >= \(fromMs)
-          AND bucket_start_ms < \(toMs)
-        GROUP BY destination_key
-        ORDER BY (COALESCE(SUM(bytes_up),0) + COALESCE(SUM(bytes_down),0)) DESC
+        SELECT b.destination_key,
+               COALESCE(SUM(b.bytes_up),0), COALESCE(SUM(b.bytes_down),0),
+               COALESCE(SUM(b.flows_opened),0), COALESCE(SUM(b.flows_closed),0),
+               COALESCE(SUM(b.flows_blocked),0)
+        FROM traffic_buckets b
+        JOIN apps a ON a.app_id = b.app_id
+        WHERE b.granularity_sec = \(granularity.seconds)
+          AND a.team_id = \(sqlString(team))
+          AND a.signing_id = \(sqlString(app.signingIdentifier))
+          AND b.bucket_start_ms >= \(fromMs)
+          AND b.bucket_start_ms < \(toMs)
+        GROUP BY b.destination_key
+        ORDER BY (COALESCE(SUM(b.bytes_up),0) + COALESCE(SUM(b.bytes_down),0)) DESC
         LIMIT \(limit);
         """
 
@@ -333,7 +383,8 @@ public final class TelemetryStore: @unchecked Sendable {
         defer { sqlite3_finalize(stmt) }
 
         var results: [(String, TrafficTotals)] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        var stepResult = sqlite3_step(stmt)
+        while stepResult == SQLITE_ROW {
             let dest = String(cString: sqlite3_column_text(stmt, 0))
             results.append((dest, TrafficTotals(
                 bytesUp: UInt64(sqlite3_column_int64(stmt, 1)),
@@ -342,7 +393,9 @@ public final class TelemetryStore: @unchecked Sendable {
                 flowsClosed: UInt64(sqlite3_column_int64(stmt, 4)),
                 flowsBlocked: UInt64(sqlite3_column_int64(stmt, 5))
             )))
+            stepResult = sqlite3_step(stmt)
         }
+        try requireDone(stepResult)
         return results
     }
 
@@ -372,18 +425,25 @@ public final class TelemetryStore: @unchecked Sendable {
         let toMs = Int64(to.timeIntervalSince1970 * 1000)
 
         var sql = """
-        SELECT COALESCE(SUM(bytes_up),0), COALESCE(SUM(bytes_down),0),
-               COALESCE(SUM(flows_opened),0), COALESCE(SUM(flows_closed),0),
-               COALESCE(SUM(flows_blocked),0)
-        FROM traffic_buckets
-        WHERE granularity_sec = \(granularity.seconds)
-          AND bucket_start_ms >= \(fromMs)
-          AND bucket_start_ms < \(toMs)
+        SELECT COALESCE(SUM(b.bytes_up),0), COALESCE(SUM(b.bytes_down),0),
+               COALESCE(SUM(b.flows_opened),0), COALESCE(SUM(b.flows_closed),0),
+               COALESCE(SUM(b.flows_blocked),0)
+        FROM traffic_buckets b
+        WHERE b.granularity_sec = \(granularity.seconds)
+          AND b.bucket_start_ms >= \(fromMs)
+          AND b.bucket_start_ms < \(toMs)
         """
 
         if let app {
-            let appID = try upsertApp(app, displayName: nil)
-            sql += " AND app_id = \(appID)"
+            let team = app.teamIdentifier ?? ""
+            sql += """
+
+              AND b.app_id IN (
+                  SELECT app_id FROM apps
+                  WHERE team_id = \(sqlString(team))
+                    AND signing_id = \(sqlString(app.signingIdentifier))
+              )
+            """
         }
 
         lock.lock(); defer { lock.unlock() }
@@ -422,7 +482,8 @@ public final class TelemetryStore: @unchecked Sendable {
         defer { sqlite3_finalize(stmt) }
 
         var results: [(AppIdentityKey, String, TrafficTotals)] = []
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        var stepResult = sqlite3_step(stmt)
+        while stepResult == SQLITE_ROW {
             let team = String(cString: sqlite3_column_text(stmt, 0))
             let signing = String(cString: sqlite3_column_text(stmt, 1))
             let name = String(cString: sqlite3_column_text(stmt, 2))
@@ -438,7 +499,9 @@ public final class TelemetryStore: @unchecked Sendable {
                 signingIdentifier: signing
             )
             results.append((key, name, totals))
+            stepResult = sqlite3_step(stmt)
         }
+        try requireDone(stepResult)
         return results
     }
 
@@ -459,8 +522,9 @@ public final class TelemetryStore: @unchecked Sendable {
             throw TelemetryStoreError.prepareFailed(lastError())
         }
         defer { sqlite3_finalize(stmt) }
-        guard sqlite3_step(stmt) == SQLITE_ROW else {
-            throw TelemetryStoreError.stepFailed(lastError())
+        let stepResult = sqlite3_step(stmt)
+        guard stepResult == SQLITE_ROW else {
+            throw stepFailure(stepResult)
         }
         return sqlite3_column_int64(stmt, 0)
     }
@@ -471,8 +535,9 @@ public final class TelemetryStore: @unchecked Sendable {
             throw TelemetryStoreError.prepareFailed(lastError())
         }
         defer { sqlite3_finalize(stmt) }
-        guard sqlite3_step(stmt) == SQLITE_ROW else {
-            return TrafficTotals()
+        let stepResult = sqlite3_step(stmt)
+        guard stepResult == SQLITE_ROW else {
+            throw stepFailure(stepResult)
         }
         return TrafficTotals(
             bytesUp: UInt64(sqlite3_column_int64(stmt, 0)),
@@ -481,6 +546,16 @@ public final class TelemetryStore: @unchecked Sendable {
             flowsClosed: UInt64(sqlite3_column_int64(stmt, 3)),
             flowsBlocked: UInt64(sqlite3_column_int64(stmt, 4))
         )
+    }
+
+    private func requireDone(_ result: Int32) throws {
+        guard result == SQLITE_DONE else {
+            throw stepFailure(result)
+        }
+    }
+
+    private func stepFailure(_ result: Int32) -> TelemetryStoreError {
+        .stepFailed("\(lastError()) (SQLite step \(result))")
     }
 
     private func lastError() -> String {

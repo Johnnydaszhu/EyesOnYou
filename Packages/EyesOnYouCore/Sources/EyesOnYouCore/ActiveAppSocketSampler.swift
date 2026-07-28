@@ -74,6 +74,11 @@ public struct ActiveSocketSnapshot: Equatable, Sendable {
 
 /// Samples processes that currently hold ESTABLISHED TCP sockets.
 public enum ActiveAppSocketSampler {
+    public enum ConnectionReadResult: Equatable, Sendable {
+        case success([ConnectionLine])
+        case failure
+    }
+
     /// Common Clash / Surge / Shadowrocket listen ports — assist discovery only; never assert product name.
     public static let commonLocalProxyPorts: Set<Int> = [
         7890, 7891, 7892, 7893, 1080, 1082, 1086, 1087, 6152, 6153, 8888, 8080, 2080, 9090
@@ -107,31 +112,82 @@ public enum ActiveAppSocketSampler {
     /// `SocketTable` asks `libproc` directly. Spawning `/usr/sbin/lsof` and parsing its
     /// text produced the same rows for ~90 ms of wall time against ~1.7 ms, and burned
     /// 10–20 ms of CPU per call in the child process — once a second, forever. The
-    /// subprocess stays as a fallback for the case where the kernel walk yields nothing
-    /// at all.
+    /// subprocess stays as a fallback only when the kernel walk itself fails.
     public static func currentConnections() -> [ConnectionLine] {
-        let table = SocketTable.establishedTCP()
-        if !table.isEmpty { return table }
-        return parse(lsofOutput: lsofEstablishedText())
+        switch currentConnectionResult() {
+        case .success(let lines):
+            return lines
+        case .failure:
+            return []
+        }
+    }
+
+    public static func currentConnectionResult() -> ConnectionReadResult {
+        currentConnectionResult(
+            readSocketTable: { SocketTable.establishedTCPResult() },
+            readLsof: { lsofEstablishedText() }
+        )
+    }
+
+    /// Whether a captured socket census is recent enough to own a host-counter
+    /// delta. This intentionally uses a fixed short window: a long interval after
+    /// sleep must not make a pre-sleep census valid again.
+    public static func snapshotIsFresh(
+        capturedAt: Date?,
+        now: Date,
+        maximumAge: TimeInterval = 3
+    ) -> Bool {
+        guard let capturedAt, maximumAge >= 0, maximumAge.isFinite else {
+            return false
+        }
+        let age = now.timeIntervalSince(capturedAt)
+        return age >= 0 && age <= maximumAge
+    }
+
+    /// Injectable seam for proving fallback behavior without invoking `libproc`
+    /// or spawning `lsof` in tests.
+    static func currentConnections(
+        readSocketTable: () -> SocketTable.EstablishedTCPResult,
+        readLsof: () -> String
+    ) -> [ConnectionLine] {
+        switch currentConnectionResult(
+            readSocketTable: readSocketTable,
+            readLsof: { readLsof() }
+        ) {
+        case .success(let lines):
+            return lines
+        case .failure:
+            return []
+        }
+    }
+
+    static func currentConnectionResult(
+        readSocketTable: () -> SocketTable.EstablishedTCPResult,
+        readLsof: () -> String?
+    ) -> ConnectionReadResult {
+        switch readSocketTable() {
+        case let .success(lines):
+            return .success(lines)
+        case .failure:
+            guard let output = readLsof() else { return .failure }
+            return .success(parse(lsofOutput: output))
+        }
     }
 
     /// Raw `lsof` output for ESTABLISHED TCP; the fallback source.
-    static func lsofEstablishedText() -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-        process.arguments = ["-nP", "-iTCP", "-sTCP:ESTABLISHED"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        do {
-            try process.run()
-        } catch {
-            return ""
+    static func lsofEstablishedText() -> String? {
+        guard let result = BoundedProcess.run(
+            executableURL: URL(fileURLWithPath: "/usr/sbin/lsof"),
+            arguments: ["-nP", "-iTCP", "-sTCP:ESTABLISHED"],
+            timeout: 2
+        ), !result.timedOut else { return nil }
+        if !result.stdout.isEmpty {
+            return String(data: result.stdout, encoding: .utf8)
         }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 || !data.isEmpty else { return "" }
-        return String(data: data, encoding: .utf8) ?? ""
+        // `lsof` uses status 1 when no file matched; that is a valid empty census.
+        return result.terminationStatus == 0 || result.terminationStatus == 1
+            ? ""
+            : nil
     }
 
     public static func parse(lsofOutput: String) -> [ConnectionLine] {
@@ -161,7 +217,7 @@ public enum ActiveAppSocketSampler {
 
         var dialed: [Int: Int] = [:]
         var localLoopback: [Int: Int] = [:]
-        for conn in connections where isLoopback(conn.remoteHost) {
+        for conn in connections where SocketTable.isLoopback(conn.remoteHost) {
             dialed[conn.remotePort, default: 0] += 1
             localLoopback[conn.localPort, default: 0] += 1
         }
@@ -208,7 +264,7 @@ public enum ActiveAppSocketSampler {
         var proxyRemoteHosts: [String] = []
 
         for conn in connections {
-            let isLoopbackRemote = isLoopback(conn.remoteHost)
+            let isLoopbackRemote = SocketTable.isLoopback(conn.remoteHost)
 
             // Proxy accept side: localPort in proxyPorts — skip (client counted instead).
             if proxyPorts.contains(conn.localPort) {
@@ -351,7 +407,12 @@ public enum ActiveAppSocketSampler {
     }
 
     private static func appendHost(_ host: String, into hosts: inout [String]) {
-        guard !host.isEmpty, !isLoopback(host), !hosts.contains(host), hosts.count < 8 else { return }
+        guard
+            !host.isEmpty,
+            !SocketTable.isLoopback(host),
+            !hosts.contains(host),
+            hosts.count < 8
+        else { return }
         hosts.append(host)
     }
 
@@ -396,9 +457,5 @@ public enum ActiveAppSocketSampler {
         let host = String(trimmed[..<colon])
         guard let port = Int(trimmed[trimmed.index(after: colon)...]) else { return nil }
         return (host, port)
-    }
-
-    private static func isLoopback(_ host: String) -> Bool {
-        host == "127.0.0.1" || host == "::1" || host == "localhost"
     }
 }

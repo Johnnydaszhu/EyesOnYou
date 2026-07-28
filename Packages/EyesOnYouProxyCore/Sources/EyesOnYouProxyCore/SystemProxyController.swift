@@ -231,19 +231,30 @@ public final class SystemProxyController: @unchecked Sendable {
 
     /// Default runner: invoke `/usr/sbin/networksetup`.
     public static func networksetup(_ args: [String]) -> (status: Int32, output: String) {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/networksetup")
-        process.arguments = args
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
-        do {
-            try process.run()
-        } catch {
-            return (-1, "\(error)")
+        networksetup(
+            args,
+            executableURL: URL(fileURLWithPath: "/usr/sbin/networksetup"),
+            timeout: 5
+        )
+    }
+
+    static func networksetup(
+        _ args: [String],
+        executableURL: URL,
+        timeout: TimeInterval
+    ) -> (status: Int32, output: String) {
+        guard let result = BoundedProcess.run(
+            executableURL: executableURL,
+            arguments: args,
+            timeout: timeout,
+            mergeStderrIntoStdout: true
+        ) else {
+            return (-1, "unable to launch \(executableURL.path)")
         }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+        let output = String(data: result.stdout, encoding: .utf8) ?? ""
+        guard !result.timedOut else {
+            return (-1, output.isEmpty ? "networksetup timed out" : output)
+        }
+        return (result.terminationStatus, output)
     }
 }

@@ -167,13 +167,17 @@ final class TelemetryFlusherTests: XCTestCase {
         let flusher = TelemetryFlusher(store: store)
         flusher.seed(with: restored)
 
+        XCTAssertEqual(
+            second.exportChangedBuckets(granularities: [.oneMinute]).inspectedBucketCount,
+            0
+        )
         XCTAssertEqual(try flusher.flush(second), 0, "restored history must not be rewritten")
         let totals = try storedTotals(around: now)
         XCTAssertEqual(totals.bytesUp, 100)
         XCTAssertEqual(totals.bytesDown, 900)
     }
 
-    func testWithoutSeedingRestoredHistoryWouldDoubleCount() throws {
+    func testWithoutSeedingModifiedRestoredHistoryWouldDoubleCount() throws {
         // Guards the reason `seed(with:)` exists — if this ever stops doubling, the
         // watermark is no longer what protects restored data.
         let now = Date()
@@ -186,9 +190,18 @@ final class TelemetryFlusherTests: XCTestCase {
         )
         let second = TelemetryAggregator()
         second.importBuckets(restored)
+        second.recordDelta(
+            flowID: UUID(),
+            app: app,
+            up: 1,
+            down: 1,
+            at: now,
+            route: .direct,
+            destinationKey: "project:EyesOnYou"
+        )
         try TelemetryFlusher(store: store).flush(second)
 
-        XCTAssertEqual(try storedTotals(around: now).bytesUp, 200)
+        XCTAssertEqual(try storedTotals(around: now).bytesUp, 201)
     }
 
     func testFlushPersistsProductNamesNotJustIdentifiers() throws {
@@ -263,6 +276,66 @@ final class TelemetryFlusherTests: XCTestCase {
         // The retained bucket keeps its watermark, so reconciling and flushing it is a no-op.
         XCTAssertEqual(try flusher.flush(aggregator), 0)
         XCTAssertEqual(try storedTotals(around: now).bytesDown, 60)
+    }
+
+    func testDeleteWatermarkAllowsFreshTrafficFromSameActiveApp() throws {
+        let now = Date()
+        let aggregator = makeAggregator(up: 100, down: 900, at: now)
+        let flusher = TelemetryFlusher(store: store)
+        try flusher.flush(aggregator)
+
+        aggregator.purge(app: app)
+        let newFlow = FlowDescriptor(
+            app: app,
+            remoteHostname: "project:AfterDelete",
+            openedAt: now
+        )
+        aggregator.recordOpen(newFlow, displayName: "Agent")
+        aggregator.recordDelta(
+            flowID: newFlow.id,
+            app: app,
+            up: 7,
+            down: 13,
+            at: now
+        )
+
+        try store.deleteApp(app)
+        XCTAssertGreaterThan(flusher.forgetWatermarks(for: app), 0)
+        try flusher.flush(aggregator)
+        let totals = try storedTotals(around: now)
+        XCTAssertEqual(totals.bytesUp, 7)
+        XCTAssertEqual(totals.bytesDown, 13)
+    }
+
+    func testQueuedFlushBeforeDeleteCannotLoseFreshTraffic() throws {
+        let now = Date()
+        let aggregator = makeAggregator(up: 100, down: 900, at: now)
+        let flusher = TelemetryFlusher(store: store)
+        try flusher.flush(aggregator)
+
+        aggregator.purge(app: app)
+        let freshFlow = FlowDescriptor(
+            app: app,
+            remoteHostname: "project:AfterDelete",
+            openedAt: now.addingTimeInterval(1)
+        )
+        aggregator.recordOpen(freshFlow, displayName: "Agent")
+        aggregator.recordDelta(
+            flowID: freshFlow.id,
+            app: app,
+            up: 20,
+            down: 200,
+            at: now.addingTimeInterval(1)
+        )
+
+        // This represents a flush that was already queued when deletion began.
+        try flusher.flush(aggregator)
+        try flusher.deleteApp(app, preservingCurrentBucketsIn: aggregator)
+        try flusher.flush(aggregator)
+
+        let totals = try storedTotals(around: now)
+        XCTAssertEqual(totals.bytesUp, 20)
+        XCTAssertEqual(totals.bytesDown, 200)
     }
 
     func testWatermarkReconciliationDoesNotReplayRetainedHourOrDayBuckets() throws {
@@ -401,6 +474,30 @@ final class TelemetryStoreQueryTests: XCTestCase {
         XCTAssertNotNil(stats.latest)
     }
 
+    func testQueriesForUnknownAppDoNotCreateCatalogRows() throws {
+        let now = Date()
+        let unknown = AppIdentityKey(
+            teamIdentifier: "NONE",
+            signingIdentifier: "com.example.DoesNotExist"
+        )
+
+        let totals = try store.queryTotals(
+            app: unknown,
+            granularity: .oneMinute,
+            from: now.addingTimeInterval(-60),
+            to: now
+        )
+        let destinations = try store.queryTopDestinations(
+            app: unknown,
+            granularity: .oneMinute,
+            from: now.addingTimeInterval(-60),
+            to: now
+        )
+        XCTAssertEqual(totals.totalBytes, 0)
+        XCTAssertTrue(destinations.isEmpty)
+        XCTAssertEqual(try store.statistics().apps, 0)
+    }
+
     func testPruneOrphanedAppsDropsAppsWithoutTraffic() throws {
         let now = Date()
         try write(destination: "project:EyesOnYou", up: 1, down: 1, at: now)
@@ -408,6 +505,23 @@ final class TelemetryStoreQueryTests: XCTestCase {
 
         XCTAssertEqual(try store.pruneOrphanedApps(), 1)
         XCTAssertEqual(try store.statistics().apps, 0)
+    }
+
+    func testDeleteAppRemovesCatalogAndEveryStoredBucket() throws {
+        let now = Date()
+        try write(destination: "project:First", up: 10, down: 20, at: now)
+        try write(
+            destination: "project:Second",
+            up: 30,
+            down: 40,
+            at: now.addingTimeInterval(60)
+        )
+
+        XCTAssertEqual(try store.deleteApp(app), 2)
+        let stats = try store.statistics()
+        XCTAssertEqual(stats.buckets, 0)
+        XCTAssertEqual(stats.apps, 0)
+        XCTAssertTrue(try store.displayNames().isEmpty)
     }
 
     /// `mergeBucket` adds to the stored row, so forgetting a watermark while its bucket

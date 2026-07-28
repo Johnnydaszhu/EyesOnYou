@@ -53,7 +53,10 @@ enum CLIDataSource {
         guard FileManager.default.fileExists(atPath: EyesOnYouPaths.telemetryDB.path) else {
             return nil
         }
-        let store = try? TelemetryStore(path: EyesOnYouPaths.telemetryDB.path)
+        let store = try? TelemetryStore(
+            path: EyesOnYouPaths.telemetryDB.path,
+            mode: .readOnly
+        )
         _store = store
         return store
     }

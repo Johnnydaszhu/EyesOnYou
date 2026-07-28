@@ -2,6 +2,146 @@ import XCTest
 @testable import EyesOnYouCore
 
 final class ActiveAppSocketSamplerTests: XCTestCase {
+    func testSuccessfulEmptyKernelReadDoesNotInvokeLsofFallback() {
+        var lsofReads = 0
+
+        let connections = ActiveAppSocketSampler.currentConnections(
+            readSocketTable: { .success([]) },
+            readLsof: {
+                lsofReads += 1
+                return """
+                COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
+                Safari 200 me 12u IPv4 0x3 0t0 TCP 192.168.1.2:50003->1.1.1.1:443 (ESTABLISHED)
+                """
+            }
+        )
+
+        XCTAssertEqual(connections, [])
+        XCTAssertEqual(lsofReads, 0)
+    }
+
+    func testFailedKernelReadInvokesLsofFallback() {
+        var lsofReads = 0
+
+        let connections = ActiveAppSocketSampler.currentConnections(
+            readSocketTable: { .failure },
+            readLsof: {
+                lsofReads += 1
+                return """
+                COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
+                Safari 200 me 12u IPv4 0x3 0t0 TCP 192.168.1.2:50003->1.1.1.1:443 (ESTABLISHED)
+                """
+            }
+        )
+
+        XCTAssertEqual(lsofReads, 1)
+        XCTAssertEqual(connections.count, 1)
+        XCTAssertEqual(connections.first?.pid, 200)
+        XCTAssertEqual(connections.first?.remoteHost, "1.1.1.1")
+    }
+
+    func testBothSocketSourcesFailWithoutPretendingTheCensusIsEmpty() {
+        let result = ActiveAppSocketSampler.currentConnectionResult(
+            readSocketTable: { .failure },
+            readLsof: { nil }
+        )
+
+        XCTAssertEqual(result, .failure)
+    }
+
+    func testEmptyLsofFallbackIsASuccessfulEmptyCensus() {
+        let result = ActiveAppSocketSampler.currentConnectionResult(
+            readSocketTable: { .failure },
+            readLsof: { "" }
+        )
+
+        XCTAssertEqual(result, .success([]))
+    }
+
+    func testKernelWalkNeedsAtLeastOneReadableProcess() {
+        XCTAssertEqual(
+            SocketTable.classifyKernelWalk(lines: [], readableProcessCount: 0),
+            .failure
+        )
+        XCTAssertEqual(
+            SocketTable.classifyKernelWalk(lines: [], readableProcessCount: 1),
+            .success([])
+        )
+    }
+
+    func testSocketSnapshotFreshnessUsesFixedCaptureAge() {
+        let capturedAt = Date(timeIntervalSince1970: 1_000)
+
+        XCTAssertTrue(
+            ActiveAppSocketSampler.snapshotIsFresh(
+                capturedAt: capturedAt,
+                now: capturedAt.addingTimeInterval(3)
+            )
+        )
+        XCTAssertFalse(
+            ActiveAppSocketSampler.snapshotIsFresh(
+                capturedAt: capturedAt,
+                now: capturedAt.addingTimeInterval(3.001)
+            )
+        )
+        XCTAssertFalse(
+            ActiveAppSocketSampler.snapshotIsFresh(
+                capturedAt: capturedAt,
+                now: capturedAt.addingTimeInterval(-0.001)
+            )
+        )
+        XCTAssertFalse(
+            ActiveAppSocketSampler.snapshotIsFresh(capturedAt: nil, now: capturedAt)
+        )
+    }
+
+    func testLoopbackCoversIPv4RangeIPv6AndIPv4MappedBoundaries() {
+        let loopbackHosts = [
+            "127.0.0.0",
+            "127.0.0.1",
+            "127.42.18.9",
+            "127.255.255.255",
+            "::1",
+            "0:0:0:0:0:0:0:1",
+            "::ffff:127.0.0.0",
+            "::ffff:127.255.255.255",
+            "localhost",
+            "LOCALHOST",
+        ]
+        for host in loopbackHosts {
+            XCTAssertTrue(SocketTable.isLoopback(host), "\(host) should be loopback")
+        }
+
+        let nonLoopbackHosts = [
+            "126.255.255.255",
+            "128.0.0.0",
+            "::",
+            "::2",
+            "::ffff:126.255.255.255",
+            "::ffff:128.0.0.0",
+            "127.example.com",
+        ]
+        for host in nonLoopbackHosts {
+            XCTAssertFalse(SocketTable.isLoopback(host), "\(host) should not be loopback")
+        }
+    }
+
+    func testIPv4MappedLoopbackUsesSharedProxyClassification() {
+        let output = """
+        COMMAND     PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME
+        Chrome      100 me     10u  IPv6 0x1      0t0  TCP [::ffff:127.8.0.1]:50001->[::ffff:127.8.0.2]:7890 (ESTABLISHED)
+        clash-meta  808 me     18u  IPv6 0x4      0t0  TCP [::ffff:127.8.0.2]:7890->[::ffff:127.8.0.1]:50001 (ESTABLISHED)
+        """
+
+        let snapshot = ActiveAppSocketSampler.summarize(
+            ActiveAppSocketSampler.parse(lsofOutput: output),
+            proxyPort: nil
+        )
+
+        XCTAssertEqual(snapshot.proxyPorts, [7890])
+        XCTAssertEqual(byVia(snapshot, pid: 100), 1)
+    }
+
     func testParseAndPreferProxyClientsOverProxyEgress() {
         let output = """
         COMMAND     PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME

@@ -221,20 +221,29 @@ final class AppModel: ObservableObject {
     // Bounded retention: this aggregator ingests for as long as the app runs, and
     // one-second buckets only ever back live rates and sub-two-minute ranges.
     let aggregator = TelemetryAggregator(retention: .live)
+    private var cachedOverviewRollup: TrafficOverviewRollup?
+    private var cachedOverviewRollupScope: String?
+    private var overviewRollupInFlight = false
     let policyStore = PolicyStore()
     /// Host-wide interface sampler — fills live rates when NE telemetry is empty.
     private let hostNetworkSampler = HostNetworkSampler()
     private let monitoringStartedAt = Date()
     /// Latest `lsof` socket sample (filled off the main thread).
     private var cachedSocketSnapshot = ActiveSocketSnapshot()
+    private var cachedSocketSnapshotAt: Date?
     /// Process and project attribution for the same socket sample.
     ///
     /// Workspace fallback can walk session directories, so it must stay off the
     /// main actor with the rest of socket collection.
     private var cachedAttributedSocketProcesses: [AttributedProcess] = []
     private var socketSampleInFlight = false
-    /// Apps that already received a synthetic `recordOpen` from socket fallback.
-    private var socketOpenedApps: Set<String> = []
+    private struct SyntheticSocketFlow {
+        let id: UUID
+        let app: AppIdentityKey
+        let route: RouteAction
+    }
+    /// Synthetic flows that still have matching live socket evidence.
+    private var socketActiveFlows: [String: SyntheticSocketFlow] = [:]
     /// Stable flow IDs for socket-fallback deltas (one per app + route).
     private var socketFlowIDs: [String: UUID] = [:]
     /// Last observed route per app from socket attribution (direct vs system proxy).
@@ -251,8 +260,15 @@ final class AppModel: ObservableObject {
     /// opened — the app keeps working live, it just cannot persist.
     private var telemetryStore: TelemetryStore?
     private var telemetryFlusher: TelemetryFlusher?
-    private var lastFlushAt: Date?
     private var lastPruneAt: Date?
+    private var lastFlushAttemptAt: Date?
+    private var lastPruneAttemptAt: Date?
+    private let telemetryPersistenceQueue = DispatchQueue(
+        label: "EyesOnYou.TelemetryPersistence",
+        qos: .utility
+    )
+    private var telemetryFlushInFlight = false
+    private var telemetryPruneInFlight = false
     /// Buckets reloaded from disk at launch, reported by `storageSummary`.
     private var restoredBucketCount = 0
     /// Last persistence failure, surfaced in Settings rather than swallowed.
@@ -271,6 +287,10 @@ final class AppModel: ObservableObject {
     private let alertEngine: TrafficAlertEngine
     let alertCenter = AlertCenter()
     private var lastAlertEvaluation: Date?
+    private var cumulativeAlertTotals: [AppIdentityKey: UInt64] = [:]
+    private var cumulativeAlertRefreshAt: Date?
+    private var cumulativeAlertRefreshInFlight = false
+    private var cumulativeAlertGeneration: UInt64 = 0
     private let projectResolver = ProjectResolver()
     private lazy var attributionResolver = LiveAttributionResolver(
         projectResolver: projectResolver,
@@ -282,6 +302,16 @@ final class AppModel: ObservableObject {
     private var workspaceRefreshInFlight = false
     /// Reverse-DNS cache for proxy egress IPs.
     private var reverseDNSCache: [String: String] = [:]
+    /// Successful and failed lookups are both throttled. DNS APIs are blocking on
+    /// macOS, so they must never hold up the next socket snapshot.
+    private var reverseDNSAttemptedAt: [String: Date] = [:]
+    private let reverseDNSQueue: OperationQueue = {
+        let queue = OperationQueue()
+        queue.name = "EyesOnYou.ReverseDNS"
+        queue.qualityOfService = .utility
+        queue.maxConcurrentOperationCount = 2
+        return queue
+    }()
     private var tickTimer: Timer?
     /// Rolling live rate (down+up) history keyed by `AppIdentityKey.storageKey`.
     /// Per-app cumulative network totals history for ranking traffic-trend sparklines.
@@ -1053,7 +1083,9 @@ final class AppModel: ObservableObject {
         if let last = lastAlertEvaluation, now.timeIntervalSince(last) < 5 { return }
         lastAlertEvaluation = now
 
-        let dayStart = now.addingTimeInterval(-86_400)
+        // A daily budget resets at the user's local midnight. A rolling 24-hour
+        // window made the same "today" budget drift throughout the day.
+        let dayStart = Calendar.autoupdatingCurrent.startOfDay(for: now)
         let dailyTotals = aggregator.topApps(from: dayStart, to: now, limit: 200,
                                              includeSitesForBrowsers: false)
         let dailyTotalBytes = dailyTotals.reduce(UInt64(0)) {
@@ -1081,24 +1113,15 @@ final class AppModel: ObservableObject {
 
         // Cumulative comes from storage: it is the whole recorded history, which the
         // in-memory aggregator only holds a window of.
-        var cumulativeByApp: [AppIdentityKey: UInt64] = [:]
-        if alertThresholds.cumulativeAppBytes > 0, let store = telemetryStore {
-            let rows = (try? store.queryTopApps(
-                granularity: .oneDay,
-                from: Date(timeIntervalSince1970: 0),
-                to: now.addingTimeInterval(86_400),
-                limit: 200
-            )) ?? []
-            for row in rows where row.0 != unattributedTrafficApp {
-                cumulativeByApp[row.0] = row.2.totalBytes
-            }
+        if alertThresholds.cumulativeAppBytes > 0 {
+            refreshCumulativeAlertTotalsIfNeeded(now: now)
         }
 
         let input = TrafficAlertInput(
             now: now,
             dailyTotalBytes: dailyTotalBytes,
             dailyByApp: dailyByApp,
-            cumulativeByApp: cumulativeByApp,
+            cumulativeByApp: cumulativeAlertTotals,
             burstByApp: burstByApp,
             displayNames: names
         )
@@ -1106,6 +1129,38 @@ final class AppModel: ObservableObject {
         if !alerts.isEmpty {
             alertCenter.deliver(alerts, localization: LocalizationStore.shared)
             persistAlertState()
+        }
+    }
+
+    private func refreshCumulativeAlertTotalsIfNeeded(now: Date) {
+        guard let store = telemetryStore, !cumulativeAlertRefreshInFlight else { return }
+        if let refreshed = cumulativeAlertRefreshAt,
+           now.timeIntervalSince(refreshed) < 60 {
+            return
+        }
+        cumulativeAlertRefreshInFlight = true
+        let generation = cumulativeAlertGeneration
+        telemetryPersistenceQueue.async {
+            let result = Result {
+                try store.queryTopApps(
+                    granularity: .oneDay,
+                    from: Date(timeIntervalSince1970: 0),
+                    to: now.addingTimeInterval(86_400),
+                    limit: 200
+                )
+            }
+            Task { @MainActor in
+                self.cumulativeAlertRefreshInFlight = false
+                guard generation == self.cumulativeAlertGeneration else { return }
+                guard case .success(let rows) = result else { return }
+                self.cumulativeAlertTotals = Dictionary(
+                    rows
+                        .filter { $0.0 != unattributedTrafficApp }
+                        .map { ($0.0, $0.2.totalBytes) },
+                    uniquingKeysWith: { first, _ in first }
+                )
+                self.cumulativeAlertRefreshAt = now
+            }
         }
     }
 
@@ -1175,44 +1230,82 @@ final class AppModel: ObservableObject {
         switch granularity {
         case .oneSecond: return 0
         case .oneMinute: return 2 * 86_400
-        case .oneHour: return 90 * 86_400
+        case .oneHour: return 3 * 86_400
         case .oneDay: return 3 * 365 * 86_400
         }
     }
 
     /// Write everything recorded since the last flush.
     private func flushTelemetry(now: Date = Date()) {
-        guard let flusher = telemetryFlusher else { return }
-        do {
-            try flusher.flush(aggregator)
-            lastFlushAt = now
-            storageError = nil
-        } catch {
-            storageError = "\(error)"
+        guard let flusher = telemetryFlusher, !telemetryFlushInFlight else { return }
+        telemetryFlushInFlight = true
+        lastFlushAttemptAt = now
+        let aggregator = aggregator
+        telemetryPersistenceQueue.async {
+            let result = Result { try flusher.flush(aggregator) }
+            Task { @MainActor in
+                self.telemetryFlushInFlight = false
+                switch result {
+                case .success:
+                    self.storageError = nil
+                case .failure(let error):
+                    self.storageError = "\(error)"
+                }
+            }
         }
     }
 
     /// Apply retention so the database cannot grow without bound.
     private func pruneTelemetry(now: Date) {
-        guard let store = telemetryStore else { return }
-        do {
-            try store.prune(granularity: .oneMinute, olderThan: now.addingTimeInterval(-7 * 86_400))
-            try store.prune(granularity: .oneHour, olderThan: now.addingTimeInterval(-365 * 86_400))
-            try store.pruneOrphanedApps()
-            if let flusher = telemetryFlusher {
-                flusher.forgetWatermarks(notPresentIn: aggregator)
+        guard let store = telemetryStore, !telemetryPruneInFlight else { return }
+        telemetryPruneInFlight = true
+        lastPruneAttemptAt = now
+        let flusher = telemetryFlusher
+        let aggregator = aggregator
+        telemetryPersistenceQueue.async {
+            let result = Result {
+                try store.prune(
+                    granularity: .oneMinute,
+                    olderThan: now.addingTimeInterval(-7 * 86_400)
+                )
+                try store.prune(
+                    granularity: .oneHour,
+                    olderThan: now.addingTimeInterval(-365 * 86_400)
+                )
+                try store.prune(
+                    granularity: .oneDay,
+                    olderThan: now.addingTimeInterval(-3 * 365 * 86_400)
+                )
+                try store.pruneOrphanedApps()
+                flusher?.forgetWatermarks(notPresentIn: aggregator)
             }
-            alertEngine.pruneState(now: now)
-            persistAlertState()
-            lastPruneAt = now
-        } catch {
-            storageError = "\(error)"
+            Task { @MainActor in
+                self.telemetryPruneInFlight = false
+                switch result {
+                case .success:
+                    self.lastPruneAt = now
+                    self.alertEngine.pruneState(now: now)
+                    self.persistAlertState()
+                    self.storageError = nil
+                case .failure(let error):
+                    self.storageError = "\(error)"
+                }
+            }
         }
     }
 
     /// Flush before the app exits so the final minute is not lost.
     func persistBeforeTermination() {
-        flushTelemetry()
+        if let flusher = telemetryFlusher {
+            let aggregator = aggregator
+            telemetryPersistenceQueue.sync {
+                do {
+                    try flusher.flush(aggregator)
+                } catch {
+                    NSLog("EyesOnYou telemetry final flush failed: \(error)")
+                }
+            }
+        }
         savePoliciesIfChanged()
     }
 
@@ -1744,7 +1837,35 @@ final class AppModel: ObservableObject {
 
     /// Remove telemetry for the app and drop it from ranking (also clears favorite pin).
     func deleteAppFromRanking(_ app: AppIdentityKey) {
+        // `purge` removes the aggregator's active flow records. Drop the matching
+        // socket-side lifecycle state as well, otherwise the next sample believes
+        // those flows are still open and can later emit an unmatched close.
+        let socketKeys = socketActiveFlows.compactMap { key, flow in
+            flow.app == app ? key : nil
+        }
+        for key in socketKeys {
+            socketActiveFlows.removeValue(forKey: key)
+            socketFlowIDs.removeValue(forKey: key)
+        }
+        socketObservedRoute.removeValue(forKey: app.storageKey)
+        cumulativeAlertTotals.removeValue(forKey: app)
+        cumulativeAlertRefreshAt = nil
+        cumulativeAlertGeneration &+= 1
+
         aggregator.purge(app: app)
+        if let flusher = telemetryFlusher {
+            let aggregator = aggregator
+            telemetryPersistenceQueue.async {
+                let result = Result {
+                    try flusher.deleteApp(app, preservingCurrentBucketsIn: aggregator)
+                }
+                if case .failure(let error) = result {
+                    Task { @MainActor in
+                        self.storageError = "\(error)"
+                    }
+                }
+            }
+        }
         appRateHistory.removeValue(forKey: app.storageKey)
         favoriteKeys.remove(app.storageKey)
         persistFavorites()
@@ -2094,10 +2215,18 @@ final class AppModel: ObservableObject {
     private func persistIfDue(now: Date) {
         savePoliciesIfChanged()
         evaluateAlertsIfDue(now: now)
-        if lastFlushAt == nil || now.timeIntervalSince(lastFlushAt!) >= Self.telemetryFlushInterval {
+        if lastFlushAttemptAt == nil
+            || now.timeIntervalSince(lastFlushAttemptAt!) >= Self.telemetryFlushInterval {
             flushTelemetry(now: now)
         }
-        if let pruned = lastPruneAt, now.timeIntervalSince(pruned) < Self.telemetryPruneInterval {
+        let pruneIsDue = lastPruneAt == nil
+            || now.timeIntervalSince(lastPruneAt!) >= Self.telemetryPruneInterval
+        guard pruneIsDue else {
+            return
+        }
+        // A failed database operation gets a bounded retry instead of another attempt
+        // on every one-second UI tick.
+        if let attempted = lastPruneAttemptAt, now.timeIntervalSince(attempted) < 60 {
             return
         }
         pruneTelemetry(now: now)
@@ -2133,6 +2262,69 @@ final class AppModel: ObservableObject {
     /// end date would invalidate the view every tick to draw the same string.
     private static func minuteAligned(_ date: Date) -> Date {
         Date(timeIntervalSince1970: (date.timeIntervalSince1970 / 60).rounded(.down) * 60)
+    }
+
+    private func overviewRollupScopeKey(selectedApp: AppIdentityKey?) -> String {
+        let customRange: String
+        if overviewPeriod == .custom {
+            customRange = "\(customRangeStart.timeIntervalSince1970)|\(customRangeEnd.timeIntervalSince1970)"
+        } else {
+            customRange = ""
+        }
+        return "\(overviewPeriod.rawValue)|\(selectedApp?.storageKey ?? "*")|\(customRange)"
+    }
+
+    /// Keep the full history aggregation and destination sorting off the main actor.
+    /// The first snapshot is built synchronously once; later ticks display the most
+    /// recent completed rollup while the next one is prepared in the background.
+    private func overviewRollupForDisplay(
+        from: Date,
+        to: Date,
+        selectedApp: AppIdentityKey?
+    ) -> (rollup: TrafficOverviewRollup, matchesScope: Bool) {
+        let scope = overviewRollupScopeKey(selectedApp: selectedApp)
+        if cachedOverviewRollup == nil {
+            let initial = aggregator.overviewRollup(
+                from: from,
+                to: to,
+                limit: Self.rankingLimit,
+                selectedApp: selectedApp,
+                includeSites: true
+            )
+            cachedOverviewRollup = initial
+            cachedOverviewRollupScope = scope
+            return (initial, true)
+        }
+
+        if !overviewRollupInFlight {
+            overviewRollupInFlight = true
+            let aggregator = aggregator
+            let rankingLimit = Self.rankingLimit
+            DispatchQueue.global(qos: .userInitiated).async {
+                let next = aggregator.overviewRollup(
+                    from: from,
+                    to: to,
+                    limit: rankingLimit,
+                    selectedApp: selectedApp,
+                    includeSites: true
+                )
+                Task { @MainActor in
+                    self.overviewRollupInFlight = false
+                    guard self.overviewRollupScopeKey(selectedApp: self.selectedApp) == scope else {
+                        return
+                    }
+                    self.cachedOverviewRollup = next
+                    self.cachedOverviewRollupScope = scope
+                }
+            }
+        }
+
+        let cached = cachedOverviewRollup ?? TrafficOverviewRollup(
+            topApps: [],
+            routeTotals: RouteDirectionalTotals(),
+            routeShares: [:]
+        )
+        return (cached, cachedOverviewRollupScope == scope)
     }
 
     private func refreshPublishedState() {
@@ -2197,12 +2389,14 @@ final class AppModel: ObservableObject {
         publish(\.sparklineDown, Self.appending(sparklineDown, rateDownBps, limit: 40))
         publish(\.sparklineUp, Self.appending(sparklineUp, rateUpBps, limit: 40))
 
-        // Period totals and path totals come from the same route-preserving rollup.
-        let periodRoutes = aggregator.routeDirectionalTotals(
-            for: selectedIdentity,
+        // Ranking and route totals share one history walk.
+        let overviewResult = overviewRollupForDisplay(
             from: periodFrom,
-            to: periodTo
+            to: periodTo,
+            selectedApp: selectedIdentity
         )
+        let overviewRollup = overviewResult.rollup
+        let periodRoutes = overviewRollup.routeTotals
         let periodTotals = periodRoutes.all
         let periodProxied = periodRoutes.proxied
         publish(\.periodNetworkUp, periodTotals.bytesUp)
@@ -2236,12 +2430,7 @@ final class AppModel: ObservableObject {
         // One pass covers both the ranking and the history table: `rankingLimit`
         // exceeds the history's 50 rows and the sort is the same, so the history is a
         // prefix of this result rather than a second full rollup over the same range.
-        let rawTops = aggregator.topApps(
-            from: periodFrom,
-            to: periodTo,
-            limit: Self.rankingLimit,
-            includeSitesForBrowsers: true
-        )
+        let rawTops = overviewRollup.topApps
         let tops = rawTops.map { snap in
             let route = resolveRoute(for: snap.app)
             let firewall = resolveFirewall(for: snap.app)
@@ -2330,7 +2519,7 @@ final class AppModel: ObservableObject {
         }
         let netTotal = max(1, activeTops.reduce(UInt64(0)) { $0 &+ $1.totals.totalBytes })
         // Real per-app route split from recorded buckets (same range as the ranking).
-        let routeShares = aggregator.routeByteShareByApp(from: periodFrom, to: periodTo)
+        let routeShares = overviewRollup.routeShares
 
         updateAppTrafficHistory(from: activeTops + archivedTops)
 
@@ -2366,7 +2555,7 @@ final class AppModel: ObservableObject {
         ))
 
         // Drop stale selection if app vanished after purge / archive.
-        if let app = selectedApp {
+        if overviewResult.matchesScope, let app = selectedApp {
             let stillThere = rankingRows.contains(where: { $0.snapshot.app == app })
                 || archivedRankingRows.contains(where: { $0.snapshot.app == app })
             if !stillThere {
@@ -2700,44 +2889,90 @@ final class AppModel: ObservableObject {
         let dnsCache = reverseDNSCache
         let attributionResolver = attributionResolver
         DispatchQueue.global(qos: .utility).async {
-            // Collect connections first so we can reverse-DNS proxy egress IPs.
-            let connections = ActiveAppSocketSampler.currentConnections()
-            var resolved = dnsCache
-
-            // Resolve every peer we might label, not just proxy egress: without this a
-            // browser or sync daemon drills down into a list of bare IP addresses.
-            var pending: [String] = []
+            let connections: [ActiveAppSocketSampler.ConnectionLine]
+            switch ActiveAppSocketSampler.currentConnectionResult() {
+            case .success(let lines):
+                connections = lines
+            case .failure:
+                Task { @MainActor in
+                    self.socketSampleInFlight = false
+                }
+                return
+            }
+            // Stamp capture before attribution and other work. A delayed result must
+            // not become "fresh" merely because it was published late.
+            let capturedAt = Date()
+            // DNS enrichment is scheduled separately. A missing or slow PTR record
+            // must not delay app attribution or keep `socketSampleInFlight` stuck.
+            var pendingCounts: [String: Int] = [:]
             for conn in connections {
                 let host = conn.remoteHost
-                guard resolved[host] == nil,
+                guard dnsCache[host] == nil,
                       DirectDestinationIndex.parseIPv4(host) != nil,
                       !RemoteDestination.isProxyPlaceholderAddress(host)
                 else { continue }
-                pending.append(host)
-            }
-            // Bounded per sample; the cache carries results forward.
-            for ip in Set(pending).prefix(48) {
-                if let name = ReverseDNS.lookup(ip) {
-                    resolved[ip] = name
-                }
+                pendingCounts[host, default: 0] += 1
             }
 
             let snapshot = ActiveAppSocketSampler.summarize(
                 connections,
                 proxyPort: port,
                 directIndex: index,
-                resolvedHosts: resolved
+                resolvedHosts: dnsCache
             )
             let attributed = attributionResolver.attribute(
                 snapshot.processes.filter { !$0.isProxyProcess },
                 now: Date()
             )
+            let pending = pendingCounts
+                .sorted {
+                    if $0.value != $1.value { return $0.value > $1.value }
+                    return $0.key < $1.key
+                }
+                .map(\.key)
             Task { @MainActor in
-                self.reverseDNSCache = resolved
                 self.cachedSocketSnapshot = snapshot
                 self.cachedAttributedSocketProcesses = attributed
+                self.cachedSocketSnapshotAt = capturedAt
                 self.systemProxyNodeIP = snapshot.primaryProxyNodeIP
                 self.socketSampleInFlight = false
+                self.scheduleReverseDNSLookups(pending, now: Date())
+            }
+        }
+    }
+
+    /// Enrich labels in the background with a small, bounded queue.
+    ///
+    /// Failed PTR lookups are cached as attempts for 30 minutes; otherwise common
+    /// public IPs with no reverse record would launch another blocking lookup every
+    /// second forever.
+    private func scheduleReverseDNSLookups(_ candidates: [String], now: Date) {
+        let retryAfter: TimeInterval = 30 * 60
+        reverseDNSAttemptedAt = reverseDNSAttemptedAt.filter {
+            now.timeIntervalSince($0.value) < retryAfter
+        }
+        if reverseDNSCache.count > 2_048 {
+            reverseDNSCache.removeAll(keepingCapacity: true)
+        }
+
+        let availableSlots = max(0, 8 - reverseDNSQueue.operationCount)
+        guard availableSlots > 0 else { return }
+        var scheduled = 0
+        for ip in candidates {
+            guard scheduled < availableSlots else { break }
+            guard reverseDNSCache[ip] == nil else { continue }
+            if let attempted = reverseDNSAttemptedAt[ip],
+               now.timeIntervalSince(attempted) < retryAfter {
+                continue
+            }
+            reverseDNSAttemptedAt[ip] = now
+            scheduled += 1
+            reverseDNSQueue.addOperation { [weak self] in
+                let name = ReverseDNS.lookup(ip)
+                guard let name else { return }
+                Task { @MainActor [weak self] in
+                    self?.reverseDNSCache[ip] = name
+                }
             }
         }
     }
@@ -2754,13 +2989,35 @@ final class AppModel: ObservableObject {
         scheduleSocketSampleIfNeeded()
         let totalDown = hostRates.deltaIn
         let totalUp = hostRates.deltaOut
-        let snapshot = cachedSocketSnapshot
-        let attributedSamples = cachedAttributedSocketProcesses
+        let sampleInterval = hostRates.sampleInterval > 0
+            ? Optional(hostRates.sampleInterval)
+            : nil
+        // Never stretch freshness to match a long host-counter interval. After sleep
+        // or a stalled sampler, an hours-old ownership snapshot must not claim the
+        // accumulated bytes.
+        let snapshotIsFresh = ActiveAppSocketSampler.snapshotIsFresh(
+            capturedAt: cachedSocketSnapshotAt,
+            now: at
+        )
+        let snapshot = snapshotIsFresh ? cachedSocketSnapshot : ActiveSocketSnapshot()
+        let attributedSamples = snapshotIsFresh ? cachedAttributedSocketProcesses : []
         guard !attributedSamples.isEmpty
                 || snapshot.proxyDirectEgress > 0
                 || snapshot.proxyRemoteEgress > 0
         else {
-            recordUnattributedDelta(down: totalDown, up: totalUp, at: at)
+            aggregator.setObservedActiveConnectionCounts([:])
+            // A successful, fresh empty census confirms every prior synthetic
+            // socket flow ended. A stale/unavailable census proves no such thing;
+            // keep lifecycle state until a valid sample can confirm closure.
+            if snapshotIsFresh {
+                closeInactiveSocketFlows(keeping: [], at: at)
+            }
+            recordUnattributedDelta(
+                down: totalDown,
+                up: totalUp,
+                at: at,
+                sampleInterval: sampleInterval
+            )
             return
         }
 
@@ -2774,11 +3031,15 @@ final class AppModel: ObservableObject {
             var name: String
             var viaProxy: Int
             var direct: Int
-            var hosts: [String]
-            /// Connection weight per `project:<Name>` drill key. One app can hold
-            /// sockets for several projects at once (three editor windows, two agent
-            /// sessions), so bytes are split by how many sockets each project owns.
-            var projectWeights: [String: Int]
+            /// Hosts from processes with no project attribution. Hosts belonging to
+            /// a known project must not be reused as labels for an unknown process.
+            var unknownDirectHosts: [String]
+            /// Keep project weights separate by observed path. Combining them lets a
+            /// direct-only project absorb a different project's proxied traffic.
+            var directProjectWeights: [String: Int]
+            var proxyProjectWeights: [String: Int]
+            var directUnknownWeight: Int
+            var proxyUnknownWeight: Int
         }
 
         var merged: [String: Row] = [:]
@@ -2792,29 +3053,50 @@ final class AppModel: ObservableObject {
             let sk = key.storageKey
             let displayName = identity.displayName
             let projectKey = attributed.projectDestinationKey
-            // Weight by sockets held; a process with none still marks the project active.
-            let projectWeight = max(1, attributed.weightedConnections)
 
             if var existing = merged[sk] {
                 existing.viaProxy += attributed.viaProxyConnections
                 existing.direct += attributed.directConnections
-                mergeHosts(attributed.remoteHosts, into: &existing.hosts)
                 // Prefer a real product name over truncated lsof COMMAND leftovers.
                 if existing.name == attributed.command || existing.name.hasPrefix("proc.") {
                     existing.name = displayName
                 }
                 if let projectKey {
-                    existing.projectWeights[projectKey, default: 0] += projectWeight
+                    if attributed.directConnections > 0 {
+                        existing.directProjectWeights[projectKey, default: 0] += attributed.directConnections
+                    }
+                    if attributed.viaProxyConnections > 0 {
+                        existing.proxyProjectWeights[projectKey, default: 0] += attributed.viaProxyConnections
+                    }
+                } else {
+                    existing.directUnknownWeight += attributed.directConnections
+                    existing.proxyUnknownWeight += attributed.viaProxyConnections
+                    mergeHosts(attributed.remoteHosts, into: &existing.unknownDirectHosts)
                 }
                 merged[sk] = existing
             } else {
+                var directProjects: [String: Int] = [:]
+                var proxyProjects: [String: Int] = [:]
+                if let projectKey {
+                    if attributed.directConnections > 0 {
+                        directProjects[projectKey] = attributed.directConnections
+                    }
+                    if attributed.viaProxyConnections > 0 {
+                        proxyProjects[projectKey] = attributed.viaProxyConnections
+                    }
+                }
                 merged[sk] = Row(
                     key: key,
                     name: displayName,
                     viaProxy: attributed.viaProxyConnections,
                     direct: attributed.directConnections,
-                    hosts: Array(attributed.remoteHosts.prefix(8)),
-                    projectWeights: projectKey.map { [$0: projectWeight] } ?? [:]
+                    unknownDirectHosts: projectKey == nil
+                        ? Array(attributed.remoteHosts.prefix(8))
+                        : [],
+                    directProjectWeights: directProjects,
+                    proxyProjectWeights: proxyProjects,
+                    directUnknownWeight: projectKey == nil ? attributed.directConnections : 0,
+                    proxyUnknownWeight: projectKey == nil ? attributed.viaProxyConnections : 0
                 )
             }
         }
@@ -2837,6 +3119,12 @@ final class AppModel: ObservableObject {
         }
 
         let rows = merged.values.sorted { $0.key.storageKey < $1.key.storageKey }
+        aggregator.setObservedActiveConnectionCounts(
+            Dictionary(
+                rows.map { ($0.key, $0.direct + $0.viaProxy) },
+                uniquingKeysWith: +
+            )
+        )
         let bypassWeight = rows.reduce(0) { $0 + $1.direct }
         let clientViaWeight = rows.reduce(0) { $0 + $1.viaProxy }
         let proxyDirect = snapshot.proxyDirectEgress
@@ -2861,6 +3149,7 @@ final class AppModel: ObservableObject {
 
         // Per-app score: prefer proxy-node (翻墙) vs rule/true direct from observed egress.
         var routeScore: [String: (direct: Int, proxy: Int)] = [:]
+        var observedFlowKeys: Set<String> = []
 
         // Seed route badges before the first non-zero host delta.
         //
@@ -2877,7 +3166,9 @@ final class AppModel: ObservableObject {
                     return route
                 }()
                 socketObservedRoute[key] = seeded
-                ensureSocketOpen(app: item.key, name: item.name, host: nil, route: seeded, at: at)
+                observedFlowKeys.insert(
+                    ensureSocketOpen(app: item.key, name: item.name, host: nil, route: seeded, at: at)
+                )
                 if case .systemProxy = seeded {
                     routeScore[key] = (direct: 0, proxy: item.viaProxy)
                 } else {
@@ -2890,7 +3181,9 @@ final class AppModel: ObservableObject {
                     socketObservedRoute.removeValue(forKey: key)
                 } else {
                     socketObservedRoute[key] = .direct
-                    ensureSocketOpen(app: item.key, name: item.name, host: nil, route: .direct, at: at)
+                    observedFlowKeys.insert(
+                        ensureSocketOpen(app: item.key, name: item.name, host: nil, route: .direct, at: at)
+                    )
                     routeScore[key] = (direct: item.direct, proxy: 0)
                 }
             }
@@ -2898,11 +3191,18 @@ final class AppModel: ObservableObject {
 
         guard totalDown > 0 || totalUp > 0 else {
             applyObservedRouteScores(routeScore)
+            closeInactiveSocketFlows(keeping: observedFlowKeys, at: at)
             return
         }
         guard byteTotal > 0 else {
-            recordUnattributedDelta(down: totalDown, up: totalUp, at: at)
+            recordUnattributedDelta(
+                down: totalDown,
+                up: totalUp,
+                at: at,
+                sampleInterval: sampleInterval
+            )
             applyObservedRouteScores(routeScore)
+            closeInactiveSocketFlows(keeping: observedFlowKeys, at: at)
             return
         }
 
@@ -2944,12 +3244,15 @@ final class AppModel: ObservableObject {
                     app: item.key,
                     name: item.name,
                     hosts: [],
-                    projects: item.projectWeights,
+                    projects: item.proxyProjectWeights,
+                    unknownProjectWeight: item.proxyUnknownWeight,
                     fallbackDestination: destinationFallback(for: item, path: DestinationKey.directByRule),
                     down: down,
                     up: up,
                     route: .direct,
-                    at: at
+                    at: at,
+                    sampleInterval: sampleInterval,
+                    observedFlowKeys: &observedFlowKeys
                 )
                 attributedDown &+= down
                 attributedUp &+= up
@@ -2976,12 +3279,15 @@ final class AppModel: ObservableObject {
                     app: item.key,
                     name: item.name,
                     hosts: [],
-                    projects: item.projectWeights,
+                    projects: item.proxyProjectWeights,
+                    unknownProjectWeight: item.proxyUnknownWeight,
                     fallbackDestination: destinationFallback(for: item, path: DestinationKey.viaProxyNode),
                     down: down,
                     up: up,
                     route: .systemProxy,
-                    at: at
+                    at: at,
+                    sampleInterval: sampleInterval,
+                    observedFlowKeys: &observedFlowKeys
                 )
                 attributedDown &+= down
                 attributedUp &+= up
@@ -3014,13 +3320,16 @@ final class AppModel: ObservableObject {
                 recordSocketDelta(
                     app: item.key,
                     name: item.name,
-                    hosts: item.hosts,
-                    projects: item.projectWeights,
+                    hosts: item.unknownDirectHosts,
+                    projects: item.directProjectWeights,
+                    unknownProjectWeight: item.directUnknownWeight,
                     fallbackDestination: destinationFallback(for: item, path: nil),
                     down: down,
                     up: up,
                     route: .direct,
-                    at: at
+                    at: at,
+                    sampleInterval: sampleInterval,
+                    observedFlowKeys: &observedFlowKeys
                 )
                 attributedDown &+= down
                 attributedUp &+= up
@@ -3035,9 +3344,11 @@ final class AppModel: ObservableObject {
         recordUnattributedDelta(
             down: totalDown >= attributedDown ? totalDown - attributedDown : 0,
             up: totalUp >= attributedUp ? totalUp - attributedUp : 0,
-            at: at
+            at: at,
+            sampleInterval: sampleInterval
         )
         applyObservedRouteScores(routeScore)
+        closeInactiveSocketFlows(keeping: observedFlowKeys, at: at)
     }
 
     /// Pick Direct vs Proxy (systemProxy bucket) from per-app observed byte scores.
@@ -3108,22 +3419,50 @@ final class AppModel: ObservableObject {
         host: String?,
         route: RouteAction,
         at: Date
-    ) {
+    ) -> String {
         let key = app.storageKey + "|" + route.chipLabel
-        if socketOpenedApps.contains(key) { return }
+        if socketActiveFlows[key] != nil { return key }
+        let id = socketFlowID(for: app, route: route)
         let flow = FlowDescriptor(
-            id: socketFlowID(for: app, route: route),
+            id: id,
             app: app,
             remoteHostname: host,
             remotePort: 443,
             openedAt: at
         )
         aggregator.recordOpen(flow, displayName: name, route: route)
-        socketOpenedApps.insert(key)
+        socketActiveFlows[key] = SyntheticSocketFlow(id: id, app: app, route: route)
+        return key
+    }
+
+    private func closeInactiveSocketFlows(keeping observed: Set<String>, at: Date) {
+        let staleKeys = socketActiveFlows.keys.filter { !observed.contains($0) }
+        guard !staleKeys.isEmpty else { return }
+        var affectedApps: Set<String> = []
+        for key in staleKeys {
+            guard let state = socketActiveFlows.removeValue(forKey: key) else { continue }
+            aggregator.recordClose(
+                flowID: state.id,
+                app: state.app,
+                at: at,
+                route: state.route
+            )
+            socketFlowIDs.removeValue(forKey: key)
+            affectedApps.insert(state.app.storageKey)
+        }
+        let stillActiveApps = Set(socketActiveFlows.values.map { $0.app.storageKey })
+        for key in affectedApps where !stillActiveApps.contains(key) {
+            socketObservedRoute.removeValue(forKey: key)
+        }
     }
 
     /// Preserve host-interface bytes that cannot be assigned without guessing.
-    private func recordUnattributedDelta(down: UInt64, up: UInt64, at: Date) {
+    private func recordUnattributedDelta(
+        down: UInt64,
+        up: UInt64,
+        at: Date,
+        sampleInterval: TimeInterval?
+    ) {
         guard down > 0 || up > 0 else { return }
         aggregator.setDisplayName(
             LocalizationStore.shared.t("traffic.unattributed"),
@@ -3138,7 +3477,8 @@ final class AppModel: ObservableObject {
             route: .inherit,
             transport: .other,
             destinationKey: DestinationKey.unknown,
-            routeKindOverride: .unknown
+            routeKindOverride: .unknown,
+            sampleInterval: sampleInterval
         )
     }
 
@@ -3152,25 +3492,44 @@ final class AppModel: ObservableObject {
         name: String,
         hosts: [String],
         projects: [String: Int] = [:],
+        unknownProjectWeight: Int = 0,
         fallbackDestination: String? = nil,
         down: UInt64,
         up: UInt64,
         route: RouteAction,
-        at: Date
+        at: Date,
+        sampleInterval: TimeInterval?,
+        observedFlowKeys: inout Set<String>
     ) {
         guard down > 0 || up > 0 else { return }
 
-        let segments: [(label: String?, weight: UInt64)]
-        if !projects.isEmpty {
+        var segments: [(label: String?, weight: UInt64)] = projects
             // Sort for a stable split when weights tie.
-            segments = projects
                 .sorted { ($0.value, $1.key) > ($1.value, $0.key) }
                 .map { (label: Optional($0.key), weight: UInt64(max(1, $0.value))) }
-        } else if hosts.isEmpty {
-            // No visible peer: a `path:` label at least says how the bytes left.
-            segments = [(label: fallbackDestination, weight: 1)]
-        } else {
-            segments = hosts.map { (label: Optional($0), weight: UInt64(1)) }
+
+        if unknownProjectWeight > 0 {
+            if hosts.isEmpty {
+                segments.append(
+                    (label: fallbackDestination, weight: UInt64(unknownProjectWeight))
+                )
+            } else {
+                let hostWeights = ProportionalByteAllocator.split(
+                    total: UInt64(unknownProjectWeight),
+                    weights: Array(repeating: 1, count: hosts.count)
+                )
+                for (index, host) in hosts.enumerated() where hostWeights[index] > 0 {
+                    segments.append((label: host, weight: hostWeights[index]))
+                }
+            }
+        }
+        if segments.isEmpty {
+            if hosts.isEmpty {
+                // No visible peer: a `path:` label at least says how the bytes left.
+                segments = [(label: fallbackDestination, weight: 1)]
+            } else {
+                segments = hosts.map { (label: Optional($0), weight: UInt64(1)) }
+            }
         }
 
         let weights = segments.map(\.weight)
@@ -3181,7 +3540,9 @@ final class AppModel: ObservableObject {
             let partUp = upParts[index]
             let host = segment.label
             guard partDown > 0 || partUp > 0 else { continue }
-            ensureSocketOpen(app: app, name: name, host: host, route: route, at: at)
+            observedFlowKeys.insert(
+                ensureSocketOpen(app: app, name: name, host: host, route: route, at: at)
+            )
             let dest = DestinationKey.make(hostname: host, address: nil)
             aggregator.recordDelta(
                 flowID: socketFlowID(for: app, route: route),
@@ -3190,7 +3551,8 @@ final class AppModel: ObservableObject {
                 down: partDown,
                 at: at,
                 route: route,
-                destinationKey: dest
+                destinationKey: dest,
+                sampleInterval: sampleInterval
             )
         }
     }

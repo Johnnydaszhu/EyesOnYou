@@ -18,6 +18,7 @@ public final class ConnectionOwnerResolver: @unchecked Sendable {
 
     private let refreshInterval: TimeInterval
     private let lock = NSLock()
+    private let rebuildLock = NSLock()
     private var portToPID: [UInt16: Int32] = [:]
     private var builtAt: Date?
     private var lastForcedAt: Date?
@@ -81,6 +82,25 @@ public final class ConnectionOwnerResolver: @unchecked Sendable {
     }
 
     private func rebuild(now: Date, forced: Bool) {
+        rebuildLock.lock()
+        defer { rebuildLock.unlock() }
+
+        // Another caller may have completed the same rebuild while this one waited.
+        // Re-check under the single-flight lock before invoking the sampler.
+        lock.lock()
+        let shouldRebuild: Bool
+        if forced {
+            shouldRebuild = lastForcedAt.map {
+                now.timeIntervalSince($0) >= Self.forcedRefreshInterval
+            } ?? true
+        } else {
+            shouldRebuild = builtAt.map {
+                now.timeIntervalSince($0) >= refreshInterval
+            } ?? true
+        }
+        lock.unlock()
+        guard shouldRebuild else { return }
+
         let samples = sampler()
         var map: [UInt16: Int32] = [:]
         map.reserveCapacity(samples.count)
@@ -131,9 +151,30 @@ public final class ConnectionOwnerResolver: @unchecked Sendable {
     /// Unlike the `lsof -iTCP@127.0.0.1` form it replaces, this also sees clients that
     /// dialed the proxy over `::1`.
     public static func loopbackClients() -> [(pid: Int32, localPort: UInt16)] {
-        let table = SocketTable.loopbackClients()
-        if !table.isEmpty { return table }
-        return lsofLoopbackClients()
+        loopbackClients(
+            readSocketTable: { SocketTable.establishedTCPResult() },
+            readLsof: { lsofLoopbackClients() }
+        )
+    }
+
+    static func loopbackClients(
+        readSocketTable: () -> SocketTable.EstablishedTCPResult,
+        readLsof: () -> [(pid: Int32, localPort: UInt16)]
+    ) -> [(pid: Int32, localPort: UInt16)] {
+        switch readSocketTable() {
+        case .failure:
+            return readLsof()
+        case .success(let lines):
+            return lines.compactMap { line in
+                guard SocketTable.isLoopback(line.localHost),
+                      line.localPort > 0,
+                      line.localPort <= 65_535
+                else {
+                    return nil
+                }
+                return (line.pid, UInt16(line.localPort))
+            }
+        }
     }
 
     /// Fallback: same list via `lsof`.
@@ -141,20 +182,15 @@ public final class ConnectionOwnerResolver: @unchecked Sendable {
     /// `-iTCP@127.0.0.1` restricts to loopback so the scan is small — the only
     /// sockets that matter are clients dialing our proxy on localhost.
     public static func lsofLoopbackClients() -> [(pid: Int32, localPort: UInt16)] {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-        process.arguments = ["-nP", "-w", "-iTCP@127.0.0.1", "-Fpn"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        do {
-            try process.run()
-        } catch {
+        guard let result = BoundedProcess.run(
+            executableURL: URL(fileURLWithPath: "/usr/sbin/lsof"),
+            arguments: ["-nP", "-w", "-iTCP@127.0.0.1", "-Fpn"],
+            timeout: 2
+        ), !result.timedOut, result.terminationStatus == 0 || result.terminationStatus == 1
+        else {
             return []
         }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return parseLsofFieldOutput(String(data: data, encoding: .utf8) ?? "")
+        return parseLsofFieldOutput(String(data: result.stdout, encoding: .utf8) ?? "")
     }
 
     /// Parse `lsof -F pn`: `p<pid>` lines introduce a process, `n<name>` name lines

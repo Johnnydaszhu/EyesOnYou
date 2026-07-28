@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import EyesOnYouCore
 
 // MARK: - Compiled rule
@@ -42,7 +43,12 @@ public final class RuleSnapshot: @unchecked Sendable {
     public let generation: UInt64
     public let checksum: Data
     private let rules: [CompiledRule]
-    private let groups: [UUID: AppGroup]
+    /// Group defaults are evaluated for every flow. Build the exclusive lookup once
+    /// instead of scanning every group on every route and firewall decision.
+    ///
+    /// `groups` is ordered user state, so the first group wins deterministically if
+    /// malformed imported policy places the same app in more than one group.
+    private let groupByApp: [AppIdentityKey: AppGroup]
     private let appAssignments: [AppIdentityKey: RouteAction]
 
     public init(
@@ -55,7 +61,13 @@ public final class RuleSnapshot: @unchecked Sendable {
         self.generation = generation
         self.checksum = checksum
         self.rules = rules.sorted(by: CompiledRule.precedes)
-        self.groups = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0) })
+        var groupByApp: [AppIdentityKey: AppGroup] = [:]
+        for group in groups {
+            for app in group.memberKeys where groupByApp[app] == nil {
+                groupByApp[app] = group
+            }
+        }
+        self.groupByApp = groupByApp
         self.appAssignments = appAssignments
     }
 
@@ -101,7 +113,7 @@ public final class RuleSnapshot: @unchecked Sendable {
     }
 
     private func groupContaining(_ app: AppIdentityKey) -> AppGroup? {
-        groups.values.first { $0.memberKeys.contains(app) }
+        groupByApp[app]
     }
 }
 
@@ -113,6 +125,7 @@ public final class PolicyStore: @unchecked Sendable {
     private var groups: [AppGroup] = []
     private var appAssignments: [AppIdentityKey: RouteAction] = [:]
     private var generation: UInt64 = 0
+    private var cachedSnapshot: RuleSnapshot?
 
     public init() {}
 
@@ -130,19 +143,19 @@ public final class PolicyStore: @unchecked Sendable {
         } else {
             rules.append(rule)
         }
-        generation &+= 1
+        didMutate()
     }
 
     public func removeRule(id: UUID) {
         lock.lock(); defer { lock.unlock() }
         rules.removeAll { $0.id == id }
-        generation &+= 1
+        didMutate()
     }
 
     public func setRules(_ newRules: [NetworkPolicyRule]) {
         lock.lock(); defer { lock.unlock() }
         rules = newRules
-        generation &+= 1
+        didMutate()
     }
 
     public func upsert(group: AppGroup) {
@@ -152,17 +165,13 @@ public final class PolicyStore: @unchecked Sendable {
         } else {
             groups.append(group)
         }
-        generation &+= 1
+        didMutate()
     }
 
     public func removeGroup(id: UUID) {
         lock.lock(); defer { lock.unlock() }
         groups.removeAll { $0.id == id }
-        for key in appAssignments.keys {
-            // leave assignments; group membership is on the group
-            _ = key
-        }
-        generation &+= 1
+        didMutate()
     }
 
     public func assignRoute(app: AppIdentityKey, route: RouteAction) {
@@ -172,21 +181,21 @@ public final class PolicyStore: @unchecked Sendable {
         } else {
             appAssignments[app] = route
         }
-        generation &+= 1
+        didMutate()
     }
 
     public func addApp(_ app: AppIdentityKey, toGroup groupID: UUID) {
         lock.lock(); defer { lock.unlock() }
         guard let idx = groups.firstIndex(where: { $0.id == groupID }) else { return }
         groups[idx].add(app)
-        generation &+= 1
+        didMutate()
     }
 
     public func removeApp(_ app: AppIdentityKey, fromGroup groupID: UUID) {
         lock.lock(); defer { lock.unlock() }
         guard let idx = groups.firstIndex(where: { $0.id == groupID }) else { return }
         groups[idx].remove(app)
-        generation &+= 1
+        didMutate()
     }
 
     /// Exclusive membership: remove `app` from every group, then optionally add to `groupID`.
@@ -198,23 +207,24 @@ public final class PolicyStore: @unchecked Sendable {
         if let groupID, let idx = groups.firstIndex(where: { $0.id == groupID }) {
             groups[idx].add(app)
         }
-        generation &+= 1
+        didMutate()
     }
 
     /// Reorder groups to match `orderedIDs` (unknown ids appended at end).
     public func reorderGroups(orderedIDs: [UUID]) {
         lock.lock(); defer { lock.unlock() }
-        var byID = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0) })
+        var remaining = groups
         var next: [AppGroup] = []
         next.reserveCapacity(groups.count)
         for id in orderedIDs {
-            if let g = byID.removeValue(forKey: id) {
-                next.append(g)
+            if let index = remaining.firstIndex(where: { $0.id == id }) {
+                next.append(remaining.remove(at: index))
             }
         }
-        next.append(contentsOf: byID.values)
+        // Preserve the existing order for ids the caller did not mention.
+        next.append(contentsOf: remaining)
         groups = next
-        generation &+= 1
+        didMutate()
     }
 
     public func allRules() -> [NetworkPolicyRule] {
@@ -230,7 +240,7 @@ public final class PolicyStore: @unchecked Sendable {
     public func setGroups(_ newGroups: [AppGroup]) {
         lock.lock(); defer { lock.unlock() }
         groups = newGroups
-        generation &+= 1
+        didMutate()
     }
 
     /// Every explicit per-app route assignment (`.inherit` is absence, never a value).
@@ -242,7 +252,7 @@ public final class PolicyStore: @unchecked Sendable {
     public func setAssignments(_ assignments: [AppIdentityKey: RouteAction]) {
         lock.lock(); defer { lock.unlock() }
         appAssignments = assignments.filter { $0.value != .inherit }
-        generation &+= 1
+        didMutate()
     }
 
     public func assignment(for app: AppIdentityKey) -> RouteAction {
@@ -264,6 +274,10 @@ public final class PolicyStore: @unchecked Sendable {
 
     public func compileSnapshot() -> RuleSnapshot {
         lock.lock()
+        if let cachedSnapshot, cachedSnapshot.generation == generation {
+            lock.unlock()
+            return cachedSnapshot
+        }
         let rulesCopy = rules
         let groupsCopy = groups
         let assignmentsCopy = appAssignments
@@ -271,19 +285,35 @@ public final class PolicyStore: @unchecked Sendable {
         lock.unlock()
 
         // One lookup for the whole compile; it used to be rebuilt for every rule.
-        let groupLookup = Dictionary(uniqueKeysWithValues: groupsCopy.map { ($0.id, $0) })
+        var groupLookup: [UUID: AppGroup] = [:]
+        for group in groupsCopy where groupLookup[group.id] == nil {
+            groupLookup[group.id] = group
+        }
         let compiled = rulesCopy
             .filter(\.enabled)
             .map { Self.compile($0, groupLookup: groupLookup) }
 
         let checksum = Self.checksum(generation: gen, ruleCount: compiled.count)
-        return RuleSnapshot(
+        let snapshot = RuleSnapshot(
             generation: gen,
             checksum: checksum,
             rules: compiled,
             groups: groupsCopy,
             appAssignments: assignmentsCopy
         )
+
+        // Another caller may have compiled the same generation while this one was
+        // outside the lock. Reuse that object so each generation has one cache entry.
+        lock.lock()
+        if generation == gen {
+            if let cachedSnapshot, cachedSnapshot.generation == gen {
+                lock.unlock()
+                return cachedSnapshot
+            }
+            cachedSnapshot = snapshot
+        }
+        lock.unlock()
+        return snapshot
     }
 
     // MARK: - Compile helpers
@@ -293,7 +323,7 @@ public final class PolicyStore: @unchecked Sendable {
         groupLookup: [UUID: AppGroup]
     ) -> CompiledRule {
         let appMatcher = rule.app
-        let destMatcher = rule.destination
+        let destMatcher = CompiledDestinationMatcher(rule.destination)
         let portMatcher = rule.ports
         let transport = rule.transport
         let direction = rule.direction
@@ -336,22 +366,158 @@ public final class PolicyStore: @unchecked Sendable {
         }
     }
 
-    private static func matchesDestination(_ matcher: DestinationMatcher, flow: FlowDescriptor) -> Bool {
+    private static func matchesDestination(
+        _ matcher: CompiledDestinationMatcher,
+        flow: FlowDescriptor
+    ) -> Bool {
         switch matcher {
         case .any:
             return true
         case .hostnameExact(let host):
-            return flow.remoteHostname?.caseInsensitiveCompare(host) == .orderedSame
+            return flow.remoteHostname?.lowercased() == host
         case .hostnameSuffix(let suffix):
             guard let host = flow.remoteHostname?.lowercased() else { return false }
-            let s = suffix.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
             // Label-boundary only: "api.com" must not match "evilapi.com".
-            return host == s || host.hasSuffix("." + s)
+            return host == suffix || host.hasSuffix("." + suffix)
         case .ip(let address):
-            return flow.remoteAddress == address
-        case .cidr(let network, _):
-            // Simplified: exact network string match or address prefix check placeholder
-            return flow.remoteAddress == network || (flow.remoteAddress?.hasPrefix(network.split(separator: ".").first.map(String.init) ?? "___") == true)
+            guard let remote = flow.remoteAddress.flatMap(IPAddress.init(flowAddress:)) else {
+                return false
+            }
+            return remote == address
+        case .cidr(let network):
+            guard let remote = flow.remoteAddress else { return false }
+            return network.contains(remote)
+        case .never:
+            return false
+        }
+    }
+
+    /// Every mutation changes the generation and invalidates the corresponding
+    /// immutable snapshot. Caller must hold `lock`.
+    private func didMutate() {
+        generation &+= 1
+        cachedSnapshot = nil
+    }
+
+    private enum CompiledDestinationMatcher: Sendable {
+        case any
+        case hostnameExact(String)
+        case hostnameSuffix(String)
+        case ip(IPAddress)
+        case cidr(IPNetwork)
+        case never
+
+        init(_ matcher: DestinationMatcher) {
+            switch matcher {
+            case .any:
+                self = .any
+            case .hostnameExact(let raw):
+                let host = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                self = host.isEmpty ? .never : .hostnameExact(host)
+            case .hostnameSuffix(let raw):
+                let host = raw
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .lowercased()
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                self = host.isEmpty ? .never : .hostnameSuffix(host)
+            case .ip(let raw):
+                self = IPAddress(ruleAddress: raw).map(Self.ip) ?? .never
+            case .cidr(let raw, let prefix):
+                self = IPNetwork(address: raw, prefix: prefix).map(Self.cidr) ?? .never
+            }
+        }
+    }
+
+    /// Canonical binary representation used by exact-IP and CIDR matchers.
+    private struct IPAddress: Equatable, Sendable {
+        enum Family: Equatable, Sendable {
+            case ipv4
+            case ipv6
+        }
+
+        let family: Family
+        let bytes: [UInt8]
+
+        init?(ruleAddress raw: String) {
+            self.init(raw, permitsIPv6Scope: false)
+        }
+
+        init?(flowAddress raw: String) {
+            self.init(raw, permitsIPv6Scope: true)
+        }
+
+        private init?(_ raw: String, permitsIPv6Scope: Bool) {
+            var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return nil }
+
+            if permitsIPv6Scope, let percent = text.firstIndex(of: "%") {
+                text = String(text[..<percent])
+            } else if text.contains("%") {
+                return nil
+            }
+
+            var ipv4 = in_addr()
+            if inet_pton(AF_INET, text, &ipv4) == 1 {
+                family = .ipv4
+                bytes = withUnsafeBytes(of: ipv4) { Array($0) }
+                return
+            }
+
+            var ipv6 = in6_addr()
+            if inet_pton(AF_INET6, text, &ipv6) == 1 {
+                family = .ipv6
+                bytes = withUnsafeBytes(of: ipv6) { Array($0) }
+                return
+            }
+            return nil
+        }
+    }
+
+    /// A validated, masked network. The textual rule is parsed once at snapshot
+    /// compilation; evaluation compares bytes and never performs string-prefix work.
+    private struct IPNetwork: Sendable {
+        let family: IPAddress.Family
+        let maskedAddress: [UInt8]
+        let wholeBytes: Int
+        let partialMask: UInt8
+
+        init?(address raw: String, prefix: UInt8) {
+            guard let address = IPAddress(ruleAddress: raw) else { return nil }
+            let bitCount = address.bytes.count * 8
+            guard Int(prefix) <= bitCount else { return nil }
+
+            family = address.family
+            wholeBytes = Int(prefix) / 8
+            let remainingBits = Int(prefix) % 8
+            partialMask = remainingBits == 0 ? 0 : UInt8.max << (8 - remainingBits)
+
+            var masked = address.bytes
+            if wholeBytes < masked.count {
+                if partialMask != 0 {
+                    masked[wholeBytes] &= partialMask
+                }
+                let zeroFrom = wholeBytes + (partialMask == 0 ? 0 : 1)
+                if zeroFrom < masked.count {
+                    for index in zeroFrom..<masked.count {
+                        masked[index] = 0
+                    }
+                }
+            }
+            maskedAddress = masked
+        }
+
+        func contains(_ raw: String) -> Bool {
+            guard let address = IPAddress(flowAddress: raw),
+                  address.family == family,
+                  address.bytes.count == maskedAddress.count
+            else { return false }
+
+            if wholeBytes > 0,
+               address.bytes[..<wholeBytes] != maskedAddress[..<wholeBytes] {
+                return false
+            }
+            guard partialMask != 0 else { return true }
+            return (address.bytes[wholeBytes] & partialMask) == maskedAddress[wholeBytes]
         }
     }
 

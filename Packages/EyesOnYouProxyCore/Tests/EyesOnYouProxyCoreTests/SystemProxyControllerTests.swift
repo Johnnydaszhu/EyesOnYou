@@ -156,4 +156,28 @@ final class SystemProxyControllerTests: XCTestCase {
         """
         XCTAssertEqual(SystemProxyController.parseServices(output), ["Wi-Fi", "iPhone USB"])
     }
+
+    func testNetworkSetupRunnerTerminatesAtDeadline() {
+        let started = Date()
+        let result = SystemProxyController.networksetup(
+            ["2"],
+            executableURL: URL(fileURLWithPath: "/bin/sleep"),
+            timeout: 0.05
+        )
+
+        XCTAssertEqual(result.status, -1)
+        XCTAssertTrue(result.output.contains("timed out"))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1)
+    }
+
+    func testNetworkSetupRunnerCapturesStandardError() {
+        let result = SystemProxyController.networksetup(
+            ["-c", "echo failure-message >&2; exit 7"],
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            timeout: 1
+        )
+
+        XCTAssertEqual(result.status, 7)
+        XCTAssertTrue(result.output.contains("failure-message"))
+    }
 }

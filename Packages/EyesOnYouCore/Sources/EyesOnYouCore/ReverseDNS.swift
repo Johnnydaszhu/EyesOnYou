@@ -35,43 +35,46 @@ public enum RemoteDestination {
 
 /// Best-effort reverse DNS for classifying proxy egress IPs against domain rules.
 public enum ReverseDNS {
-    public static func lookup(_ ip: String, timeoutSeconds: TimeInterval = 0.35) -> String? {
+    /// Reverse lookup through a killable helper with both resolver and wall-clock
+    /// deadlines. A stalled resolver can no longer occupy the enrichment queue.
+    public static func lookup(_ ip: String) -> String? {
         let trimmed = ip.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
-        var hints = addrinfo(
-            ai_flags: AI_NUMERICHOST,
-            ai_family: AF_UNSPEC,
-            ai_socktype: SOCK_STREAM,
-            ai_protocol: 0,
-            ai_addrlen: 0,
-            ai_canonname: nil,
-            ai_addr: nil,
-            ai_next: nil
-        )
-        var info: UnsafeMutablePointer<addrinfo>?
-        let lookupResult = trimmed.withCString { cHost in
-            getaddrinfo(cHost, nil, &hints, &info)
+        var ipv4 = in_addr()
+        var ipv6 = in6_addr()
+        let isNumeric = trimmed.withCString {
+            inet_pton(AF_INET, $0, &ipv4) == 1 || inet_pton(AF_INET6, $0, &ipv6) == 1
         }
-        guard lookupResult == 0, let info else { return nil }
-        defer { freeaddrinfo(info) }
+        guard isNumeric else { return nil }
 
-        var hostBuffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-        let flags = NI_NAMEREQD
-        let status = getnameinfo(
-            info.pointee.ai_addr,
-            info.pointee.ai_addrlen,
-            &hostBuffer,
-            socklen_t(hostBuffer.count),
-            nil,
-            0,
-            flags
-        )
-        guard status == 0 else { return nil }
-        let name = String(cString: hostBuffer)
-        let lower = name.lowercased()
-        if lower.isEmpty || lower == trimmed.lowercased() { return nil }
-        _ = timeoutSeconds
-        return lower
+        guard let result = BoundedProcess.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/dig"),
+            arguments: ["+time=1", "+tries=1", "+short", "-x", trimmed],
+            timeout: 2
+        ), !result.timedOut, result.terminationStatus == 0,
+              let output = String(data: result.stdout, encoding: .utf8)
+        else {
+            return nil
+        }
+        return parseLookupOutput(output, originalIP: trimmed)
+    }
+
+    static func parseLookupOutput(_ output: String, originalIP: String) -> String? {
+        for rawLine in output.split(whereSeparator: \.isNewline) {
+            var candidate = rawLine.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !candidate.isEmpty, !candidate.hasPrefix(";") else { continue }
+            while candidate.last == "." {
+                candidate.removeLast()
+            }
+            guard !candidate.isEmpty,
+                  candidate != originalIP.lowercased(),
+                  !candidate.contains(where: \.isWhitespace)
+            else {
+                continue
+            }
+            return candidate
+        }
+        return nil
     }
 }

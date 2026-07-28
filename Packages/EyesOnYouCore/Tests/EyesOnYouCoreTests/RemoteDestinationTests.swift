@@ -2,6 +2,20 @@ import XCTest
 @testable import EyesOnYouCore
 
 final class RemoteDestinationTests: XCTestCase {
+    func testReverseDNSOutputNormalization() {
+        XCTAssertEqual(
+            ReverseDNS.parseLookupOutput(
+                "LB-140-82-121-4.GITHUB.COM.\n",
+                originalIP: "140.82.121.4"
+            ),
+            "lb-140-82-121-4.github.com"
+        )
+        XCTAssertNil(
+            ReverseDNS.parseLookupOutput("140.82.121.4\n", originalIP: "140.82.121.4")
+        )
+        XCTAssertNil(ReverseDNS.parseLookupOutput("\n", originalIP: "140.82.121.4"))
+    }
+
     func testResolvedHostnameWinsOverAddress() {
         XCTAssertEqual(
             RemoteDestination.label(host: "140.82.121.4", resolved: "lb-140-82-121-4.github.com"),

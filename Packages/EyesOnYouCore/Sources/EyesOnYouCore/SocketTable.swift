@@ -13,18 +13,50 @@ import Foundation
 /// Visibility matches `lsof` run as the same user: sockets belonging to other users'
 /// processes are not readable without root, and are skipped rather than reported.
 public enum SocketTable {
+    private enum SocketFDListResult {
+        case success(Int)
+        case failure
+    }
+
+    /// Distinguishes a successful kernel walk with no matching sockets from a
+    /// failure to read the process table at all.
+    public enum EstablishedTCPResult: Equatable, Sendable {
+        case success([ActiveAppSocketSampler.ConnectionLine])
+        case failure
+    }
+
     /// Every ESTABLISHED TCP socket this process is allowed to see.
     public static func establishedTCP() -> [ActiveAppSocketSampler.ConnectionLine] {
-        guard let pids = allPIDs() else { return [] }
+        switch establishedTCPResult() {
+        case let .success(lines):
+            return lines
+        case .failure:
+            return []
+        }
+    }
+
+    /// Read ESTABLISHED TCP sockets while preserving whether the kernel walk
+    /// succeeded. An empty successful result is valid and must not trigger a
+    /// more expensive subprocess fallback.
+    public static func establishedTCPResult() -> EstablishedTCPResult {
+        guard let pids = allPIDs() else { return .failure }
 
         var lines: [ActiveAppSocketSampler.ConnectionLine] = []
         lines.reserveCapacity(256)
         // Reused across processes: the descriptor table is read once per pid and a
         // fresh allocation each time would dominate the walk.
         var fdBuffer = [proc_fdinfo](repeating: proc_fdinfo(), count: 256)
+        var readableProcessCount = 0
 
         for pid in pids where pid > 0 {
-            let fdCount = listSocketFDs(pid: pid, into: &fdBuffer)
+            let fdCount: Int
+            switch listSocketFDs(pid: pid, into: &fdBuffer) {
+            case .success(let count):
+                readableProcessCount += 1
+                fdCount = count
+            case .failure:
+                continue
+            }
             guard fdCount > 0 else { continue }
 
             var command: String?
@@ -48,7 +80,14 @@ public enum SocketTable {
                 )
             }
         }
-        return lines
+        return classifyKernelWalk(lines: lines, readableProcessCount: readableProcessCount)
+    }
+
+    static func classifyKernelWalk(
+        lines: [ActiveAppSocketSampler.ConnectionLine],
+        readableProcessCount: Int
+    ) -> EstablishedTCPResult {
+        readableProcessCount > 0 ? .success(lines) : .failure
     }
 
     /// ESTABLISHED TCP sockets whose local endpoint is loopback, as (pid, localPort).
@@ -64,7 +103,38 @@ public enum SocketTable {
     }
 
     public static func isLoopback(_ host: String) -> Bool {
-        host == "127.0.0.1" || host == "::1" || host == "localhost"
+        let candidate = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        if candidate.caseInsensitiveCompare("localhost") == .orderedSame {
+            return true
+        }
+
+        var ipv4 = in_addr()
+        let parsedIPv4 = candidate.withCString {
+            inet_pton(AF_INET, $0, &ipv4)
+        }
+        if parsedIPv4 == 1 {
+            return withUnsafeBytes(of: ipv4) { bytes in
+                bytes.first == 127
+            }
+        }
+
+        var ipv6 = in6_addr()
+        let parsedIPv6 = candidate.withCString {
+            inet_pton(AF_INET6, $0, &ipv6)
+        }
+        guard parsedIPv6 == 1 else { return false }
+
+        let bytes = withUnsafeBytes(of: ipv6) { Array($0) }
+        guard bytes.count == 16 else { return false }
+        let isIPv6Loopback = bytes[0..<15].allSatisfy { $0 == 0 } && bytes[15] == 1
+        if isIPv6Loopback {
+            return true
+        }
+
+        let isIPv4Mapped = bytes[0..<10].allSatisfy { $0 == 0 }
+            && bytes[10] == 0xFF
+            && bytes[11] == 0xFF
+        return isIPv4Mapped && bytes[12] == 127
     }
 
     // MARK: - libproc
@@ -91,21 +161,30 @@ public enum SocketTable {
         return nil
     }
 
-    /// Fill `buffer` with the process's descriptor table; returns the entry count.
-    private static func listSocketFDs(pid: pid_t, into buffer: inout [proc_fdinfo]) -> Int {
+    /// Fill `buffer` with the process's descriptor table while preserving whether
+    /// `libproc` actually allowed the read.
+    private static func listSocketFDs(
+        pid: pid_t,
+        into buffer: inout [proc_fdinfo]
+    ) -> SocketFDListResult {
         let stride = MemoryLayout<proc_fdinfo>.stride
-        // Processes owned by another user return 0 here (EPERM), same as under `lsof`.
+        errno = 0
         let needed = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
-        guard needed > 0 else { return 0 }
+        guard needed > 0 else {
+            return errno == 0 ? .success(0) : .failure
+        }
         let entries = Int(needed) / stride
         if buffer.count < entries {
             buffer = [proc_fdinfo](repeating: proc_fdinfo(), count: entries * 2)
         }
+        errno = 0
         let written = buffer.withUnsafeMutableBufferPointer { raw in
             proc_pidinfo(pid, PROC_PIDLISTFDS, 0, raw.baseAddress, Int32(raw.count * stride))
         }
-        guard written > 0 else { return 0 }
-        return min(Int(written) / stride, buffer.count)
+        guard written > 0 else {
+            return errno == 0 ? .success(0) : .failure
+        }
+        return .success(min(Int(written) / stride, buffer.count))
     }
 
     private static func tcpEndpoints(

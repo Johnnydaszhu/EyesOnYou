@@ -1,4 +1,5 @@
 import XCTest
+import Darwin
 @testable import EyesOnYouCore
 
 final class HostNetworkSamplerTests: XCTestCase {
@@ -21,13 +22,15 @@ final class HostNetworkSamplerTests: XCTestCase {
         _ name: String,
         incoming: UInt64,
         outgoing: UInt64,
-        isUp: Bool = true
+        isUp: Bool = true,
+        source: HostNetworkSampler.CounterSource = .route64
     ) -> HostNetworkSampler.InterfaceCounters {
         HostNetworkSampler.InterfaceCounters(
             name: name,
             bytesIn: incoming,
             bytesOut: outgoing,
-            isUp: isUp
+            isUp: isUp,
+            source: source
         )
     }
 
@@ -79,19 +82,35 @@ final class HostNetworkSamplerTests: XCTestCase {
         XCTAssertEqual(first.deltaOut, 25)
         XCTAssertEqual(first.downBps, 60, accuracy: 0.001)
         XCTAssertEqual(first.upBps, 25, accuracy: 0.001)
+        XCTAssertEqual(first.sampleInterval, 1, accuracy: 0.001)
 
         let second = sampler.sampleRates(now: start.addingTimeInterval(2))
         XCTAssertEqual(second.deltaIn, 30)
         XCTAssertEqual(second.deltaOut, 50)
         XCTAssertEqual(second.downBps, 30, accuracy: 0.001)
         XCTAssertEqual(second.upBps, 50, accuracy: 0.001)
+        XCTAssertEqual(second.sampleInterval, 1, accuracy: 0.001)
     }
 
-    func testThirtyTwoBitCounterWrapProducesSmallDelta() {
+    func testLegacyThirtyTwoBitCounterWrapProducesSmallDelta() {
         let maximum = UInt64(UInt32.max)
         let source = SnapshotSource([
-            [interface("en0", incoming: maximum - 5, outgoing: maximum - 10)],
-            [interface("en0", incoming: 7, outgoing: 4)],
+            [
+                interface(
+                    "en0",
+                    incoming: maximum - 5,
+                    outgoing: maximum - 10,
+                    source: .legacy32
+                )
+            ],
+            [
+                interface(
+                    "en0",
+                    incoming: 7,
+                    outgoing: 4,
+                    source: .legacy32
+                )
+            ],
         ])
         let sampler = HostNetworkSampler(counterProvider: source.next)
         let start = Date(timeIntervalSinceReferenceDate: 2_000)
@@ -101,21 +120,131 @@ final class HostNetworkSamplerTests: XCTestCase {
 
         XCTAssertEqual(rates.deltaIn, 13)
         XCTAssertEqual(rates.deltaOut, 15)
+        XCTAssertEqual(rates.sampleInterval, 1, accuracy: 0.001)
     }
 
-    func testCounterResetDoesNotLookLikeWrap() {
+    func testLegacyThirtyTwoBitCounterResetDoesNotLookLikeWrap() {
         let source = SnapshotSource([
-            [interface("en0", incoming: 10_000, outgoing: 20_000)],
+            [
+                interface(
+                    "en0",
+                    incoming: 10_000,
+                    outgoing: 20_000,
+                    source: .legacy32
+                )
+            ],
+            [
+                interface(
+                    "en0",
+                    incoming: 10,
+                    outgoing: 20,
+                    source: .legacy32
+                )
+            ],
+        ])
+        let sampler = HostNetworkSampler(counterProvider: source.next)
+        let start = Date(timeIntervalSinceReferenceDate: 2_250)
+
+        XCTAssertEqual(sampler.sampleRates(now: start), .init())
+        let rates = sampler.sampleRates(now: start.addingTimeInterval(1))
+
+        XCTAssertEqual(rates.deltaIn, 0)
+        XCTAssertEqual(rates.deltaOut, 0)
+        XCTAssertEqual(rates.sampleInterval, 1, accuracy: 0.001)
+    }
+
+    func testSixtyFourBitCountersPreserveValuesBeyondFourGiB() {
+        let source = SnapshotSource([
+            [interface("en0", incoming: 8_000_000_000, outgoing: 9_000_000_000)],
+            [interface("en0", incoming: 8_000_001_234, outgoing: 9_000_004_321)],
+        ])
+        let sampler = HostNetworkSampler(counterProvider: source.next)
+        let start = Date(timeIntervalSinceReferenceDate: 2_500)
+
+        XCTAssertEqual(sampler.sampleRates(now: start), .init())
+        let rates = sampler.sampleRates(now: start.addingTimeInterval(2))
+
+        XCTAssertEqual(rates.deltaIn, 1_234)
+        XCTAssertEqual(rates.deltaOut, 4_321)
+        XCTAssertEqual(rates.downBps, 617, accuracy: 0.001)
+        XCTAssertEqual(rates.upBps, 2_160.5, accuracy: 0.001)
+        XCTAssertEqual(rates.sampleInterval, 2, accuracy: 0.001)
+    }
+
+    func testSixtyFourBitCounterResetDoesNotLookLikeWrap() {
+        let source = SnapshotSource([
+            [interface("en0", incoming: 8_000_000_000, outgoing: 9_000_000_000)],
             [interface("en0", incoming: 10, outgoing: 20)],
         ])
         let sampler = HostNetworkSampler(counterProvider: source.next)
         let start = Date(timeIntervalSinceReferenceDate: 3_000)
 
         XCTAssertEqual(sampler.sampleRates(now: start), .init())
+        let rates = sampler.sampleRates(now: start.addingTimeInterval(1))
+        XCTAssertEqual(rates.deltaIn, 0)
+        XCTAssertEqual(rates.deltaOut, 0)
+        XCTAssertEqual(rates.downBps, 0)
+        XCTAssertEqual(rates.upBps, 0)
+        XCTAssertEqual(rates.sampleInterval, 1, accuracy: 0.001)
+    }
+
+    func testRouteMessageParserKeepsSixtyFourBitCounters() {
+        var message = if_msghdr2()
+        message.ifm_msglen = UInt16(MemoryLayout<if_msghdr2>.size)
+        message.ifm_type = UInt8(RTM_IFINFO2)
+        message.ifm_index = 7
+        message.ifm_flags = Int32(IFF_UP)
+        message.ifm_data.ifi_ibytes = 8_000_000_000
+        message.ifm_data.ifi_obytes = 9_000_000_000
+        let data = withUnsafeBytes(of: &message) { Data($0) }
+
+        let parsed = HostNetworkSampler.parseInterfaceCounters64(data) { index in
+            index == 7 ? "en7" : nil
+        }
+
         XCTAssertEqual(
-            sampler.sampleRates(now: start.addingTimeInterval(1)),
-            .init()
+            parsed,
+            [
+                interface(
+                    "en7",
+                    incoming: 8_000_000_000,
+                    outgoing: 9_000_000_000
+                )
+            ]
         )
+    }
+
+    func testCounterSourceChangeStartsANewBaseline() {
+        let source = SnapshotSource([
+            [interface("en0", incoming: 100, outgoing: 200)],
+            [
+                interface(
+                    "en0",
+                    incoming: 300,
+                    outgoing: 400,
+                    source: .legacy32
+                )
+            ],
+            [interface("en0", incoming: 500, outgoing: 600)],
+            [interface("en0", incoming: 550, outgoing: 675)],
+        ])
+        let sampler = HostNetworkSampler(counterProvider: source.next)
+        let start = Date(timeIntervalSinceReferenceDate: 3_500)
+
+        XCTAssertEqual(sampler.sampleRates(now: start), .init())
+        XCTAssertEqual(
+            sampler.sampleRates(now: start.addingTimeInterval(1)).deltaIn,
+            0
+        )
+        XCTAssertEqual(
+            sampler.sampleRates(now: start.addingTimeInterval(2)).deltaIn,
+            0
+        )
+
+        let stable = sampler.sampleRates(now: start.addingTimeInterval(3))
+        XCTAssertEqual(stable.deltaIn, 50)
+        XCTAssertEqual(stable.deltaOut, 75)
+        XCTAssertEqual(stable.sampleInterval, 1, accuracy: 0.001)
     }
 
     func testNewInterfaceStartsAtBaselineAndRemovedInterfaceStopsContributing() {
@@ -139,6 +268,7 @@ final class HostNetworkSamplerTests: XCTestCase {
         let removed = sampler.sampleRates(now: start.addingTimeInterval(2))
         XCTAssertEqual(removed.deltaIn, 20)
         XCTAssertEqual(removed.deltaOut, 30)
+        XCTAssertEqual(removed.sampleInterval, 1, accuracy: 0.001)
     }
 
     func testShortIntervalDoesNotConsumeCountersBeforeNextRealSample() {
@@ -159,6 +289,7 @@ final class HostNetworkSamplerTests: XCTestCase {
         let rates = sampler.sampleRates(now: start.addingTimeInterval(1))
         XCTAssertEqual(rates.deltaIn, 120)
         XCTAssertEqual(rates.deltaOut, 90)
+        XCTAssertEqual(rates.sampleInterval, 1, accuracy: 0.001)
     }
 
     func testDisappearedInterfaceDoesNotReplayItsLifetimeCounterWhenItReturns() {
@@ -171,14 +302,15 @@ final class HostNetworkSamplerTests: XCTestCase {
         let start = Date(timeIntervalSinceReferenceDate: 5_000)
 
         XCTAssertEqual(sampler.sampleRates(now: start), .init())
-        XCTAssertEqual(
-            sampler.sampleRates(now: start.addingTimeInterval(1)),
-            .init()
-        )
-        XCTAssertEqual(
-            sampler.sampleRates(now: start.addingTimeInterval(2)),
-            .init()
-        )
+        let disappeared = sampler.sampleRates(now: start.addingTimeInterval(1))
+        XCTAssertEqual(disappeared.deltaIn, 0)
+        XCTAssertEqual(disappeared.deltaOut, 0)
+        XCTAssertEqual(disappeared.sampleInterval, 1, accuracy: 0.001)
+
+        let returned = sampler.sampleRates(now: start.addingTimeInterval(2))
+        XCTAssertEqual(returned.deltaIn, 0)
+        XCTAssertEqual(returned.deltaOut, 0)
+        XCTAssertEqual(returned.sampleInterval, 1, accuracy: 0.001)
     }
 
     func testAggregateIncludesOnlyUpPhysicalInterfaces() {

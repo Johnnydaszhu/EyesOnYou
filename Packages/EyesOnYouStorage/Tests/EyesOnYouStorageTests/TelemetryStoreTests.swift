@@ -103,4 +103,77 @@ final class TelemetryStoreTests: XCTestCase {
         XCTAssertEqual(totals.flowsOpened, 1)
         XCTAssertEqual(totals.flowsClosed, 1)
     }
+
+    func testReadOnlyStoreReadsButCannotMutateOrCreateDatabase() throws {
+        let app = AppIdentityKey(teamIdentifier: nil, signingIdentifier: "com.example.ReadOnly")
+        var writer: TelemetryStore? = try TelemetryStore(path: tempPath)
+        _ = try writer?.upsertApp(app, displayName: "Read Only")
+        writer = nil
+
+        let reader = try TelemetryStore(path: tempPath, mode: .readOnly)
+        XCTAssertEqual(try reader.statistics().apps, 1)
+        XCTAssertThrowsError(try reader.upsertApp(app, displayName: "Changed"))
+
+        let missingPath = tempPath + ".missing"
+        XCTAssertThrowsError(try TelemetryStore(path: missingPath, mode: .readOnly))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: missingPath))
+    }
+
+    func testLongLivedReaderNeverReusesDeletedAppIdentity() throws {
+        let removed = AppIdentityKey(
+            teamIdentifier: nil,
+            signingIdentifier: "com.example.Removed"
+        )
+        let replacement = AppIdentityKey(
+            teamIdentifier: nil,
+            signingIdentifier: "com.example.Replacement"
+        )
+        let base = Date(timeIntervalSince1970: 1_700_200_000)
+        let baseMs = Int64(base.timeIntervalSince1970 * 1_000)
+        let writer = try TelemetryStore(path: tempPath)
+        try writer.mergeBucket(TrafficBucket(
+            key: TrafficBucketKey(
+                granularity: .oneMinute,
+                bucketStartMs: baseMs,
+                app: removed,
+                destinationKey: "removed.example"
+            ),
+            totals: TrafficTotals(bytesDown: 10)
+        ))
+        let reader = try TelemetryStore(path: tempPath, mode: .readOnly)
+        let end = base.addingTimeInterval(60)
+        XCTAssertEqual(
+            try reader.queryTotals(app: removed, granularity: .oneMinute, from: base, to: end).bytesDown,
+            10
+        )
+
+        _ = try writer.deleteApp(removed)
+        try writer.mergeBucket(TrafficBucket(
+            key: TrafficBucketKey(
+                granularity: .oneMinute,
+                bucketStartMs: baseMs,
+                app: replacement,
+                destinationKey: "replacement.example"
+            ),
+            totals: TrafficTotals(bytesDown: 20)
+        ))
+
+        XCTAssertEqual(
+            try reader.queryTotals(app: removed, granularity: .oneMinute, from: base, to: end).bytesDown,
+            0
+        )
+        XCTAssertEqual(
+            try reader.queryTopDestinations(
+                app: removed,
+                granularity: .oneMinute,
+                from: base,
+                to: end
+            ).count,
+            0
+        )
+        XCTAssertEqual(
+            try reader.queryTotals(app: replacement, granularity: .oneMinute, from: base, to: end).bytesDown,
+            20
+        )
+    }
 }

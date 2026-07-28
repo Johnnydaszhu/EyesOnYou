@@ -179,9 +179,11 @@ final class BrowserTabSampler {
     /// hierarchy cannot stall the main thread.
     private func findWebArea(in root: AXUIElement, maxVisited: Int = 250) -> AXUIElement? {
         var queue: [AXUIElement] = [root]
+        var nextIndex = 0
         var visited = 0
-        while !queue.isEmpty, visited < maxVisited {
-            let element = queue.removeFirst()
+        while nextIndex < queue.count, visited < maxVisited {
+            let element = queue[nextIndex]
+            nextIndex += 1
             visited += 1
             if let role: String = copyValue(element, attribute: kAXRoleAttribute as CFString),
                role == "AXWebArea" {
