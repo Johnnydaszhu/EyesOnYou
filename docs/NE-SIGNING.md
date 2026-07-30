@@ -55,8 +55,19 @@ credentials out of any shared environment.
    - `<your.prefix>.EyesOnYou` — enable **Network Extensions** and **System
      Extension** capabilities.
    - `<your.prefix>.EyesOnYou.NetworkExtension` — enable **Network Extensions**.
-2. **App Group**: register `group.<your.prefix>.EyesOnYou` and add it to both App
-   IDs.
+2. **App Group — not needed for precise mode; skip it.** Nothing in the code reads
+   an App Group container: the host and the extension talk over
+   `sendProviderMessage` (see `TransparentProxyController`), and
+   `EyesOnYouConstants.appGroupIdentifier` is currently an unused declaration.
+   The `com.apple.security.application-groups` key in the `.entitlements.example`
+   templates is therefore optional — leaving it in an entitlement that your
+   provisioning profile does not grant is a common "profile doesn't match
+   entitlements" failure, so drop the key unless you actually need it.
+
+   If you do keep it: on **macOS** an app group identifier must be prefixed with
+   your Team ID (`$(TeamIdentifierPrefix)com.yourname.EyesOnYou`, which is what
+   `config/EyesOnYou.xcconfig.example` already does) — the `group.` prefix is the
+   iOS convention and does not apply here.
 3. **Network Extension entitlement for self-distribution.** Development signing
    works immediately. For a Developer ID build distributed outside the App Store,
    Apple additionally requires an approved request for the

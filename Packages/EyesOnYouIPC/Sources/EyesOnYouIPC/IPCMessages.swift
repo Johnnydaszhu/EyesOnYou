@@ -115,6 +115,10 @@ public enum IPCCoding {
 }
 
 public enum EyesOnYouConstants {
+    /// Unused today: host↔extension messaging goes over `sendProviderMessage`,
+    /// not a shared container. Kept as the name to use if a future feature needs
+    /// one — note macOS app groups must be Team-ID-prefixed, not `group.`-prefixed
+    /// (see docs/NE-SIGNING.md).
     public static let appGroupIdentifier = "group.com.example.EyesOnYou"
     public static let machServiceName = "com.example.EyesOnYou.xpc"
     public static let hostBundleID = "com.example.EyesOnYou"
