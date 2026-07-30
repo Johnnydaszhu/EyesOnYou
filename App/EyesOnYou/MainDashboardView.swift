@@ -132,6 +132,11 @@ struct MainDashboardView: View {
             title = l10n.t("enforcement.badge.active")
             detail = l10n.t("enforcement.active")
             tint = EyesOnYouTheme.accentGreen
+        case .shadowedByVPN(_, let observedProxy):
+            title = l10n.t("enforcement.badge.shadowed")
+            let observed = observedProxy.map { " (\($0))" } ?? ""
+            detail = "\(l10n.t("enforcement.shadowed"))\(observed)\n\(l10n.t("enforcement.shadowed.hint"))"
+            tint = EyesOnYouTheme.accentAmber
         case .failed(let message):
             title = l10n.t("enforcement.badge.failed")
             detail = "\(l10n.t("enforcement.failed"))\n\(message)"

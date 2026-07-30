@@ -2283,27 +2283,12 @@ final class AppModel: ObservableObject {
         proxyEnforcementStatus = proxyEnforcementController.status
     }
 
-    /// Fixed upstream usable by the local enforcement proxy. PAC and WPAD are
-    /// intentionally omitted: forwarding to them requires evaluating a URL-specific
-    /// script, so an explicit force-proxy rule must report unavailable instead.
+    /// Fixed upstream usable by the local enforcement proxy, from the merged proxy
+    /// config (the same dictionary apps resolve — includes a VPN's NE-provided
+    /// settings that `networksetup` never shows). PAC and WPAD are intentionally
+    /// omitted; see `SystemProxySnapshot.fixedUpstream`.
     private var fixedSystemProxyUpstream: ProxyUpstream? {
-        guard systemProxy.configurationState == .enabled else { return nil }
-        if systemProxy.socksEnabled,
-           let host = systemProxy.socksHost,
-           let port = systemProxy.socksPort.flatMap(UInt16.init(exactly:)) {
-            return ProxyUpstream(kind: .socks5, host: host, port: port)
-        }
-        if systemProxy.httpsEnabled,
-           let host = systemProxy.httpsHost,
-           let port = systemProxy.httpsPort.flatMap(UInt16.init(exactly:)) {
-            return ProxyUpstream(kind: .http, host: host, port: port)
-        }
-        if systemProxy.httpEnabled,
-           let host = systemProxy.httpHost,
-           let port = systemProxy.httpPort.flatMap(UInt16.init(exactly:)) {
-            return ProxyUpstream(kind: .http, host: host, port: port)
-        }
-        return nil
+        systemProxy.fixedUpstream
     }
 
     private func noteEnforcedFlow(_ event: LocalProxyServer.FlowEvent) {
@@ -2483,10 +2468,14 @@ final class AppModel: ObservableObject {
         let selectedIdentity = selectedApp
 
         // OS system proxy first — drives route chips + socket attribution.
-        publish(\.systemProxy, SystemProxyReader.current())
+        let mergedProxies = SystemProxyReader.current()
+        publish(\.systemProxy, mergedProxies)
         if !systemProxy.isEnabled {
             publish(\.systemProxyNodeIP, nil)
         }
+        // Enforcement badge follows the VPN tunnel: a NE-provided proxy config can
+        // shadow (or stop shadowing) our takeover at any time.
+        proxyEnforcementController.reevaluateShadowing(merged: mergedProxies)
 
         let hostRates = hostNetworkSampler.sampleRates(now: now)
 

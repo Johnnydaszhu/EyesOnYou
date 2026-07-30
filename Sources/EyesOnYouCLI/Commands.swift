@@ -850,21 +850,37 @@ func cmdEnforce(opts: GlobalOptions) throws -> ExitCode {
     switch sub {
     case "status":
         let services = controller.enabledServices()
-        let live = services.map { service -> [String: Any] in
-            let state = controller.captureState(service: service)
-            return [
-                "service": service,
+        let states = services.map { controller.captureState(service: $0) }
+        let live = states.map { state -> [String: Any] in
+            [
+                "service": state.service,
                 "secure_enabled": state.secureEnabled,
                 "secure_host": state.secureHost,
                 "secure_port": state.securePort
             ]
         }
         let backup = controller.loadBackup()
+        let merged = SystemProxyReader.current()
+        // The port our takeover wrote — visible in the networksetup layer even
+        // when a VPN's NE-provided settings shadow it in the merged config.
+        let localPort = states.lazy
+            .filter { $0.secureEnabled && $0.secureHost == "127.0.0.1" }
+            .compactMap { UInt16(exactly: $0.securePort) }
+            .first
+        var shadowedBy: String?
+        if controller.hasPendingBackup, let localPort,
+           case .shadowed(let observed) = SystemProxyController.verifyTakeover(
+               localPort: localPort, merged: merged
+           ) {
+            shadowedBy = observed ?? "unknown proxy"
+        }
         var payload: [String: Any] = [
             "ok": true,
             "takeover_active": controller.hasPendingBackup,
             "backup_file": EyesOnYouPaths.systemProxyBackup.path,
-            "services": live
+            "services": live,
+            "merged_proxy": merged.primaryEndpointLabel as Any,
+            "shadowed_by_vpn": shadowedBy as Any
         ]
         if let upstream = backup?.upstream {
             payload["saved_upstream"] = ["host": upstream.host, "port": Int(upstream.port)]
@@ -878,6 +894,11 @@ func cmdEnforce(opts: GlobalOptions) throws -> ExitCode {
             }
             if let upstream = backup?.upstream {
                 print("saved upstream: \(upstream.host):\(upstream.port)")
+            }
+            if let shadowedBy {
+                print("WARNING: takeover is shadowed by \(shadowedBy) — a VPN app's proxy " +
+                      "settings win while its tunnel is up; flows will not reach EyesOnYou " +
+                      "until it disconnects")
             }
         }
         return .ok
@@ -970,6 +991,30 @@ private func runEnforcementServer(
         }
     }
 
+    // `networksetup` succeeding is not enough: a NetworkExtension VPN's proxy
+    // settings shadow ours in the merged config apps actually read. Poll briefly
+    // (the merge is asynchronous), then report what apps really see.
+    var takeoverConfirmed = false
+    var shadowedBy: String?
+    if tookOver {
+        var verification = SystemProxyController.verifyTakeover(
+            localPort: port, merged: SystemProxyReader.current()
+        )
+        var attempt = 0
+        while verification != .active, attempt < 20 {
+            Thread.sleep(forTimeInterval: 0.1)
+            verification = SystemProxyController.verifyTakeover(
+                localPort: port, merged: SystemProxyReader.current()
+            )
+            attempt += 1
+        }
+        switch verification {
+        case .active: takeoverConfirmed = true
+        case .shadowed(let observed): shadowedBy = observed ?? "unknown proxy"
+        case .notApplied: break
+        }
+    }
+
     // Announce the port first so the caller can start sending traffic.
     let header: [String: Any] = [
         "ok": true,
@@ -977,12 +1022,21 @@ private func runEnforcementServer(
         "port": Int(port),
         "seconds": seconds,
         "system_proxy_takeover": tookOver,
+        "system_proxy_confirmed": takeoverConfirmed,
+        "shadowed_by_vpn": shadowedBy as Any,
         "upstream": upstream.map { ["host": $0.host, "port": Int($0.port)] } as Any
     ]
     emit(header, json: opts.json) {
         print("listening on 127.0.0.1:\(port) for \(Int(seconds))s" +
               (tookOver ? " (system proxy taken over)" : "") +
               (upstream.map { " upstream=\($0.host):\($0.port)" } ?? " upstream=none"))
+        if let shadowedBy {
+            print("WARNING: takeover is shadowed by \(shadowedBy) — a VPN app's proxy " +
+                  "settings win while its tunnel is up; flows will not reach EyesOnYou " +
+                  "until it disconnects")
+        } else if tookOver, !takeoverConfirmed {
+            print("WARNING: macOS has not activated the EyesOnYou proxy in the merged config")
+        }
     }
     fflush(stdout)
 
@@ -1044,7 +1098,11 @@ private func resolveUpstream(
             return upstream
         }
     }
-    return nil
+    // The networksetup layer can be empty while a NetworkExtension VPN publishes
+    // proxy settings on the primary service. The merged config is what apps
+    // actually resolve, so chain inherit-flows to it. Read before takeover — after
+    // takeover it would point at ourselves.
+    return SystemProxyReader.current().fixedUpstream
 }
 
 private func splitHostPortArgument(_ value: String) -> (String, UInt16)? {

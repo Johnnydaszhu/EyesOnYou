@@ -16,6 +16,10 @@ final class ProxyEnforcementController: ObservableObject {
         case off
         case starting
         case active(port: UInt16, upstream: ProxyUpstream?)
+        /// Takeover succeeded at the networksetup layer, but a VPN's
+        /// NetworkExtension-provided proxy settings win in the merged config apps
+        /// actually read — so no flows reach us while its tunnel is up.
+        case shadowedByVPN(port: UInt16, observedProxy: String?)
         case failed(String)
     }
 
@@ -97,8 +101,12 @@ final class ProxyEnforcementController: ObservableObject {
                     let backup = try self.systemProxy.takeOver(localPort: port)
                     // Some proxy apps publish a live Dynamic Store override that
                     // `networksetup` does not expose. Keep that upstream instead of
-                    // losing it during takeover.
-                    self.currentUpstream = backup.upstream ?? systemUpstreamHint
+                    // losing it during takeover — `currentProxy` is the merged
+                    // config read before takeover, so it still shows the VPN's
+                    // endpoint rather than ourselves.
+                    self.currentUpstream = backup.upstream
+                        ?? currentProxy.fixedUpstream
+                        ?? systemUpstreamHint
                     self.rulesBox.update(LocalProxyRules(
                         snapshot: snapshot,
                         systemUpstream: self.currentUpstream,
@@ -113,6 +121,28 @@ final class ProxyEnforcementController: ObservableObject {
                     self.setStatus(.failed("takeover: \(error)"))
                 }
             }
+        }
+    }
+
+    /// Re-check the merged proxy config against our takeover. Called on the model's
+    /// refresh tick so the badge follows the VPN tunnel: shadowed while it is up,
+    /// active again once it drops (and back).
+    func reevaluateShadowing(merged: SystemProxySnapshot) {
+        switch status {
+        case .active(let port, _):
+            if case .shadowed(let observed) = SystemProxyController.verifyTakeover(
+                localPort: port, merged: merged
+            ) {
+                setStatus(.shadowedByVPN(port: port, observedProxy: observed))
+            }
+        case .shadowedByVPN(let port, _):
+            if case .active = SystemProxyController.verifyTakeover(
+                localPort: port, merged: merged
+            ) {
+                setStatus(.active(port: port, upstream: currentUpstream))
+            }
+        case .off, .starting, .failed:
+            break
         }
     }
 
@@ -137,18 +167,22 @@ final class ProxyEnforcementController: ObservableObject {
     }
 
     private func waitForTakeover(port: UInt16, attempt: Int = 0) {
-        let snapshot = SystemProxyReader.current()
-        let httpMatches = snapshot.httpEnabled
-            && snapshot.httpHost == "127.0.0.1"
-            && snapshot.httpPort == Int(port)
-        let httpsMatches = snapshot.httpsEnabled
-            && snapshot.httpsHost == "127.0.0.1"
-            && snapshot.httpsPort == Int(port)
-        if httpMatches && httpsMatches {
+        let verification = SystemProxyController.verifyTakeover(
+            localPort: port, merged: SystemProxyReader.current()
+        )
+        if case .active = verification {
             setStatus(.active(port: port, upstream: currentUpstream))
             return
         }
         guard attempt < 20 else {
+            if case .shadowed(let observed) = verification {
+                // A VPN's NE-provided proxy settings override ours in the merged
+                // config. Keep the takeover and the proxy running: the moment the
+                // tunnel drops, our settings become visible and enforcement starts
+                // for real (`reevaluateShadowing` flips the status).
+                setStatus(.shadowedByVPN(port: port, observedProxy: observed))
+                return
+            }
             _ = systemProxy.restoreIfNeeded()
             server.stop()
             currentUpstream = nil
