@@ -336,14 +336,10 @@ struct OverviewTabView: View {
 
     // MARK: - Proxy routing
 
-    /// True when path mix comes from observed bytes, a local proxy client, or an app selection.
+    /// True when path mix comes from observed bytes or an explicit app selection.
     private var hasRouteTrafficSamples: Bool {
         if model.selectedApp != nil { return true }
-        if model.systemProxy.isEnabled { return true }
-        if model.systemProxyNodeIP != nil { return true }
         if model.rankingRows.contains(where: { $0.snapshot.totals.totalBytes > 0 }) { return true }
-        // Proxy off → 100% direct is the real fail-open policy, not a placeholder.
-        if !model.proxyEnabled { return true }
         return model.routeMix.systemProxyPercent > 0
             || model.routeMix.customProxyPercent > 0
             || model.routeMix.unknownPercent > 0

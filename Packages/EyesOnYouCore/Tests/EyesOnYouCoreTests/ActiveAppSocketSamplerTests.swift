@@ -212,7 +212,8 @@ final class ActiveAppSocketSamplerTests: XCTestCase {
         )
 
         XCTAssertEqual(snap.proxyDirectEgress, 1)
-        XCTAssertEqual(snap.proxyRemoteEgress, 4)
+        XCTAssertEqual(snap.proxyRemoteEgress, 3)
+        XCTAssertEqual(snap.proxyUnknownEgress, 1)
         XCTAssertEqual(snap.primaryProxyNodeIP, "95.169.2.146")
     }
 
@@ -282,7 +283,7 @@ final class ActiveAppSocketSamplerTests: XCTestCase {
         )
         XCTAssertEqual(snap.primaryProxyNodeIP, "95.169.2.146")
         XCTAssertFalse(snap.proxyRemoteHosts.contains("95.169.2.146"))
-        XCTAssertTrue(snap.proxyRemoteHosts.contains("1.2.3.4"))
+        XCTAssertTrue(snap.proxyUnknownHosts.contains("1.2.3.4"))
     }
 
     func testBypassWithoutProxyClientIsDirectInternet() {
@@ -315,11 +316,53 @@ final class ActiveAppSocketSamplerTests: XCTestCase {
             proxyPort: nil
         )
         XCTAssertTrue(snap.hasLocalProxyClient)
-        XCTAssertEqual(snap.proxyRemoteEgress, 1)
+        XCTAssertEqual(snap.proxyRemoteEgress, 0)
+        XCTAssertEqual(snap.proxyUnknownEgress, 1)
+        XCTAssertNil(snap.primaryProxyNodeIP)
         let byPID = Dictionary(uniqueKeysWithValues: snap.processes.map { ($0.pid, $0) })
         // App still looks like a bypass socket at lsof layer — AppModel must not force Direct.
         XCTAssertEqual(byPID[200]?.directConnections, 1)
         XCTAssertEqual(byPID[200]?.viaProxyConnections, 0)
+    }
+
+    func testUnmatchedProxyEgressWithoutDominantNodeStaysUnknown() {
+        let output = """
+        COMMAND     PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME
+        Chrome      100 me     10u  IPv4 0x1      0t0  TCP 127.0.0.1:50001->127.0.0.1:1082 (ESTABLISHED)
+        MacPacket   808 me     18u  IPv4 0x4      0t0  TCP 127.0.0.1:1082->127.0.0.1:50001 (ESTABLISHED)
+        MacPacket   808 me     19u  IPv4 0x5      0t0  TCP 192.168.1.2:51071->1.1.1.1:443 (ESTABLISHED)
+        MacPacket   808 me     20u  IPv4 0x6      0t0  TCP 192.168.1.2:51072->2.2.2.2:443 (ESTABLISHED)
+        """
+
+        let snap = ActiveAppSocketSampler.summarize(
+            ActiveAppSocketSampler.parse(lsofOutput: output),
+            proxyPort: 1082,
+            directIndex: .empty
+        )
+
+        XCTAssertEqual(snap.proxyRemoteEgress, 0)
+        XCTAssertEqual(snap.proxyUnknownEgress, 2)
+        XCTAssertNil(snap.primaryProxyNodeIP)
+    }
+
+    func testKnownProxyNodeKeepsSingleUplinkClassified() {
+        let output = """
+        COMMAND     PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME
+        Chrome      100 me     10u  IPv4 0x1      0t0  TCP 127.0.0.1:50001->127.0.0.1:1082 (ESTABLISHED)
+        MacPacket   808 me     18u  IPv4 0x4      0t0  TCP 127.0.0.1:1082->127.0.0.1:50001 (ESTABLISHED)
+        MacPacket   808 me     19u  IPv4 0x5      0t0  TCP 192.168.1.2:51071->95.169.2.146:443 (ESTABLISHED)
+        """
+
+        let snap = ActiveAppSocketSampler.summarize(
+            ActiveAppSocketSampler.parse(lsofOutput: output),
+            proxyPort: 1082,
+            directIndex: .empty,
+            knownProxyNodeIP: "95.169.2.146"
+        )
+
+        XCTAssertEqual(snap.proxyRemoteEgress, 1)
+        XCTAssertEqual(snap.proxyUnknownEgress, 0)
+        XCTAssertEqual(snap.primaryProxyNodeIP, "95.169.2.146")
     }
 
     private func byVia(_ snap: ActiveSocketSnapshot, pid: Int32) -> Int {

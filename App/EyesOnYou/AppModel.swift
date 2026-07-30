@@ -837,9 +837,13 @@ final class AppModel: ObservableObject {
         let groupName: String?
         /// Share of network total (0...1) for pie chart.
         let share: Double
-        /// Fraction of this row's bytes that went through a proxy (0...1);
-        /// `nil` when no bytes were recorded in the period.
+        /// Fraction of this row's route-proven bytes that went through a proxy
+        /// (0...1); `nil` when no route-proven bytes were recorded in the period.
         let proxyShare: Double?
+        /// Bytes whose final route could not be established.
+        let unknownRouteBytes: UInt64
+        /// Bytes whose final route was measured (direct + proxied).
+        let knownRouteBytes: UInt64
         /// Last wall-clock time this app recorded traffic.
         let lastTrafficAt: Date?
         /// Cumulative network traffic trend (total bytes over recent ticks).
@@ -851,6 +855,8 @@ final class AppModel: ObservableObject {
             groupName: String?,
             share: Double,
             proxyShare: Double? = nil,
+            unknownRouteBytes: UInt64 = 0,
+            knownRouteBytes: UInt64 = 0,
             lastTrafficAt: Date? = nil,
             rateSeries: [Double] = []
         ) {
@@ -859,13 +865,20 @@ final class AppModel: ObservableObject {
             self.groupName = groupName
             self.share = share
             self.proxyShare = proxyShare
+            self.unknownRouteBytes = unknownRouteBytes
+            self.knownRouteBytes = knownRouteBytes
             self.lastTrafficAt = lastTrafficAt
             self.rateSeries = rateSeries
         }
 
         /// Where this row's bytes actually left the machine, measured — never an intent.
+        ///
+        /// Some bytes always defy route proof (sampler warm-up, egress the DIRECT
+        /// index cannot match). Those must not veto the measured majority: the label
+        /// falls back to "unattributed" only while unproven bytes outweigh proven ones.
         var observedEgress: ObservedEgress {
             if snapshot.app == unattributedTrafficApp { return .unattributed }
+            if unknownRouteBytes > knownRouteBytes { return .unattributed }
             guard let share = proxyShare else { return .noTraffic }
             if share <= 0.005 { return .direct }
             if share >= 0.995 { return .proxy }
@@ -886,13 +899,13 @@ final class AppModel: ObservableObject {
     enum ObservedEgress: Equatable {
         /// No bytes recorded in the selected period.
         case noTraffic
-        /// Every recorded byte left without passing a local proxy client.
+        /// Route-proven bytes all used a final DIRECT route, including proxy-client DIRECT rules.
         case direct
-        /// Every recorded byte went through a local proxy client.
+        /// Route-proven bytes were all confirmed to use a remote proxy node.
         case proxy
-        /// Both paths carried bytes; the associated value is the proxied fraction.
+        /// Both paths carried proven bytes; the associated value is the proxied fraction.
         case mixed(proxyShare: Double)
-        /// Host bytes were preserved, but socket evidence could not establish the path.
+        /// Socket evidence could not establish the path for most of this row's bytes.
         case unattributed
     }
 
@@ -2272,6 +2285,70 @@ final class AppModel: ObservableObject {
             profiles: proxyProfiles
         )
         refreshPublishedState()
+        if case .inherit = route {} else if !proxyEnabled {
+            offerEnforcementActivation()
+        }
+    }
+
+    /// A saved rule does nothing until the local per-app routing proxy runs.
+    /// Assigning one while it is off used to be a silent no-op; say so, and offer
+    /// the switch right here instead of sending the user hunting through Settings.
+    private func offerEnforcementActivation() {
+        let l10n = LocalizationStore.shared
+        let alert = NSAlert()
+        alert.messageText = l10n.t("enforcement.prompt.title")
+        alert.informativeText = l10n.t("enforcement.prompt.body")
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: l10n.t("enforcement.prompt.enable"))
+        alert.addButton(withTitle: l10n.t("enforcement.prompt.later"))
+        if alert.runModal() == .alertFirstButtonReturn {
+            setProxyEnabled(true)
+        }
+    }
+
+    /// Re-run takeover after a failure — e.g. once the competing proxy is gone.
+    func retryProxyEnforcement() {
+        guard proxyEnabled else {
+            setProxyEnabled(true)
+            return
+        }
+        proxyEnforcementController.disable()
+        startProxyEnforcement()
+    }
+
+    /// One-paragraph, user-language explanation of the current enforcement state,
+    /// including the concrete failure cause and what would fix it.
+    func enforcementStatusExplanation() -> String {
+        let l10n = LocalizationStore.shared
+        switch proxyEnforcementStatus {
+        case .off:
+            return l10n.t("enforcement.popover.offHint")
+        case .starting:
+            return l10n.t("enforcement.starting")
+        case .active(let port, let upstream):
+            if let upstream {
+                return l10n.t(
+                    "enforcement.popover.activeHint",
+                    Int(port),
+                    "\(upstream.host):\(upstream.port)"
+                )
+            }
+            return l10n.t("enforcement.popover.activeHintNoUpstream", Int(port))
+        case .shadowedByVPN(_, let observedProxy):
+            let observed = observedProxy.map { " (\($0))" } ?? ""
+            return "\(l10n.t("enforcement.shadowed"))\(observed)\n\(l10n.t("enforcement.shadowed.hint"))"
+        case .failed(let reason):
+            switch reason {
+            case .unsupportedSystemProxy:
+                return l10n.t("enforcement.reason.unsupported")
+            case .serverStart(let detail):
+                return l10n.t("enforcement.reason.serverStart", detail)
+            case .takeover(let detail):
+                return l10n.t("enforcement.reason.takeover", detail)
+            case .notActivated:
+                return l10n.t("enforcement.reason.notActivated")
+            }
+        }
     }
 
     private func startProxyEnforcement() {
@@ -2611,10 +2688,9 @@ final class AppModel: ObservableObject {
         publish(\.allowedConnections, dayTotals.flowsOpened)
 
         let activeRuleCount = policyStore.activeRuleCount() + groups.count
-        publish(\.routeMix, Self.makeRouteMix(
+        publish(\.routeMix, RouteMixBuilder.make(
             routes: periodRoutes,
             selectedRoute: selectedIdentity.flatMap { id in tops.first(where: { $0.app == id })?.route },
-            systemProxyEnabled: systemProxy.isEnabled,
             blockedFallback: blockedToday,
             activeRules: activeRuleCount
         ))
@@ -2656,7 +2732,8 @@ final class AppModel: ObservableObject {
         func makeRows(from snaps: [AppTrafficSnapshot], shareBase: UInt64) -> [AppRankingRow] {
             snaps.map { snap -> AppRankingRow in
                 let share = Double(snap.totals.totalBytes) / Double(max(1, shareBase))
-                let proxyShare: Double? = routeShares[snap.app].flatMap { split in
+                let routeSplit = routeShares[snap.app]
+                let proxyShare: Double? = routeSplit.flatMap { split in
                     let total = split.direct &+ split.proxied
                     guard total > 0 else { return nil }
                     return Double(split.proxied) / Double(total)
@@ -2668,6 +2745,8 @@ final class AppModel: ObservableObject {
                     groupName: nil,
                     share: min(1, share),
                     proxyShare: proxyShare,
+                    unknownRouteBytes: routeSplit?.unknown ?? 0,
+                    knownRouteBytes: routeSplit.map { $0.direct &+ $0.proxied } ?? 0,
                     lastTrafficAt: lastAt,
                     rateSeries: appRateHistory[snap.app.storageKey] ?? []
                 )
@@ -2797,6 +2876,10 @@ final class AppModel: ObservableObject {
                 groupName: nil,
                 share: share,
                 proxyShare: segmentProxyShare,
+                unknownRouteBytes: site.destinationKey == DestinationKey.unknown
+                    ? site.totals.totalBytes
+                    : 0,
+                knownRouteBytes: segmentProxyShare != nil ? site.totals.totalBytes : 0,
                 lastTrafficAt: site.totals.totalBytes > 0 ? parent.lastTrafficAt : nil,
                 rateSeries: scaledTraffic
             )
@@ -2853,86 +2936,6 @@ final class AppModel: ObservableObject {
     var drilledAppTitle: String? {
         guard let id = sunburstPath.first else { return nil }
         return rankingRows.first(where: { $0.id == id })?.snapshot.displayName
-    }
-
-    /// Build proxy-routing card mix from period-scoped byte shares (time range + optional app).
-    /// When no flow bytes yet, fall back to selected app route or live macOS system proxy.
-    private static func makeRouteMix(
-        routes: RouteDirectionalTotals,
-        selectedRoute: RouteAction?,
-        systemProxyEnabled: Bool,
-        blockedFallback: UInt64,
-        activeRules: Int
-    ) -> RouteMix {
-        let blocked = routes.all.flowsBlocked > 0 ? routes.all.flowsBlocked : blockedFallback
-        let total = routes.all.totalBytes
-        if total > 0 {
-            let denominator = Double(total)
-            let d = Double(routes.direct.totalBytes) / denominator * 100
-            let s = Double(routes.systemProxy.totalBytes) / denominator * 100
-            let c = Double(routes.customProxy.totalBytes) / denominator * 100
-            let u = max(0, 100 - d - s - c)
-            return RouteMix(
-                directPercent: d,
-                systemProxyPercent: s,
-                customProxyPercent: c,
-                unknownPercent: u,
-                blockedCount: blocked,
-                activeRules: activeRules
-            )
-        }
-
-        // No bytes in range: if an app is selected, show its resolved route.
-        if let selectedRoute {
-            switch selectedRoute {
-            case .inherit:
-                // No rule for this app — macOS decides, so mirror the OS setting
-                // instead of claiming the traffic bypasses the proxy.
-                return RouteMix(
-                    directPercent: systemProxyEnabled ? 0 : 100,
-                    systemProxyPercent: systemProxyEnabled ? 100 : 0,
-                    customProxyPercent: 0,
-                    blockedCount: blocked,
-                    activeRules: activeRules
-                )
-            case .direct:
-                return RouteMix(
-                    directPercent: 100,
-                    systemProxyPercent: 0,
-                    customProxyPercent: 0,
-                    blockedCount: blocked,
-                    activeRules: activeRules
-                )
-            case .systemProxy:
-                return RouteMix(
-                    directPercent: 0,
-                    systemProxyPercent: 100,
-                    customProxyPercent: 0,
-                    blockedCount: blocked,
-                    activeRules: activeRules
-                )
-            case .proxy(_):
-                return RouteMix(
-                    directPercent: 0,
-                    systemProxyPercent: 0,
-                    customProxyPercent: 100,
-                    blockedCount: blocked,
-                    activeRules: activeRules
-                )
-            }
-        }
-
-        // Nothing measured yet. With a system proxy configured, unruled traffic goes
-        // through it by default, so show that rather than asserting 100% direct.
-        // Once real byte shares arrive they replace this entirely — Clash /
-        // Shadowrocket DIRECT rules do produce genuine direct egress.
-        return RouteMix(
-            directPercent: systemProxyEnabled ? 0 : 100,
-            systemProxyPercent: systemProxyEnabled ? 100 : 0,
-            customProxyPercent: 0,
-            blockedCount: blocked,
-            activeRules: activeRules
-        )
     }
 
     private func resolveFirewall(for app: AppIdentityKey) -> FirewallAction {
@@ -3024,6 +3027,7 @@ final class AppModel: ObservableObject {
         let port = systemProxy.httpPort ?? systemProxy.httpsPort ?? systemProxy.socksPort
         let index = directDestinationIndex
         let dnsCache = reverseDNSCache
+        let knownProxyNodeIP = systemProxyNodeIP
         let attributionResolver = attributionResolver
         DispatchQueue.global(qos: .utility).async {
             let connections: [ActiveAppSocketSampler.ConnectionLine]
@@ -3055,7 +3059,8 @@ final class AppModel: ObservableObject {
                 connections,
                 proxyPort: port,
                 directIndex: index,
-                resolvedHosts: dnsCache
+                resolvedHosts: dnsCache,
+                knownProxyNodeIP: knownProxyNodeIP
             )
             let attributed = attributionResolver.attribute(
                 snapshot.processes.filter { !$0.isProxyProcess },
@@ -3141,6 +3146,7 @@ final class AppModel: ObservableObject {
         guard !attributedSamples.isEmpty
                 || snapshot.proxyDirectEgress > 0
                 || snapshot.proxyRemoteEgress > 0
+                || snapshot.proxyUnknownEgress > 0
         else {
             aggregator.setObservedActiveConnectionCounts([:])
             // A successful, fresh empty census confirms every prior synthetic
@@ -3266,23 +3272,41 @@ final class AppModel: ObservableObject {
         let clientViaWeight = rows.reduce(0) { $0 + $1.viaProxy }
         let proxyDirect = snapshot.proxyDirectEgress
         let proxyRemote = snapshot.proxyRemoteEgress
+        let proxyUnknown = snapshot.proxyUnknownEgress
+        let proxyClients = rows.filter { $0.viaProxy > 0 }
+        let requiresUnknownPerApp = ProxyEgressAttribution.requiresUnknownPerApp(
+            clientCount: proxyClients.count,
+            directEgress: proxyDirect,
+            proxyEgress: proxyRemote,
+            unknownEgress: proxyUnknown
+        )
 
         // Host NIC bytes ≈ proxy-process egress + true bypass apps.
         // Client→127.0.0.1 does not hit the NIC, so don't weight by viaProxy for bytes.
-        let useProxyEgressSplit = (proxyDirect + proxyRemote) > 0
+        let useProxyEgressSplit = (proxyDirect + proxyRemote + proxyUnknown) > 0
         let bytePoolDirect: Int
         let bytePoolProxy: Int
+        let bytePoolUnknown: Int
         let bytePoolBypass: Int
         if useProxyEgressSplit {
             bytePoolDirect = proxyDirect
             bytePoolProxy = proxyRemote
+            bytePoolUnknown = proxyUnknown
             bytePoolBypass = weakBypassEvidence ? 0 : bypassWeight
+        } else if weakBypassEvidence || clientViaWeight > 0 {
+            // A TUN or client→local-proxy socket proves interception only. Without
+            // matching egress, neither Direct nor a remote proxy node is established.
+            bytePoolDirect = 0
+            bytePoolProxy = 0
+            bytePoolUnknown = max(1, clientViaWeight + bypassWeight)
+            bytePoolBypass = 0
         } else {
             bytePoolDirect = bypassWeight
-            bytePoolProxy = clientViaWeight
+            bytePoolProxy = 0
+            bytePoolUnknown = 0
             bytePoolBypass = 0
         }
-        let byteTotal = bytePoolDirect + bytePoolProxy + bytePoolBypass
+        let byteTotal = bytePoolDirect + bytePoolProxy + bytePoolUnknown + bytePoolBypass
 
         // Per-app score: prefer proxy-node (翻墙) vs rule/true direct from observed egress.
         var routeScore: [String: (direct: Int, proxy: Int)] = [:]
@@ -3296,12 +3320,24 @@ final class AppModel: ObservableObject {
         for item in rows {
             let key = item.key.storageKey
             if item.viaProxy > 0 {
-                let route: RouteAction = proxyRemote >= proxyDirect ? .systemProxy : .direct
-                // When both egress pools are zero, lean proxy if the app entered the local client.
-                let seeded: RouteAction = {
-                    if proxyDirect + proxyRemote == 0 { return .systemProxy }
-                    return route
-                }()
+                if requiresUnknownPerApp {
+                    socketObservedRoute.removeValue(forKey: key)
+                    continue
+                }
+                let seeded: RouteAction?
+                if proxyRemote > proxyDirect, proxyRemote > proxyUnknown {
+                    seeded = .systemProxy
+                } else if proxyDirect > proxyRemote, proxyDirect > proxyUnknown {
+                    seeded = .direct
+                } else {
+                    // Entering a local proxy/TUN proves interception, not the final
+                    // route. With incomplete or tied egress evidence, stay unknown.
+                    seeded = nil
+                }
+                guard let seeded else {
+                    socketObservedRoute.removeValue(forKey: key)
+                    continue
+                }
                 socketObservedRoute[key] = seeded
                 observedFlowKeys.insert(
                     ensureSocketOpen(app: item.key, name: item.name, host: nil, route: seeded, at: at)
@@ -3343,7 +3379,12 @@ final class AppModel: ObservableObject {
             return
         }
 
-        let poolWeights = [bytePoolDirect, bytePoolProxy, bytePoolBypass].map {
+        let poolWeights = [
+            bytePoolDirect,
+            bytePoolProxy,
+            bytePoolUnknown,
+            bytePoolBypass,
+        ].map {
             UInt64(max(0, $0))
         }
         let downPools = ProportionalByteAllocator.split(total: totalDown, weights: poolWeights)
@@ -3352,13 +3393,19 @@ final class AppModel: ObservableObject {
         let directBytesUp = upPools[0]
         let proxyBytesDown = downPools[1]
         let proxyBytesUp = upPools[1]
-        let bypassBytesDown = downPools[2]
-        let bypassBytesUp = upPools[2]
+        let unknownBytesDown = downPools[2]
+        let unknownBytesUp = upPools[2]
+        let bypassBytesDown = downPools[3]
+        let bypassBytesUp = upPools[3]
         var attributedDown: UInt64 = 0
         var attributedUp: UInt64 = 0
 
         // Distribute proxy-process DIRECT egress across clients that talk to the local proxy.
-        let proxyClients = rows.filter { $0.viaProxy > 0 }
+        //
+        // The direct/proxy/unknown pools come from per-connection egress measurement, so
+        // their route kinds are host-level facts and must survive even when the per-app
+        // pairing is ambiguous (`requiresUnknownPerApp`). Ambiguity only withholds the
+        // per-app route badge / score below — never the measured route mix.
         let proxyClientWeights = proxyClients.map { UInt64(max(0, $0.viaProxy)) }
         if useProxyEgressSplit, !proxyClients.isEmpty,
            directBytesDown > 0 || directBytesUp > 0 {
@@ -3393,10 +3440,12 @@ final class AppModel: ObservableObject {
                 )
                 attributedDown &+= down
                 attributedUp &+= up
-                let sk = item.key.storageKey
-                var score = routeScore[sk] ?? (direct: 0, proxy: 0)
-                score.direct += Int(min(UInt64(Int.max), down &+ up))
-                routeScore[sk] = score
+                if !requiresUnknownPerApp {
+                    let sk = item.key.storageKey
+                    var score = routeScore[sk] ?? (direct: 0, proxy: 0)
+                    score.direct += Int(min(UInt64(Int.max), down &+ up))
+                    routeScore[sk] = score
+                }
             }
         }
 
@@ -3428,10 +3477,44 @@ final class AppModel: ObservableObject {
                 )
                 attributedDown &+= down
                 attributedUp &+= up
-                let sk = item.key.storageKey
-                var score = routeScore[sk] ?? (direct: 0, proxy: 0)
-                score.proxy += Int(min(UInt64(Int.max), down &+ up))
-                routeScore[sk] = score
+                if !requiresUnknownPerApp {
+                    let sk = item.key.storageKey
+                    var score = routeScore[sk] ?? (direct: 0, proxy: 0)
+                    score.proxy += Int(min(UInt64(Int.max), down &+ up))
+                    routeScore[sk] = score
+                }
+            }
+        }
+
+        if !proxyClients.isEmpty, unknownBytesDown > 0 || unknownBytesUp > 0 {
+            let downs = ProportionalByteAllocator.split(
+                total: unknownBytesDown,
+                weights: proxyClientWeights
+            )
+            let ups = ProportionalByteAllocator.split(
+                total: unknownBytesUp,
+                weights: proxyClientWeights
+            )
+            for (index, item) in proxyClients.enumerated() {
+                let down = downs[index]
+                let up = ups[index]
+                recordSocketDelta(
+                    app: item.key,
+                    name: item.name,
+                    hosts: [],
+                    projects: item.proxyProjectWeights,
+                    unknownProjectWeight: item.proxyUnknownWeight,
+                    fallbackDestination: DestinationKey.unknown,
+                    down: down,
+                    up: up,
+                    route: .inherit,
+                    routeKindOverride: .unknown,
+                    at: at,
+                    sampleInterval: sampleInterval,
+                    observedFlowKeys: &observedFlowKeys
+                )
+                attributedDown &+= down
+                attributedUp &+= up
             }
         }
 
@@ -3634,11 +3717,13 @@ final class AppModel: ObservableObject {
         down: UInt64,
         up: UInt64,
         route: RouteAction,
+        routeKindOverride: RouteKind? = nil,
         at: Date,
         sampleInterval: TimeInterval?,
         observedFlowKeys: inout Set<String>
     ) {
         guard down > 0 || up > 0 else { return }
+        aggregator.setDisplayName(name, for: app)
 
         var segments: [(label: String?, weight: UInt64)] = projects
             // Sort for a stable split when weights tie.
@@ -3677,9 +3762,11 @@ final class AppModel: ObservableObject {
             let partUp = upParts[index]
             let host = segment.label
             guard partDown > 0 || partUp > 0 else { continue }
-            observedFlowKeys.insert(
-                ensureSocketOpen(app: app, name: name, host: host, route: route, at: at)
-            )
+            if routeKindOverride == nil {
+                observedFlowKeys.insert(
+                    ensureSocketOpen(app: app, name: name, host: host, route: route, at: at)
+                )
+            }
             let dest = DestinationKey.make(hostname: host, address: nil)
             aggregator.recordDelta(
                 flowID: socketFlowID(for: app, route: route),
@@ -3689,6 +3776,7 @@ final class AppModel: ObservableObject {
                 at: at,
                 route: route,
                 destinationKey: dest,
+                routeKindOverride: routeKindOverride,
                 sampleInterval: sampleInterval
             )
         }

@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 
 public struct IPv4Network: Equatable, Sendable {
     public var address: UInt32
@@ -14,6 +15,7 @@ public struct IPv4Network: Equatable, Sendable {
 public struct DirectDestinationIndex: Equatable, Sendable {
     public var domains: Set<String>
     public var domainSuffixes: [String]
+    public var domainKeywords: [String]
     public var ipv4Networks: [IPv4Network]
     /// Human labels of DIRECT policy groups that contributed rules (e.g. "哔哩哔哩").
     public var policyLabels: [String]
@@ -21,11 +23,13 @@ public struct DirectDestinationIndex: Equatable, Sendable {
     public init(
         domains: Set<String> = [],
         domainSuffixes: [String] = [],
+        domainKeywords: [String] = [],
         ipv4Networks: [IPv4Network] = [],
         policyLabels: [String] = []
     ) {
         self.domains = domains
         self.domainSuffixes = domainSuffixes
+        self.domainKeywords = domainKeywords
         self.ipv4Networks = ipv4Networks
         self.policyLabels = policyLabels
     }
@@ -33,7 +37,10 @@ public struct DirectDestinationIndex: Equatable, Sendable {
     public static let empty = DirectDestinationIndex()
 
     public var isEmpty: Bool {
-        domains.isEmpty && domainSuffixes.isEmpty && ipv4Networks.isEmpty
+        domains.isEmpty
+            && domainSuffixes.isEmpty
+            && domainKeywords.isEmpty
+            && ipv4Networks.isEmpty
     }
 
     /// Merge another index (union). Labels are appended in order without duplicates.
@@ -42,6 +49,10 @@ public struct DirectDestinationIndex: Equatable, Sendable {
         var suffixes = domainSuffixes
         for s in other.domainSuffixes where !suffixes.contains(s) {
             suffixes.append(s)
+        }
+        var keywords = domainKeywords
+        for keyword in other.domainKeywords where !keywords.contains(keyword) {
+            keywords.append(keyword)
         }
         var networks = ipv4Networks
         for net in other.ipv4Networks where !networks.contains(net) {
@@ -54,6 +65,7 @@ public struct DirectDestinationIndex: Equatable, Sendable {
         return DirectDestinationIndex(
             domains: domains,
             domainSuffixes: suffixes,
+            domainKeywords: keywords,
             ipv4Networks: networks,
             policyLabels: labels
         )
@@ -76,6 +88,9 @@ public struct DirectDestinationIndex: Equatable, Sendable {
             if host == suffix || host.hasSuffix("." + suffix) {
                 return true
             }
+        }
+        for keyword in domainKeywords where host.contains(keyword) {
+            return true
         }
         return false
     }
@@ -128,23 +143,36 @@ public enum ShadowrocketConfigReader {
         let caches = container
             .appendingPathComponent("Library/Caches", isDirectory: true)
 
+        if let databaseURL = selectedDatabaseURL(homeDirectory: homeDirectory, fm: fm),
+           let databaseIndex = loadDatabaseDirectIndex(
+               from: databaseURL,
+               caches: caches,
+               fm: fm
+           ) {
+            return databaseIndex
+        }
+
         let confURL = newestConf(in: tmp, fm: fm)
         var directGroups = Set<String>()
         var ruleSetURLByGroup: [String: String] = [:]
+        var domains = Set<String>()
+        var suffixes: [String] = []
+        var keywords: [String] = []
+        var networks: [IPv4Network] = []
 
         if let confURL,
            let text = try? String(contentsOf: confURL, encoding: .utf8) {
             parseConf(
                 text,
                 directGroups: &directGroups,
-                ruleSetURLByGroup: &ruleSetURLByGroup
+                ruleSetURLByGroup: &ruleSetURLByGroup,
+                domains: &domains,
+                suffixes: &suffixes,
+                keywords: &keywords,
+                networks: &networks
             )
         }
 
-        // Always try to pick up cached lists named BiliBili when the group is DIRECT.
-        var domains = Set<String>()
-        var suffixes: [String] = []
-        var networks: [IPv4Network] = []
         var labels: [String] = []
 
         let cacheFiles = (try? fm.contentsOfDirectory(
@@ -166,15 +194,202 @@ public enum ShadowrocketConfigReader {
             if !name.isEmpty, !labels.contains(name) {
                 labels.append(name)
             }
-            merge(ruleList: body, domains: &domains, suffixes: &suffixes, networks: &networks)
+            merge(
+                ruleList: body,
+                domains: &domains,
+                suffixes: &suffixes,
+                keywords: &keywords,
+                networks: &networks
+            )
         }
 
         return DirectDestinationIndex(
             domains: domains,
             domainSuffixes: suffixes.sorted(),
+            domainKeywords: keywords.sorted(),
             ipv4Networks: networks,
             policyLabels: labels
         )
+    }
+
+    private static func selectedDatabaseURL(
+        homeDirectory: URL,
+        fm: FileManager
+    ) -> URL? {
+        let databaseDirectory = homeDirectory
+            .appendingPathComponent(
+                "Library/Containers/com.liguangming.Shadowrocket/Data/Documents/Databases",
+                isDirectory: true
+            )
+        let preferencesURL = homeDirectory
+            .appendingPathComponent(
+                "Library/Group Containers/group.com.liguangming.Shadowrocket/Library/Preferences/group.com.liguangming.Shadowrocket.plist"
+            )
+
+        if let data = try? Data(contentsOf: preferencesURL),
+           let object = try? PropertyListSerialization.propertyList(
+               from: data,
+               options: [],
+               format: nil
+           ),
+           let preferences = object as? [String: Any],
+           let rawName = preferences["group.com.liguangming.CurrentRuleFileName"] as? String {
+            let name = URL(fileURLWithPath: rawName).lastPathComponent
+            if !name.isEmpty {
+                let selected = databaseDirectory.appendingPathComponent(name)
+                if fm.fileExists(atPath: selected.path) {
+                    return selected
+                }
+            }
+        }
+
+        guard let files = try? fm.contentsOfDirectory(
+            at: databaseDirectory,
+            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return nil
+        }
+        let databases = files.filter { $0.pathExtension.lowercased() == "db" }
+        return databases.max { lhs, rhs in
+            let left = (try? lhs.resourceValues(
+                forKeys: [.contentModificationDateKey]
+            ).contentModificationDate) ?? .distantPast
+            let right = (try? rhs.resourceValues(
+                forKeys: [.contentModificationDateKey]
+            ).contentModificationDate) ?? .distantPast
+            return left < right
+        }
+    }
+
+    private static func loadDatabaseDirectIndex(
+        from databaseURL: URL,
+        caches: URL,
+        fm: FileManager
+    ) -> DirectDestinationIndex? {
+        var database: OpaquePointer?
+        let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
+        guard sqlite3_open_v2(databaseURL.path, &database, flags, nil) == SQLITE_OK,
+              let database
+        else {
+            if let database {
+                sqlite3_close(database)
+            }
+            return nil
+        }
+        defer { sqlite3_close(database) }
+
+        let sql = """
+        SELECT name, value, option
+        FROM config
+        WHERE lower(section) = 'rule' AND upper(option) = 'DIRECT'
+        """
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK,
+              let statement
+        else {
+            return nil
+        }
+        defer { sqlite3_finalize(statement) }
+
+        var domains = Set<String>()
+        var suffixes: [String] = []
+        var keywords: [String] = []
+        var networks: [IPv4Network] = []
+        var directRuleSets = Set<String>()
+        var ruleSetURLByName: [String: String] = [:]
+
+        var result = sqlite3_step(statement)
+        while result == SQLITE_ROW {
+            let kind = sqliteText(statement, column: 0).uppercased()
+            let rawValue = sqliteText(statement, column: 1)
+            let value = rawValue
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            switch kind {
+            case "DOMAIN":
+                if !value.isEmpty {
+                    domains.insert(value)
+                }
+            case "DOMAIN-SUFFIX":
+                if !value.isEmpty, !suffixes.contains(value) {
+                    suffixes.append(value)
+                }
+            case "DOMAIN-KEYWORD":
+                if !value.isEmpty, !keywords.contains(value) {
+                    keywords.append(value)
+                }
+            case "IP-CIDR":
+                if let network = DirectDestinationIndex.parseIPv4Network(value) {
+                    networks.append(
+                        IPv4Network(address: network.0, prefix: network.1)
+                    )
+                }
+            case "RULE-SET", "DOMAIN-SET":
+                if let name = ruleSetName(from: rawValue) {
+                    directRuleSets.insert(name)
+                    ruleSetURLByName[name] = rawValue
+                }
+            default:
+                break
+            }
+            result = sqlite3_step(statement)
+        }
+        guard result == SQLITE_DONE else { return nil }
+
+        let cacheFiles = (try? fm.contentsOfDirectory(
+            at: caches,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        var labels = directRuleSets.sorted()
+        for file in cacheFiles where file.lastPathComponent.hasPrefix("rule-set-") {
+            guard let body = try? String(contentsOf: file, encoding: .utf8) else {
+                continue
+            }
+            let name = ruleSetDisplayName(from: body)
+            guard shouldLoad(
+                ruleSetName: name,
+                directGroups: directRuleSets,
+                ruleSetURLByGroup: ruleSetURLByName
+            ) else {
+                continue
+            }
+            if !name.isEmpty, !labels.contains(name) {
+                labels.append(name)
+            }
+            merge(
+                ruleList: body,
+                domains: &domains,
+                suffixes: &suffixes,
+                keywords: &keywords,
+                networks: &networks
+            )
+        }
+
+        return DirectDestinationIndex(
+            domains: domains,
+            domainSuffixes: suffixes.sorted(),
+            domainKeywords: keywords.sorted(),
+            ipv4Networks: networks,
+            policyLabels: labels
+        )
+    }
+
+    private static func sqliteText(_ statement: OpaquePointer, column: Int32) -> String {
+        guard let raw = sqlite3_column_text(statement, column) else { return "" }
+        return String(cString: raw)
+    }
+
+    private static func ruleSetName(from rawURL: String) -> String? {
+        let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let lastPath = URL(string: trimmed)?.lastPathComponent
+            ?? URL(fileURLWithPath: trimmed).lastPathComponent
+        let name = URL(fileURLWithPath: lastPath)
+            .deletingPathExtension()
+            .lastPathComponent
+        return name.isEmpty ? nil : name
     }
 
     private static func newestConf(in tmp: URL, fm: FileManager) -> URL? {
@@ -184,9 +399,12 @@ public enum ShadowrocketConfigReader {
             options: [.skipsHiddenFiles]
         ) else { return nil }
 
+        if let active = files.first(where: { $0.lastPathComponent == "lazy_group.conf" }) {
+            return active
+        }
         let candidates = files.filter { url in
             let name = url.lastPathComponent
-            return name == "lazy_group.conf" || name.hasPrefix("lazy_group.conf.bak")
+            return name.hasPrefix("lazy_group.conf.bak")
         }
         return candidates.max { a, b in
             let da = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
@@ -198,11 +416,48 @@ public enum ShadowrocketConfigReader {
     private static func parseConf(
         _ text: String,
         directGroups: inout Set<String>,
-        ruleSetURLByGroup: inout [String: String]
+        ruleSetURLByGroup: inout [String: String],
+        domains: inout Set<String>,
+        suffixes: inout [String],
+        keywords: inout [String],
+        networks: inout [IPv4Network]
     ) {
         for raw in text.split(whereSeparator: \.isNewline) {
             let line = String(raw).trimmingCharacters(in: .whitespaces)
             if line.isEmpty || line.hasPrefix("#") { continue }
+
+            let inlineParts = line.split(separator: ",").map {
+                $0.trimmingCharacters(in: .whitespaces)
+            }
+            if inlineParts.count >= 3,
+               inlineParts[2].uppercased() == "DIRECT" {
+                let kind = inlineParts[0].uppercased()
+                let value = inlineParts[1].lowercased()
+                switch kind {
+                case "DOMAIN":
+                    domains.insert(value)
+                    directGroups.insert("inline")
+                case "DOMAIN-SUFFIX":
+                    if !suffixes.contains(value) {
+                        suffixes.append(value)
+                    }
+                    directGroups.insert("inline")
+                case "DOMAIN-KEYWORD":
+                    if !keywords.contains(value) {
+                        keywords.append(value)
+                    }
+                    directGroups.insert("inline")
+                case "IP-CIDR":
+                    if let network = DirectDestinationIndex.parseIPv4Network(value) {
+                        networks.append(
+                            IPv4Network(address: network.0, prefix: network.1)
+                        )
+                    }
+                    directGroups.insert("inline")
+                default:
+                    break
+                }
+            }
 
             if line.uppercased().hasPrefix("RULE-SET,") {
                 let parts = line.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
@@ -222,17 +477,6 @@ public enum ShadowrocketConfigReader {
                 || lower.hasPrefix("select,direct,")
                 || lower == "direct" {
                 directGroups.insert(group)
-            }
-
-            // Inline DOMAIN-SUFFIX,example.com,DIRECT
-            let upper = line.uppercased()
-            if upper.hasPrefix("DOMAIN-SUFFIX,") || upper.hasPrefix("DOMAIN,") || upper.hasPrefix("IP-CIDR,") {
-                let parts = line.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-                guard parts.count >= 3 else { continue }
-                let policy = parts[2].split(separator: ",").first.map(String.init) ?? parts[2]
-                if policy.uppercased() == "DIRECT" {
-                    directGroups.insert("inline")
-                }
             }
         }
     }
@@ -274,6 +518,7 @@ public enum ShadowrocketConfigReader {
         ruleList body: String,
         domains: inout Set<String>,
         suffixes: inout [String],
+        keywords: inout [String],
         networks: inout [IPv4Network]
     ) {
         for raw in body.split(whereSeparator: \.isNewline) {
@@ -288,6 +533,8 @@ public enum ShadowrocketConfigReader {
                 domains.insert(value)
             case "DOMAIN-SUFFIX":
                 if !suffixes.contains(value) { suffixes.append(value) }
+            case "DOMAIN-KEYWORD":
+                if !keywords.contains(value) { keywords.append(value) }
             case "IP-CIDR", "IP-CIDR6":
                 if kind == "IP-CIDR", let net = DirectDestinationIndex.parseIPv4Network(value) {
                     networks.append(IPv4Network(address: net.0, prefix: net.1))
@@ -322,6 +569,7 @@ public enum ClashConfigReader {
     public static func parseYAML(_ text: String, label: String = "clash") -> DirectDestinationIndex {
         var domains = Set<String>()
         var suffixes: [String] = []
+        var keywords: [String] = []
         var networks: [IPv4Network] = []
         var sawDirect = false
 
@@ -342,14 +590,13 @@ public enum ClashConfigReader {
             switch kind {
             case "DOMAIN":
                 domains.insert(value)
-            case "DOMAIN-SUFFIX", "DOMAIN-KEYWORD":
-                if kind == "DOMAIN-SUFFIX", !suffixes.contains(value) {
+            case "DOMAIN-SUFFIX":
+                if !suffixes.contains(value) {
                     suffixes.append(value)
-                } else if kind == "DOMAIN-KEYWORD" {
-                    // Keyword is weaker; treat as suffix-like only when it looks like a domain.
-                    if value.contains("."), !suffixes.contains(value) {
-                        suffixes.append(value)
-                    }
+                }
+            case "DOMAIN-KEYWORD":
+                if !keywords.contains(value) {
+                    keywords.append(value)
                 }
             case "IP-CIDR", "IP-CIDR6":
                 if kind == "IP-CIDR", let net = DirectDestinationIndex.parseIPv4Network(value) {
@@ -360,12 +607,18 @@ public enum ClashConfigReader {
             }
         }
 
-        guard sawDirect || !domains.isEmpty || !suffixes.isEmpty || !networks.isEmpty else {
+        guard sawDirect
+            || !domains.isEmpty
+            || !suffixes.isEmpty
+            || !keywords.isEmpty
+            || !networks.isEmpty
+        else {
             return .empty
         }
         return DirectDestinationIndex(
             domains: domains,
             domainSuffixes: suffixes.sorted(),
+            domainKeywords: keywords.sorted(),
             ipv4Networks: networks,
             policyLabels: sawDirect ? [label] : []
         )

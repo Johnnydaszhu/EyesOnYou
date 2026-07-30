@@ -6,6 +6,7 @@ struct MainDashboardView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var l10n: LocalizationStore
     @Environment(\.nsAppDelegate) private var appDelegate
+    @State private var showEnforcementInfo = false
 
     var body: some View {
         ZStack {
@@ -117,46 +118,97 @@ struct MainDashboardView: View {
 
     private var routeEnforcementStatusControl: some View {
         let title: String
-        let detail: String?
         let tint: Color
         switch model.proxyEnforcementStatus {
         case .off:
             title = l10n.t("enforcement.badge.off")
-            detail = l10n.t("enforcement.off")
             tint = EyesOnYouTheme.textSecondary
         case .starting:
             title = l10n.t("enforcement.badge.starting")
-            detail = l10n.t("enforcement.starting")
             tint = EyesOnYouTheme.accentAmber
         case .active:
             title = l10n.t("enforcement.badge.active")
-            detail = l10n.t("enforcement.active")
             tint = EyesOnYouTheme.accentGreen
-        case .shadowedByVPN(_, let observedProxy):
+        case .shadowedByVPN:
             title = l10n.t("enforcement.badge.shadowed")
-            let observed = observedProxy.map { " (\($0))" } ?? ""
-            detail = "\(l10n.t("enforcement.shadowed"))\(observed)\n\(l10n.t("enforcement.shadowed.hint"))"
             tint = EyesOnYouTheme.accentAmber
-        case .failed(let message):
+        case .failed:
             title = l10n.t("enforcement.badge.failed")
-            detail = "\(l10n.t("enforcement.failed"))\n\(message)"
             tint = EyesOnYouTheme.accentAmber
         }
-        return Label(title, systemImage: model.isProxyEnforcementActive ? "checkmark.shield.fill" : "shield.slash")
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(tint)
-            .lineLimit(1)
-            .padding(.horizontal, 8)
-            .frame(height: 28)
-            .background {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(tint.opacity(0.08))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .strokeBorder(tint.opacity(0.28), lineWidth: 0.7)
-                    )
+        return Button {
+            showEnforcementInfo.toggle()
+        } label: {
+            Label(title, systemImage: model.isProxyEnforcementActive ? "checkmark.shield.fill" : "shield.slash")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(tint)
+                .lineLimit(1)
+                .padding(.horizontal, 8)
+                .frame(height: 28)
+                .background {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(tint.opacity(0.08))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .strokeBorder(tint.opacity(0.28), lineWidth: 0.7)
+                        )
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(model.enforcementStatusExplanation())
+        .popover(isPresented: $showEnforcementInfo, arrowEdge: .bottom) {
+            enforcementInfoPopover
+        }
+    }
+
+    /// Why the enforcement badge says what it says, plus the matching action —
+    /// so a "failed" state is explained and fixable in place, not just a chip.
+    private var enforcementInfoPopover: some View {
+        let statusTitle: String
+        switch model.proxyEnforcementStatus {
+        case .off: statusTitle = l10n.t("enforcement.off")
+        case .starting: statusTitle = l10n.t("enforcement.starting")
+        case .active: statusTitle = l10n.t("enforcement.active")
+        case .shadowedByVPN: statusTitle = l10n.t("enforcement.shadowed")
+        case .failed: statusTitle = l10n.t("enforcement.failed")
+        }
+        return VStack(alignment: .leading, spacing: 10) {
+            Text(statusTitle)
+                .font(.system(size: 12, weight: .semibold))
+            Text(model.enforcementStatusExplanation())
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                switch model.proxyEnforcementStatus {
+                case .failed:
+                    Button(l10n.t("enforcement.popover.retry")) {
+                        showEnforcementInfo = false
+                        model.retryProxyEnforcement()
+                    }
+                    Button(l10n.t("enforcement.popover.turnOff")) {
+                        showEnforcementInfo = false
+                        model.setProxyEnabled(false)
+                    }
+                case .active, .shadowedByVPN:
+                    Button(l10n.t("enforcement.popover.turnOff")) {
+                        showEnforcementInfo = false
+                        model.setProxyEnabled(false)
+                    }
+                case .off:
+                    Button(l10n.t("enforcement.popover.turnOn")) {
+                        showEnforcementInfo = false
+                        // Covers both "toggle was off" and "toggle on but not running".
+                        model.retryProxyEnforcement()
+                    }
+                case .starting:
+                    EmptyView()
+                }
             }
-            .help(detail ?? "")
+        }
+        .padding(14)
+        .frame(width: 320, alignment: .leading)
     }
 
     private var systemProxyStatusControl: some View {

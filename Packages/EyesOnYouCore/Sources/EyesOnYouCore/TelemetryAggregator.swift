@@ -98,10 +98,16 @@ public struct RouteDirectionalTotals: Sendable, Equatable {
 public struct AppRouteByteTotals: Sendable, Equatable {
     public var direct: UInt64
     public var proxied: UInt64
+    public var unknown: UInt64
 
-    public init(direct: UInt64 = 0, proxied: UInt64 = 0) {
+    public init(
+        direct: UInt64 = 0,
+        proxied: UInt64 = 0,
+        unknown: UInt64 = 0
+    ) {
         self.direct = direct
         self.proxied = proxied
+        self.unknown = unknown
     }
 }
 
@@ -555,7 +561,7 @@ public final class TelemetryAggregator: @unchecked Sendable {
             case .systemProxy, .customProxy:
                 routeShares[key.app, default: AppRouteByteTotals()].proxied &+= bytes
             case .blocked, .unknown:
-                break
+                routeShares[key.app, default: AppRouteByteTotals()].unknown &+= bytes
             }
         }
 

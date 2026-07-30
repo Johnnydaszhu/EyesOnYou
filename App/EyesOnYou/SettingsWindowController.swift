@@ -407,13 +407,12 @@ struct SettingsView: View {
             title = l10n.t("enforcement.active")
             systemImage = "checkmark.shield.fill"
             tint = .green
-        case .shadowedByVPN(_, let observedProxy):
-            let observed = observedProxy.map { " · \($0)" } ?? ""
-            title = "\(l10n.t("enforcement.shadowed"))\(observed) — \(l10n.t("enforcement.shadowed.hint"))"
+        case .shadowedByVPN:
+            title = model.enforcementStatusExplanation()
             systemImage = "exclamationmark.shield.fill"
             tint = .orange
-        case .failed(let message):
-            title = "\(l10n.t("enforcement.failed")) · \(message)"
+        case .failed:
+            title = "\(l10n.t("enforcement.failed")) · \(model.enforcementStatusExplanation())"
             systemImage = "exclamationmark.triangle.fill"
             tint = .orange
         }

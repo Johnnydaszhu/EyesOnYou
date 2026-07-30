@@ -399,6 +399,16 @@ final class TelemetryAggregatorTests: XCTestCase {
         XCTAssertEqual(result.unknown.bytesUp, 321)
         XCTAssertEqual(result.unknown.bytesDown, 654)
         XCTAssertEqual(result.systemProxy.totalBytes, 0)
+
+        let rollup = agg.overviewRollup(
+            from: t0.addingTimeInterval(-1),
+            to: t0.addingTimeInterval(60),
+            limit: 10,
+            selectedApp: nil,
+            preferredGranularity: .oneSecond
+        )
+        XCTAssertEqual(rollup.routeShares[chrome]?.unknown, 975)
+        XCTAssertEqual(rollup.routeShares[chrome]?.proxied, 0)
     }
 
     func testSampleIntervalNormalizesLiveRateAcrossDestinations() {

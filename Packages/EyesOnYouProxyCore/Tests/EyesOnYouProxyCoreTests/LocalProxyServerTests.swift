@@ -219,6 +219,14 @@ final class LocalProxyServerTests: XCTestCase {
         wait(for: [flowRecorded], timeout: 3)
         XCTAssertEqual(seen.get(), .unavailable(.systemProxyMissing))
     }
+
+    /// A rule-DIRECT dial must never re-enter a TUN-mode proxy: tunnel-class
+    /// interfaces are prohibited so the dial (and its DNS) stays on a physical route.
+    func testDirectDialParametersProhibitTunnelInterfaces() {
+        let params = LocalProxyServer.directDialParameters(physicalInterface: nil)
+        XCTAssertTrue(params.prohibitedInterfaceTypes?.contains(.other) ?? false)
+        XCTAssertNil(params.requiredInterface)
+    }
 }
 
 

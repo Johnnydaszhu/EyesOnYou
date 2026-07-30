@@ -38,6 +38,8 @@ public final class LocalProxyServer: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.eyesonyou.localproxy", attributes: .concurrent)
     private let stateLock = NSLock()
     private var listener: NWListener?
+    private var pathMonitor: NWPathMonitor?
+    private var _physicalInterface: NWInterface?
     private var _state: State = .stopped
     private let onFlow: @Sendable (FlowEvent) -> Void
     private let onState: @Sendable (State) -> Void
@@ -109,11 +111,34 @@ public final class LocalProxyServer: @unchecked Sendable {
         }
         self.listener = listener
         listener.start(queue: queue)
+
+        // Track the physical (non-tunnel) interface for rule-DIRECT dials. A cancelled
+        // NWPathMonitor cannot be restarted, so each start() gets a fresh one.
+        let monitor = NWPathMonitor(prohibitedInterfaceTypes: [.other, .loopback])
+        monitor.pathUpdateHandler = { [weak self] path in
+            self?.setPhysicalInterface(path.availableInterfaces.first)
+        }
+        monitor.start(queue: queue)
+        pathMonitor = monitor
     }
 
     public func stop() {
         listener?.cancel()
         listener = nil
+        pathMonitor?.cancel()
+        pathMonitor = nil
+        setPhysicalInterface(nil)
+    }
+
+    private func setPhysicalInterface(_ interface: NWInterface?) {
+        stateLock.lock()
+        _physicalInterface = interface
+        stateLock.unlock()
+    }
+
+    private var physicalInterface: NWInterface? {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return _physicalInterface
     }
 
     // MARK: - Connection handling
@@ -207,6 +232,24 @@ public final class LocalProxyServer: @unchecked Sendable {
 
     // MARK: - Direct
 
+    /// Parameters for a rule-DIRECT origin dial.
+    ///
+    /// "Direct" must not re-enter a TUN-mode proxy: a packet tunnel that owns the
+    /// default route swallows an unbound dial — and a fake-IP DNS hands it a
+    /// placeholder address — so the proxy's own rules would decide the egress again.
+    /// Scoping the dial to the physical interface makes DNS use that interface's
+    /// scoped resolver (real addresses) and sends the bytes out the physical route.
+    /// When only tunnel routes exist the dial fails instead of silently un-enforcing
+    /// the rule; the client sees the failure rather than a mislabeled route.
+    static func directDialParameters(physicalInterface: NWInterface?) -> NWParameters {
+        let params = NWParameters.tcp
+        params.prohibitedInterfaceTypes = [.other]
+        if let physicalInterface {
+            params.requiredInterface = physicalInterface
+        }
+        return params
+    }
+
     private func openDirect(
         client: NWConnection,
         head: ProxyRequestHead,
@@ -214,10 +257,15 @@ public final class LocalProxyServer: @unchecked Sendable {
         onClose: @escaping @Sendable () -> Void
     ) {
         guard let port = NWEndpoint.Port(rawValue: head.port) else { onClose(); return }
+        // Loopback origins stay unscoped: pinning them to the physical interface
+        // would make every localhost dial unroutable.
+        let params: NWParameters = SocketTable.isLoopback(head.host)
+            ? .tcp
+            : Self.directDialParameters(physicalInterface: physicalInterface)
         let target = NWConnection(
             host: NWEndpoint.Host(head.host),
             port: port,
-            using: .tcp
+            using: params
         )
         target.stateUpdateHandler = { [weak self] state in
             guard let self else { return }

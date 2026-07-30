@@ -323,21 +323,51 @@ func cmdAttribution(opts: GlobalOptions) throws -> ExitCode {
         discoveryOptions: discoveryOptions
     )
 
-    let snapshot = ActiveAppSocketSampler.sampleTCPEstablished()
+    let systemProxy = SystemProxyReader.current()
+    let proxyPort = systemProxy.httpPort
+        ?? systemProxy.httpsPort
+        ?? systemProxy.socksPort
+    let directIndex = LocalProxyConfigReader.loadDirectIndex(timeout: 3) ?? .empty
+    let snapshot = ActiveAppSocketSampler.sampleTCPEstablished(
+        proxyPort: proxyPort,
+        directIndex: directIndex
+    )
     let samples = includeAll ? snapshot.processes : snapshot.processes.filter { !$0.isProxyProcess }
-    let rows = attributor.attribute(samples)
+    let attributedRows = attributor.attribute(samples)
         .sorted { lhs, rhs in
             if lhs.weightedConnections != rhs.weightedConnections {
                 return lhs.weightedConnections > rhs.weightedConnections
             }
             return lhs.pid < rhs.pid
         }
+    let proxyClientAppCount = Set(
+        attributedRows
+            .filter { $0.viaProxyConnections > 0 }
+            .map { $0.app.storageKey }
+    ).count
+    let perAppRouteIsUnknown = ProxyEgressAttribution.requiresUnknownPerApp(
+        clientCount: proxyClientAppCount,
+        directEgress: snapshot.proxyDirectEgress,
+        proxyEgress: snapshot.proxyRemoteEgress,
+        unknownEgress: snapshot.proxyUnknownEgress
+    )
+    let rows = attributedRows
         .prefix(max(limit, 1))
 
     let payload: [String: Any] = [
         "ok": true,
         "count": rows.count,
         "proxy_ports": snapshot.proxyPorts,
+        "proxy_direct_egress": snapshot.proxyDirectEgress,
+        "proxy_remote_egress": snapshot.proxyRemoteEgress,
+        "proxy_unknown_egress": snapshot.proxyUnknownEgress,
+        "proxy_node_ip": snapshot.primaryProxyNodeIP as Any,
+        "proxy_client_apps": proxyClientAppCount,
+        "per_app_route_confidence": perAppRouteIsUnknown ? "unknown" : "route-specific",
+        "direct_rule_patterns": directIndex.domains.count
+            + directIndex.domainSuffixes.count
+            + directIndex.domainKeywords.count
+            + directIndex.ipv4Networks.count,
         "processes": rows.map { attributionJSON($0) }
     ]
     emit(payload, json: opts.json) {

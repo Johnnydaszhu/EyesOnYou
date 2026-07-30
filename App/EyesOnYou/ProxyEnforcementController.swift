@@ -18,9 +18,25 @@ final class ProxyEnforcementController: ObservableObject {
         case active(port: UInt16, upstream: ProxyUpstream?)
         /// Takeover succeeded at the networksetup layer, but a VPN's
         /// NetworkExtension-provided proxy settings win in the merged config apps
-        /// actually read — so no flows reach us while its tunnel is up.
+        /// actually read — so no flows reach us while its tunnel is up. Not a
+        /// failure: the takeover stays in place and flips to `.active` on its own
+        /// the moment the tunnel drops.
         case shadowedByVPN(port: UInt16, observedProxy: String?)
-        case failed(String)
+        case failed(FailureReason)
+    }
+
+    /// Why enforcement could not reach `.active`. Structured so the UI can explain
+    /// the cause in the user's language and offer the matching fix, instead of
+    /// burying a raw English string in a tooltip.
+    enum FailureReason: Equatable {
+        /// PAC / auto-discovery system proxy — HTTP/HTTPS takeover cannot chain to it.
+        case unsupportedSystemProxy
+        /// The local routing proxy never bound its port.
+        case serverStart(String)
+        /// Saving the restore point or applying the takeover failed.
+        case takeover(String)
+        /// The merged config never showed the EyesOnYou port and no competitor was visible.
+        case notActivated
     }
 
     @Published private(set) var status: Status = .off
@@ -80,10 +96,11 @@ final class ProxyEnforcementController: ObservableObject {
         guard case .off = status else { return }
 
         let currentProxy = SystemProxyReader.current()
-        if currentProxy.socksEnabled
-            || currentProxy.autoConfigEnabled
-            || currentProxy.autoDiscoveryEnabled {
-            setStatus(.failed("automatic and SOCKS system proxies are not supported by HTTP/HTTPS routing"))
+        // PAC / WPAD route per-URL via a script we cannot evaluate, so takeover
+        // cannot chain to them. SOCKS is fine: the local proxy speaks SOCKS5
+        // upstream, and `fixedUpstream` prefers it (Clash/Shadowrocket expose one).
+        if currentProxy.autoConfigEnabled || currentProxy.autoDiscoveryEnabled {
+            setStatus(.failed(.unsupportedSystemProxy))
             return
         }
         setStatus(.starting)
@@ -95,7 +112,7 @@ final class ProxyEnforcementController: ObservableObject {
             guard let self else { return }
             switch result {
             case .failed(let message):
-                self.setStatus(.failed(message))
+                self.setStatus(.failed(.serverStart(message)))
             case .ready(let port):
                 do {
                     let backup = try self.systemProxy.takeOver(localPort: port)
@@ -118,7 +135,7 @@ final class ProxyEnforcementController: ObservableObject {
                 } catch {
                     // Could not save a restore point — refuse takeover, tear down.
                     self.server.stop()
-                    self.setStatus(.failed("takeover: \(error)"))
+                    self.setStatus(.failed(.takeover("\(error)")))
                 }
             }
         }
@@ -186,7 +203,7 @@ final class ProxyEnforcementController: ObservableObject {
             _ = systemProxy.restoreIfNeeded()
             server.stop()
             currentUpstream = nil
-            setStatus(.failed("macOS did not activate the EyesOnYou proxy"))
+            setStatus(.failed(.notActivated))
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in

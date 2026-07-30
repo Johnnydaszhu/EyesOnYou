@@ -38,14 +38,18 @@ public struct ActiveSocketSnapshot: Equatable, Sendable {
     public var processes: [SocketProcessSample]
     /// Local-proxy process egress matching DIRECT rules (e.g. bilibili).
     public var proxyDirectEgress: Int
-    /// Local-proxy process egress that did not match DIRECT rules (proxy-node / 翻墙).
+    /// Local-proxy process egress matching a confirmed dominant proxy-node uplink.
     public var proxyRemoteEgress: Int
+    /// Local-proxy process egress whose final route could not be proven.
+    public var proxyUnknownEgress: Int
     /// Dominant non-DIRECT remote IP of the local proxy process (node / uplink).
     public var primaryProxyNodeIP: String?
     /// Distinct DIRECT proxy-egress destinations (resolved hostname preferred over IP).
     public var proxyDirectHosts: [String]
     /// Distinct non-DIRECT proxy-egress destinations (excludes the primary node IP).
     public var proxyRemoteHosts: [String]
+    /// Distinct proxy-egress destinations that were neither DIRECT nor a confirmed node.
+    public var proxyUnknownHosts: [String]
     /// Effective local proxy listen ports used for attribution.
     public var proxyPorts: [Int]
     /// True when a local proxy client process was identified.
@@ -55,18 +59,22 @@ public struct ActiveSocketSnapshot: Equatable, Sendable {
         processes: [SocketProcessSample] = [],
         proxyDirectEgress: Int = 0,
         proxyRemoteEgress: Int = 0,
+        proxyUnknownEgress: Int = 0,
         primaryProxyNodeIP: String? = nil,
         proxyDirectHosts: [String] = [],
         proxyRemoteHosts: [String] = [],
+        proxyUnknownHosts: [String] = [],
         proxyPorts: [Int] = [],
         hasLocalProxyClient: Bool = false
     ) {
         self.processes = processes
         self.proxyDirectEgress = proxyDirectEgress
         self.proxyRemoteEgress = proxyRemoteEgress
+        self.proxyUnknownEgress = proxyUnknownEgress
         self.primaryProxyNodeIP = primaryProxyNodeIP
         self.proxyDirectHosts = proxyDirectHosts
         self.proxyRemoteHosts = proxyRemoteHosts
+        self.proxyUnknownHosts = proxyUnknownHosts
         self.proxyPorts = proxyPorts
         self.hasLocalProxyClient = hasLocalProxyClient
     }
@@ -97,13 +105,15 @@ public enum ActiveAppSocketSampler {
     public static func sampleTCPEstablished(
         proxyPort: Int? = nil,
         directIndex: DirectDestinationIndex = .empty,
-        resolvedHosts: [String: String] = [:]
+        resolvedHosts: [String: String] = [:],
+        knownProxyNodeIP: String? = nil
     ) -> ActiveSocketSnapshot {
         summarize(
             currentConnections(),
             proxyPort: proxyPort,
             directIndex: directIndex,
-            resolvedHosts: resolvedHosts
+            resolvedHosts: resolvedHosts,
+            knownProxyNodeIP: knownProxyNodeIP
         )
     }
 
@@ -241,7 +251,8 @@ public enum ActiveAppSocketSampler {
         _ connections: [ConnectionLine],
         proxyPort: Int?,
         directIndex: DirectDestinationIndex = .empty,
-        resolvedHosts: [String: String] = [:]
+        resolvedHosts: [String: String] = [:],
+        knownProxyNodeIP: String? = nil
     ) -> ActiveSocketSnapshot {
         let proxyPorts = resolveProxyPorts(connections, hintPort: proxyPort)
         let proxyPIDs: Set<Int32> = {
@@ -257,11 +268,19 @@ public enum ActiveAppSocketSampler {
             var isProxy: Bool
         }
         var byPID: [Int32: Acc] = [:]
+
+        struct ProxyEgress {
+            var remoteHost: String
+            var displayHost: String
+            var isDirect: Bool
+        }
+        var proxyEgresses: [ProxyEgress] = []
         var proxyDirectEgress = 0
         var proxyRemoteEgress = 0
-        var remoteEgressCounts: [String: Int] = [:]
+        var proxyUnknownEgress = 0
         var proxyDirectHosts: [String] = []
         var proxyRemoteHosts: [String] = []
+        var proxyUnknownHosts: [String] = []
 
         for conn in connections {
             let isLoopbackRemote = SocketTable.isLoopback(conn.remoteHost)
@@ -289,15 +308,14 @@ public enum ActiveAppSocketSampler {
                     ipOrHost: conn.remoteHost,
                     resolved: resolvedHosts[conn.remoteHost]
                 )
-                if directIndex.matches(hostOrIP: conn.remoteHost)
-                    || directIndex.matches(hostOrIP: resolved) {
-                    proxyDirectEgress += 1
-                    appendHost(displayHost, into: &proxyDirectHosts)
-                } else {
-                    proxyRemoteEgress += 1
-                    remoteEgressCounts[conn.remoteHost, default: 0] += 1
-                    appendHost(displayHost, into: &proxyRemoteHosts)
-                }
+                proxyEgresses.append(
+                    ProxyEgress(
+                        remoteHost: conn.remoteHost,
+                        displayHost: displayHost,
+                        isDirect: directIndex.matches(hostOrIP: conn.remoteHost)
+                            || directIndex.matches(hostOrIP: resolved)
+                    )
+                )
                 var acc = byPID[conn.pid] ?? Acc(
                     command: conn.command,
                     viaProxy: 0,
@@ -348,6 +366,31 @@ public enum ActiveAppSocketSampler {
             byPID[conn.pid] = acc
         }
 
+        let unmatchedCounts = Dictionary(
+            grouping: proxyEgresses.filter { !$0.isDirect },
+            by: \.remoteHost
+        ).mapValues(\.count)
+        let primaryNode: String? = {
+            if let knownProxyNodeIP,
+               unmatchedCounts[knownProxyNodeIP, default: 0] > 0 {
+                return knownProxyNodeIP
+            }
+            return confirmedDominantRemoteIP(unmatchedCounts)
+        }()
+
+        for egress in proxyEgresses {
+            if egress.isDirect {
+                proxyDirectEgress += 1
+                appendHost(egress.displayHost, into: &proxyDirectHosts)
+            } else if egress.remoteHost == primaryNode {
+                proxyRemoteEgress += 1
+                appendHost(egress.displayHost, into: &proxyRemoteHosts)
+            } else {
+                proxyUnknownEgress += 1
+                appendHost(egress.displayHost, into: &proxyUnknownHosts)
+            }
+        }
+
         let processes = byPID.map { pid, acc in
             SocketProcessSample(
                 pid: pid,
@@ -366,7 +409,6 @@ public enum ActiveAppSocketSampler {
             return lhs.pid < rhs.pid
         }
 
-        let primaryNode = dominantRemoteIP(remoteEgressCounts)
         // Primary proxy-node IP is an uplink, not a website the user browsed.
         let remoteSites = proxyRemoteHosts.filter { host in
             guard let primaryNode else { return true }
@@ -374,7 +416,7 @@ public enum ActiveAppSocketSampler {
         }
 
         let hasClient = !proxyPIDs.isEmpty
-            || proxyDirectEgress + proxyRemoteEgress > 0
+            || proxyDirectEgress + proxyRemoteEgress + proxyUnknownEgress > 0
             // Fake-IP TUN mode: clients hold via-proxy sockets even when no loopback
             // listener was identified.
             || processes.contains(where: { $0.viaProxyConnections > 0 })
@@ -382,21 +424,30 @@ public enum ActiveAppSocketSampler {
             processes: processes,
             proxyDirectEgress: proxyDirectEgress,
             proxyRemoteEgress: proxyRemoteEgress,
+            proxyUnknownEgress: proxyUnknownEgress,
             primaryProxyNodeIP: primaryNode,
             proxyDirectHosts: proxyDirectHosts,
             proxyRemoteHosts: remoteSites,
+            proxyUnknownHosts: proxyUnknownHosts,
             proxyPorts: proxyPorts.sorted(),
             hasLocalProxyClient: hasClient
         )
     }
 
-    /// Most frequent remote IP; ties break lexicographically for stability.
-    private static func dominantRemoteIP(_ counts: [String: Int]) -> String? {
-        guard !counts.isEmpty else { return nil }
-        return counts.max { lhs, rhs in
-            if lhs.value != rhs.value { return lhs.value < rhs.value }
-            return lhs.key > rhs.key
-        }?.key
+    /// A proxy node is normally one persistent uplink with many simultaneous
+    /// connections. A lone or tied unmatched destination is not enough evidence:
+    /// it may be a perfectly ordinary DIRECT CDN address whose PTR lookup failed.
+    private static func confirmedDominantRemoteIP(_ counts: [String: Int]) -> String? {
+        let ranked = counts.sorted { lhs, rhs in
+            if lhs.value != rhs.value { return lhs.value > rhs.value }
+            return lhs.key < rhs.key
+        }
+        guard let first = ranked.first, first.value >= 2 else { return nil }
+        let secondCount = ranked.dropFirst().first?.value ?? 0
+        guard first.value > secondCount else { return nil }
+        let total = counts.values.reduce(0, +)
+        guard first.value * 2 > total else { return nil }
+        return first.key
     }
 
     // MARK: - Parsing
