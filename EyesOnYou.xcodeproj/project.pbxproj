@@ -22,12 +22,14 @@
 		4F17008DA8A9B983726D89DD /* BrowserTabSampler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 671A7BE4F69B3670FE039FFB /* BrowserTabSampler.swift */; };
 		4F21197C7864C662DEC3F32A /* ProxyEnforcementController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2A76A53569AB0B5C5F7000A /* ProxyEnforcementController.swift */; };
 		507287A80FCD741DB887F257 /* SunburstChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C912ACCD2973BDEFB9A3C86 /* SunburstChart.swift */; };
+		5253CA0858F5FC9B9A5C72A5 /* TCPFlowPump.swift in Sources */ = {isa = PBXBuildFile; fileRef = 870575C2ECDF0B1F2BC41BB1 /* TCPFlowPump.swift */; };
 		53D46B10208DCA266A964301 /* GlobalTimeRangeBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7D0362C1496241E30A66CA1 /* GlobalTimeRangeBar.swift */; };
 		62E4B79F0C83E146439E4BA5 /* EyesOnYouNetworkExtension.systemextension in Embed Dependencies */ = {isa = PBXBuildFile; fileRef = 47C3F46F8008E7E80AA71546 /* EyesOnYouNetworkExtension.systemextension */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		671465E2F8D58AA6C60B6C3B /* AlertCenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FD16705AA37DFAF5C3151D2 /* AlertCenter.swift */; };
 		6ACF68EAF6A869E8A737CB6B /* GroupManagerViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF5B49F5F1651682FE65AFBB /* GroupManagerViews.swift */; };
 		806BCBBEB151B9ECF95D2EFC /* ExtensionRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A65CB4743D80D070A5599214 /* ExtensionRuntime.swift */; };
 		8148AE358C833297522912A6 /* EyesOnYouStorage in Frameworks */ = {isa = PBXBuildFile; productRef = 22DF9C94FC061A30076633C0 /* EyesOnYouStorage */; };
+		82A060AEFFF60792B23BDE7E /* TransparentProxyController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94532CFB2989FFEAAEA2F9CA /* TransparentProxyController.swift */; };
 		834A015FC9FFE1F1128391A7 /* EyesOnYouCore in Frameworks */ = {isa = PBXBuildFile; productRef = 75DE2F1284C09EAA91FC5FD3 /* EyesOnYouCore */; };
 		83D2BBE5B4C2D74C30DA65AC /* EyesOnYouProxyCore in Frameworks */ = {isa = PBXBuildFile; productRef = 76141785414B7419F3A1692D /* EyesOnYouProxyCore */; };
 		8BBA520C78B78CA6C8BA07E8 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 45F99DC22BAB52F4CC9882E6 /* Assets.xcassets */; };
@@ -76,6 +78,7 @@
 
 /* Begin PBXFileReference section */
 		0C72C2DCBF09C7FB824FFC4A /* FlowTransparentProxyProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlowTransparentProxyProvider.swift; sourceTree = "<group>"; };
+		0EA421A0A48327209E1B22AE /* gifted-leavitt-35e1c7 */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "gifted-leavitt-35e1c7"; path = .; sourceTree = SOURCE_ROOT; };
 		0FA88181A021E5C7848D45FD /* OverviewTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverviewTabView.swift; sourceTree = "<group>"; };
 		26541805E0941FF1B62972EB /* ForegroundWindowSampler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForegroundWindowSampler.swift; sourceTree = "<group>"; };
 		2C87A984273121A251272FBE /* EyesOnYou.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EyesOnYou.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -95,7 +98,9 @@
 		6E6383950E80A740A829FAF6 /* EyesOnYouApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EyesOnYouApp.swift; sourceTree = "<group>"; };
 		7C912ACCD2973BDEFB9A3C86 /* SunburstChart.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SunburstChart.swift; sourceTree = "<group>"; };
 		7EEDF548435AE3B919D922B1 /* AppUpdateService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateService.swift; sourceTree = "<group>"; };
+		870575C2ECDF0B1F2BC41BB1 /* TCPFlowPump.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TCPFlowPump.swift; sourceTree = "<group>"; };
 		8FD16705AA37DFAF5C3151D2 /* AlertCenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AlertCenter.swift; sourceTree = "<group>"; };
+		94532CFB2989FFEAAEA2F9CA /* TransparentProxyController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransparentProxyController.swift; sourceTree = "<group>"; };
 		A65CB4743D80D070A5599214 /* ExtensionRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionRuntime.swift; sourceTree = "<group>"; };
 		B2A76A53569AB0B5C5F7000A /* ProxyEnforcementController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProxyEnforcementController.swift; sourceTree = "<group>"; };
 		B7D0362C1496241E30A66CA1 /* GlobalTimeRangeBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalTimeRangeBar.swift; sourceTree = "<group>"; };
@@ -106,7 +111,6 @@
 		D05D5E8673F9301FAA7D2781 /* FlowFilterDataProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlowFilterDataProvider.swift; sourceTree = "<group>"; };
 		D0C8625CF559A65285817F3D /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
 		DEC21FF42614F5B39AA02DC5 /* AppBrand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppBrand.swift; sourceTree = "<group>"; };
-		E5B9ACA69A7B6BC12567A7B5 /* EyesOnYou */ = {isa = PBXFileReference; lastKnownFileType = folder; name = EyesOnYou; path = .; sourceTree = SOURCE_ROOT; };
 		EE988E436C31D33BBC74FCFE /* BentoLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoLayout.swift; sourceTree = "<group>"; };
 		EF5B49F5F1651682FE65AFBB /* GroupManagerViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroupManagerViews.swift; sourceTree = "<group>"; };
 		F25F2797B0B66C4B98FF4D3F /* AppIconView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppIconView.swift; sourceTree = "<group>"; };
@@ -178,6 +182,7 @@
 				7C912ACCD2973BDEFB9A3C86 /* SunburstChart.swift */,
 				69960448DF6DB837B1CDD200 /* Theme.swift */,
 				5E9A59128684261C89B2EBBE /* ThemePalette.swift */,
+				94532CFB2989FFEAAEA2F9CA /* TransparentProxyController.swift */,
 			);
 			path = EyesOnYou;
 			sourceTree = "<group>";
@@ -214,7 +219,7 @@
 		72AA9DFD18825E45CDEBB914 /* Packages */ = {
 			isa = PBXGroup;
 			children = (
-				E5B9ACA69A7B6BC12567A7B5 /* EyesOnYou */,
+				0EA421A0A48327209E1B22AE /* gifted-leavitt-35e1c7 */,
 			);
 			path = Packages;
 			sourceTree = "<group>";
@@ -226,6 +231,7 @@
 				D05D5E8673F9301FAA7D2781 /* FlowFilterDataProvider.swift */,
 				0C72C2DCBF09C7FB824FFC4A /* FlowTransparentProxyProvider.swift */,
 				49C6B9B1327E17077E01B75C /* main.swift */,
+				870575C2ECDF0B1F2BC41BB1 /* TCPFlowPump.swift */,
 			);
 			path = NetworkExtension;
 			sourceTree = "<group>";
@@ -358,6 +364,7 @@
 				806BCBBEB151B9ECF95D2EFC /* ExtensionRuntime.swift in Sources */,
 				90988A54AF48916B050CDE99 /* FlowFilterDataProvider.swift in Sources */,
 				0C5D21A2D87E116DB5FEC0A7 /* FlowTransparentProxyProvider.swift in Sources */,
+				5253CA0858F5FC9B9A5C72A5 /* TCPFlowPump.swift in Sources */,
 				F7F68894A14608557EF1DF5A /* main.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -390,6 +397,7 @@
 				507287A80FCD741DB887F257 /* SunburstChart.swift in Sources */,
 				D44412E6F7E7FE70ADF865D0 /* Theme.swift in Sources */,
 				3E431F2600116FE6D5FFC4E0 /* ThemePalette.swift in Sources */,
+				82A060AEFFF60792B23BDE7E /* TransparentProxyController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

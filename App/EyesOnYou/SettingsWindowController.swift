@@ -328,6 +328,17 @@ struct SettingsView: View {
                 Text(l10n.t("settings.proxyEnforcement.hint"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Toggle(l10n.t("settings.preciseMode"), isOn: Binding(
+                    get: { model.preciseModeEnabled },
+                    set: { model.setPreciseModeEnabled($0) }
+                ))
+                .disabled(!model.proxyEnabled)
+                Text(l10n.t("settings.preciseMode.hint"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                if model.preciseModeEnabled {
+                    transparentProxyStatus
+                }
                 Toggle(l10n.t("settings.alertsEnabled"), isOn: $model.alertsEnabled)
             } header: {
                 Text(l10n.t("settings.protection"))
@@ -420,6 +431,46 @@ struct SettingsView: View {
             .font(.caption)
             .foregroundStyle(tint)
             .textSelection(.enabled)
+    }
+
+    /// Precise-mode (system extension) state. `.notEntitled` is the expected
+    /// outcome for an unsigned / fork build, so it gets its own explanation rather
+    /// than reading as a crash.
+    private var transparentProxyStatus: some View {
+        let title: String
+        let systemImage: String
+        let tint: Color
+        switch model.transparentProxyStatus {
+        case .off:
+            title = l10n.t("precise.state.off")
+            systemImage = "pause.circle"
+            tint = .secondary
+        case .installing(let detail):
+            title = "\(l10n.t("precise.state.installing")) · \(detail)"
+            systemImage = "arrow.down.circle"
+            tint = .orange
+        case .needsApproval:
+            title = l10n.t("precise.state.needsApproval")
+            systemImage = "hand.raised.fill"
+            tint = .orange
+        case .active(let generation):
+            title = l10n.t("precise.state.active", Int(generation))
+            systemImage = "checkmark.seal.fill"
+            tint = .green
+        case .notEntitled:
+            title = l10n.t("precise.state.notEntitled")
+            systemImage = "lock.slash"
+            tint = .orange
+        case .failed(let message):
+            title = "\(l10n.t("precise.state.failed")) · \(message)"
+            systemImage = "exclamationmark.triangle.fill"
+            tint = .orange
+        }
+        return Label(title, systemImage: systemImage)
+            .font(.caption)
+            .foregroundStyle(tint)
+            .textSelection(.enabled)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     /// Thresholds are stored in bytes but edited in GB — a text field keeps `0`

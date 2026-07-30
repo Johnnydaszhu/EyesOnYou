@@ -13,7 +13,7 @@ final class FlowFilterDataProvider: NEFilterDataProvider {
     override func startFilter(completionHandler: @escaping (Error?) -> Void) {
         do {
             try runtime.startIfNeeded()
-            log.info("Filter starting generation=\(self.runtime.rules.generation, privacy: .public)")
+            log.info("Filter starting generation=\(self.runtime.rules.snapshot.generation, privacy: .public)")
 
             // Broad outbound socket coverage; user rules evaluate in-process.
             // Use current SDK non-deprecated NENetworkRule initializer when available.
@@ -49,11 +49,11 @@ final class FlowFilterDataProvider: NEFilterDataProvider {
             return .allow()
         }
 
-        let decision = runtime.rules.evaluateFirewall(descriptor)
+        let decision = runtime.rules.snapshot.evaluateFirewall(descriptor)
         runtime.aggregator.recordOpen(
             descriptor,
             displayName: descriptor.app.signingIdentifier,
-            route: runtime.rules.evaluateRoute(descriptor).action,
+            route: runtime.rules.snapshot.evaluateRoute(descriptor).action,
             firewall: decision.action
         )
 

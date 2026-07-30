@@ -241,7 +241,7 @@ public final class LocalProxyServer: @unchecked Sendable {
     /// scoped resolver (real addresses) and sends the bytes out the physical route.
     /// When only tunnel routes exist the dial fails instead of silently un-enforcing
     /// the rule; the client sees the failure rather than a mislabeled route.
-    static func directDialParameters(physicalInterface: NWInterface?) -> NWParameters {
+    public static func directDialParameters(physicalInterface: NWInterface?) -> NWParameters {
         let params = NWParameters.tcp
         params.prohibitedInterfaceTypes = [.other]
         if let physicalInterface {

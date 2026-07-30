@@ -2,6 +2,8 @@ import Foundation
 import NetworkExtension
 import EyesOnYouCore
 import EyesOnYouRuleEngine
+import EyesOnYouProxyCore
+import EyesOnYouIPC
 
 /// Shared process-local runtime for both providers inside the system extension.
 final class ExtensionRuntime: @unchecked Sendable {
@@ -12,39 +14,137 @@ final class ExtensionRuntime: @unchecked Sendable {
     let aggregator = TelemetryAggregator(retention: .live)
     let flowRegistry = ShardedFlowRegistry()
     let metrics = ExtensionMetrics()
-    private(set) var rules: RuleSnapshot
-    var proxyEnabled: Bool = false
-    private var started = false
-    private let lock = NSLock()
 
-    private init() {
-        rules = RuleSnapshot(generation: 0, checksum: Data(), rules: [])
+    /// Completed-flow samples waiting for the host to drain them. Bounded: the
+    /// host polls every few seconds; if it goes away we drop oldest, never grow.
+    private static let maxBufferedEvents = 512
+
+    private let lock = NSLock()
+    private var localRules = LocalProxyRules(
+        snapshot: RuleSnapshot(generation: 0, checksum: Data(), rules: []),
+        systemUpstream: nil,
+        profiles: []
+    )
+    private var ruleGeneration: UInt64 = 0
+    private var _proxyEnabled = false
+    private var pendingEvents: [FlowEventSample] = []
+    private var _activeFlows = 0
+    private var started = false
+
+    private init() {}
+
+    var proxyEnabled: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return _proxyEnabled
+    }
+
+    var rules: LocalProxyRules {
+        lock.lock(); defer { lock.unlock() }
+        return localRules
+    }
+
+    var status: ExtensionStatus {
+        lock.lock(); defer { lock.unlock() }
+        return ExtensionStatus(
+            filterEnabled: false,
+            proxyEnabled: _proxyEnabled,
+            ruleGeneration: ruleGeneration,
+            providerReachable: true,
+            version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+        )
     }
 
     func startIfNeeded() throws {
         lock.lock()
         defer { lock.unlock() }
         guard !started else { return }
-        // Load last-known-good snapshot from App Group when available.
-        // Absent snapshot ⇒ fail-open empty rules (allow / direct).
+        // Absent rules ⇒ fail-open: every flow is declined back to the OS.
         started = true
-    }
-
-    func updateRules(_ snapshot: RuleSnapshot) {
-        lock.lock()
-        rules = snapshot
-        lock.unlock()
     }
 
     func setProxyEnabled(_ enabled: Bool) {
         lock.lock()
-        proxyEnabled = enabled
+        _proxyEnabled = enabled
         lock.unlock()
+    }
+
+    /// Apply a full rules push from the host (policy archive + system upstream).
+    /// Returns false when the payload cannot be decoded — the old rules stay.
+    @discardableResult
+    func apply(_ payload: ProxyRulesPayload) -> Bool {
+        guard let archive = try? JSONDecoder().decode(
+            PolicyArchive.self, from: payload.policyArchiveJSON
+        ) else {
+            return false
+        }
+        let store = PolicyStore()
+        archive.apply(to: store)
+        let upstream: ProxyUpstream? = payload.systemUpstreamHost.flatMap { host in
+            payload.systemUpstreamPort.map { port in
+                ProxyUpstream(
+                    kind: payload.systemUpstreamKind == "socks5" ? .socks5 : .http,
+                    host: host,
+                    port: port
+                )
+            }
+        }
+        let rebuilt = LocalProxyRules(
+            snapshot: store.compileSnapshot(),
+            systemUpstream: upstream,
+            profiles: archive.proxyProfiles
+        )
+        lock.lock()
+        localRules = rebuilt
+        ruleGeneration = payload.generation
+        lock.unlock()
+        return true
+    }
+
+    // MARK: - Flow accounting
+
+    func flowStarted() {
+        lock.lock(); _activeFlows += 1; lock.unlock()
+    }
+
+    func flowFinished(_ sample: FlowEventSample) {
+        lock.lock()
+        _activeFlows = max(0, _activeFlows - 1)
+        appendLocked(sample)
+        lock.unlock()
+    }
+
+    /// Record a flow that never opened (blocked / refused) — exact evidence too.
+    func flowRejected(_ sample: FlowEventSample) {
+        lock.lock()
+        appendLocked(sample)
+        lock.unlock()
+    }
+
+    private func appendLocked(_ sample: FlowEventSample) {
+        pendingEvents.append(sample)
+        if pendingEvents.count > Self.maxBufferedEvents {
+            pendingEvents.removeFirst(pendingEvents.count - Self.maxBufferedEvents)
+        }
+    }
+
+    /// Hand all buffered events to the host and forget them.
+    func drainEvents() -> [FlowEventSample] {
+        lock.lock(); defer { lock.unlock() }
+        let events = pendingEvents
+        pendingEvents = []
+        return events
+    }
+
+    var activeFlows: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _activeFlows
     }
 
     func flush() {
         // Future: batch-write aggregator buckets to telemetry.sqlite via single writer.
     }
+
+    // MARK: - Flow identity
 
     func makeDescriptor(from flow: NEFilterFlow) -> FlowDescriptor? {
         // macOS exposes sourceAppAuditToken (not iOS-only sourceAppIdentifier).
@@ -68,15 +168,27 @@ final class ExtensionRuntime: @unchecked Sendable {
         )
     }
 
-    func makeProxyDescriptor(from flow: NEAppProxyFlow) -> FlowDescriptor? {
+    /// App identity + destination for a transparent-proxy flow.
+    ///
+    /// Prefers `remoteHostname` (present when the app connected by name) so
+    /// destination rules match domains and upstreams get a resolvable name even
+    /// under fake-IP DNS; falls back to the numeric endpoint.
+    func makeProxyTarget(from flow: NEAppProxyFlow) -> (app: AppIdentityKey, host: String, port: UInt16)? {
         let meta = flow.metaData
-        let signing = meta.sourceAppSigningIdentifier
+        let signing = ProcessAppIdentity.canonicalSigningID(meta.sourceAppSigningIdentifier)
         guard !signing.isEmpty else { return nil }
-        return FlowDescriptor(
-            app: AppIdentityKey(teamIdentifier: nil, signingIdentifier: signing),
-            direction: .outbound,
-            transport: .tcp
-        )
+        let app = AppIdentityKey(teamIdentifier: nil, signingIdentifier: signing)
+
+        var host = flow.remoteHostname
+        var port: UInt16?
+        if let endpoint = (flow as? NEAppProxyTCPFlow)?.remoteEndpoint as? NWHostEndpoint {
+            if host == nil || host?.isEmpty == true {
+                host = endpoint.hostname
+            }
+            port = UInt16(endpoint.port)
+        }
+        guard let host, !host.isEmpty, let port else { return nil }
+        return (app, host, port)
     }
 
     func consume(report: NEFilterReport) {

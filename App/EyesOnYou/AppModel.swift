@@ -57,6 +57,11 @@ final class AppModel: ObservableObject {
     /// User-controlled HTTP / HTTPS route enforcement. Off unless explicitly enabled.
     @Published var proxyEnabled: Bool = false
     @Published private(set) var proxyEnforcementStatus: ProxyEnforcementController.Status = .off
+    /// Precise mode: enforce per-app routes with the NetworkExtension transparent
+    /// proxy instead of the system-proxy takeover. Needs a signed build + user
+    /// approval, so it stays off until explicitly enabled.
+    @Published var preciseModeEnabled: Bool = false
+    @Published private(set) var transparentProxyStatus: TransparentProxyController.Status = .off
     @Published var alertsEnabled: Bool = true {
         didSet {
             guard alertsEnabled != oldValue else { return }
@@ -245,6 +250,18 @@ final class AppModel: ObservableObject {
         }
         return controller
     }()
+    private lazy var transparentProxyController: TransparentProxyController = {
+        let controller = TransparentProxyController()
+        controller.onStatus = { [weak self] status in
+            self?.transparentProxyStatus = status
+        }
+        controller.onFlowSamples = { [weak self] samples in
+            self?.ingestTransparentFlowSamples(samples)
+        }
+        return controller
+    }()
+    /// Monotonic rules generation so the extension can tell pushes apart.
+    private var rulesGeneration: UInt64 = 0
     /// Host-wide interface sampler — fills live rates when NE telemetry is empty.
     private let hostNetworkSampler = HostNetworkSampler()
     private let monitoringStartedAt = Date()
@@ -355,6 +372,7 @@ final class AppModel: ObservableObject {
     private static let alertStateKey = "eyesonyou.alertState"
     private static let onboardingShownKey = "eyesonyou.foregroundOnboardingShown"
     private static let proxyEnforcementEnabledKey = "eyesonyou.proxyEnforcementEnabled"
+    private static let preciseModeEnabledKey = "eyesonyou.preciseModeEnabled"
     /// Seconds between telemetry flushes. Minute buckets are the finest thing
     /// persisted, so anything under a minute only costs writes.
     private static let telemetryFlushInterval: TimeInterval = 30
@@ -1082,6 +1100,7 @@ final class AppModel: ObservableObject {
             // the network. Do not convert that visual default into a real takeover.
             proxyEnabled = false
         }
+        preciseModeEnabled = UserDefaults.standard.bool(forKey: Self.preciseModeEnabledKey)
         Self.applyAppearance(appearanceMode)
         loadColorThemePreferences()
         applyColorTheme()
@@ -2203,10 +2222,93 @@ final class AppModel: ObservableObject {
         isRunning = filterEnabled || enabled
         UserDefaults.standard.set(enabled, forKey: Self.proxyEnforcementEnabledKey)
         if enabled {
-            startProxyEnforcement()
+            startEnforcement()
         } else {
             proxyEnforcementController.disable()
+            transparentProxyController.disable()
         }
+    }
+
+    /// Precise mode = the NetworkExtension transparent proxy. Off by default: it
+    /// needs a system extension the user must approve, and a signed build.
+    ///
+    /// The two enforcement paths are mutually exclusive by construction — see
+    /// `startEnforcement`. Turning precise mode on while the system-proxy takeover
+    /// is running hands over cleanly (restore, then install).
+    func setPreciseModeEnabled(_ enabled: Bool) {
+        guard preciseModeEnabled != enabled else { return }
+        preciseModeEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.preciseModeEnabledKey)
+        guard proxyEnabled else { return }
+        if enabled {
+            // Give the system proxy back before the extension takes over flows.
+            proxyEnforcementController.disable()
+        } else {
+            transparentProxyController.disable()
+        }
+        startEnforcement()
+    }
+
+    /// Start whichever enforcement path the user selected. Never both: the
+    /// transparent proxy already sees every flow, so a simultaneous system-proxy
+    /// takeover would route app traffic into our own local proxy and back out
+    /// through the extension — double accounting and a needless hop.
+    private func startEnforcement() {
+        if preciseModeEnabled {
+            startTransparentProxy()
+        } else {
+            startProxyEnforcement()
+        }
+    }
+
+    private func startTransparentProxy() {
+        guard let payload = currentRulesPayload() else { return }
+        transparentProxyController.enable(rules: payload)
+    }
+
+    private func currentRulesPayload() -> ProxyRulesPayload? {
+        rulesGeneration &+= 1
+        return ProxyRulesPayload.build(
+            generation: rulesGeneration,
+            store: policyStore,
+            profiles: proxyProfiles,
+            systemUpstream: fixedSystemProxyUpstream
+        )
+    }
+
+    /// Fold one measured flow sample from the extension into telemetry and route
+    /// evidence. These are exact per-flow byte counts — the precision the socket
+    /// fallback can only estimate.
+    private func ingestTransparentFlowSamples(_ samples: [FlowEventSample]) {
+        let now = Date()
+        for sample in samples {
+            let app = AppIdentityKey(
+                teamIdentifier: nil,
+                signingIdentifier: sample.signingIdentifier
+            )
+            let route: RouteAction
+            switch sample.action {
+            case "direct": route = .direct
+            case "upstream": route = .systemProxy
+            default: route = .inherit
+            }
+            if sample.action == "direct" || sample.action == "upstream" {
+                // Measured per-flow pairing: strongest route evidence available.
+                socketObservedRoute[app.storageKey] = route
+            }
+            guard sample.bytesUp > 0 || sample.bytesDown > 0 else { continue }
+            aggregator.recordClose(
+                flowID: UUID(),
+                app: app,
+                at: now,
+                finalUp: sample.bytesUp,
+                finalDown: sample.bytesDown,
+                route: route,
+                transport: .tcp,
+                destinationKey: sample.host
+            )
+        }
+        refreshPublishedState()
     }
 
     // MARK: - Groups
@@ -2298,6 +2400,10 @@ final class AppModel: ObservableObject {
             snapshot: policyStore.compileSnapshot(),
             profiles: proxyProfiles
         )
+        // Keep the extension's copy in step; a no-op when precise mode is off.
+        if let payload = currentRulesPayload() {
+            transparentProxyController.updateRules(payload)
+        }
         refreshPublishedState()
         if case .inherit = route {} else if !proxyEnabled {
             offerEnforcementActivation()

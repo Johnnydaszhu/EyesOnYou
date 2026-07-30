@@ -59,6 +59,11 @@ let package = Package(
             dependencies: ["EyesOnYouProxyCore", "EyesOnYouCore", "EyesOnYouRuleEngine"],
             path: "Packages/EyesOnYouProxyCore/Tests/EyesOnYouProxyCoreTests"
         ),
+        .testTarget(
+            name: "EyesOnYouIPCTests",
+            dependencies: ["EyesOnYouIPC", "EyesOnYouProxyCore", "EyesOnYouRuleEngine", "EyesOnYouCore"],
+            path: "Packages/EyesOnYouIPC/Tests/EyesOnYouIPCTests"
+        ),
         // Agent-oriented CLI (JSON stdout, no interactive prompts).
         .executableTarget(
             name: "EyesOnYouCLI",
