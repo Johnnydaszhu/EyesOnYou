@@ -117,6 +117,12 @@ final class AppModel: ObservableObject {
     @Published var routeMix: RouteMix = RouteMix()
     /// Live macOS system HTTP/HTTPS/SOCKS/PAC settings (e.g. Shadowrocket “系统代理”).
     @Published var systemProxy: SystemProxySnapshot = .inactive
+    /// How the proxy client is deployed (system proxy / VPN-provided / TUN / PAC) —
+    /// classified from the dynamic-store layers, tunnel state, and fake-IP DNS.
+    @Published private(set) var proxyDeployment: ProxyDeploymentSnapshot? = nil
+    /// Measured per-connection route mix from a local Clash-family controller API,
+    /// when one is reachable. Nil means no controller (e.g. Shadowrocket).
+    @Published private(set) var clashEvidence: ClashRouteEvidence? = nil
     /// Dominant remote IP of the local system-proxy process (node / uplink), not 127.0.0.1.
     @Published var systemProxyNodeIP: String? = nil
     @Published var blockedToday: UInt64 = 0
@@ -262,6 +268,14 @@ final class AppModel: ObservableObject {
     private var socketFlowIDs: [String: UUID] = [:]
     /// Last observed route per app from socket attribution (direct vs system proxy).
     private var socketObservedRoute: [String: RouteAction] = [:]
+    /// Measured route per app from the Clash controller API (exact client↔egress
+    /// pairing, so it outranks socket heuristics). Keyed by storageKey.
+    private var clashObservedRoute: [String: RouteAction] = [:]
+    private var clashClient: ClashControllerClient?
+    private var clashPollInFlight = false
+    private var lastClashDiscoveryAt: Date?
+    private var lastClashPollAt: Date?
+    private var clashConsecutiveFailures = 0
     /// Cached DIRECT destination index from local proxy clients (Clash / Shadowrocket / …).
     private var directDestinationIndex = DirectDestinationIndex.empty
     private var directIndexLoadedAt: Date? = nil
@@ -2553,6 +2567,10 @@ final class AppModel: ObservableObject {
         // Enforcement badge follows the VPN tunnel: a NE-provided proxy config can
         // shadow (or stop shadowing) our takeover at any time.
         proxyEnforcementController.reevaluateShadowing(merged: mergedProxies)
+        // Deployment mode (system proxy vs VPN-provided vs TUN vs PAC) from the
+        // dynamic-store layers; cheap mach reads, safe every tick.
+        publish(\.proxyDeployment, ProxyDeploymentReader.current(merged: mergedProxies))
+        pollClashEvidence(now: now)
 
         let hostRates = hostNetworkSampler.sampleRates(now: now)
 
@@ -2959,11 +2977,118 @@ final class AppModel: ObservableObject {
     }
 
     private func resolveRoute(for app: AppIdentityKey) -> RouteAction {
+        // Clash controller evidence is an exact client↔egress pairing (measured),
+        // so it wins over the socket census heuristics.
+        if let measured = clashObservedRoute[app.storageKey] {
+            return measured
+        }
         if let observed = socketObservedRoute[app.storageKey] {
             return observed
         }
         let snap = policyStore.compileSnapshot()
         return snap.evaluateRoute(FlowDescriptor(app: app)).action
+    }
+
+    // MARK: - Clash controller evidence
+
+    /// Poll the local Clash-family controller API for measured per-app routes.
+    ///
+    /// Discovery reads the standard config locations for `external-controller`;
+    /// nothing is polled when no controller exists (Shadowrocket). All disk and
+    /// network work happens off the main actor; failures degrade silently back to
+    /// the socket heuristics — never invented data.
+    private func pollClashEvidence(now: Date) {
+        guard !clashPollInFlight else { return }
+        if let last = lastClashPollAt, now.timeIntervalSince(last) < 3 { return }
+
+        guard let client = clashClient else {
+            // Re-discover at most once a minute; configs rarely change.
+            if let last = lastClashDiscoveryAt, now.timeIntervalSince(last) < 60 { return }
+            lastClashDiscoveryAt = now
+            clashPollInFlight = true
+            Task.detached(priority: .utility) { [weak self] in
+                // A config file can outlive the client (user switched to
+                // Shadowrocket): only adopt a controller that actually answers.
+                var candidate = ClashConfigParser.discover().map { ClashControllerClient(endpoint: $0) }
+                if let client = candidate, await !client.isReachable() {
+                    candidate = nil
+                }
+                let adopted = candidate
+                await MainActor.run {
+                    guard let self else { return }
+                    self.clashPollInFlight = false
+                    self.clashClient = adopted
+                }
+            }
+            return
+        }
+
+        lastClashPollAt = now
+        clashPollInFlight = true
+        Task.detached(priority: .utility) { [weak self] in
+            do {
+                let snapshot = try await client.connections()
+                let evidence = ClashRouteEvidence.build(from: snapshot)
+                // Executable → app identity resolution reads Info.plists — keep it
+                // off the main actor.
+                let routes = Self.clashRoutes(from: evidence)
+                await MainActor.run {
+                    guard let self else { return }
+                    self.clashPollInFlight = false
+                    self.clashConsecutiveFailures = 0
+                    self.publish(\.clashEvidence, evidence)
+                    self.clashObservedRoute = routes
+                }
+            } catch {
+                await MainActor.run {
+                    guard let self else { return }
+                    self.clashPollInFlight = false
+                    self.clashConsecutiveFailures += 1
+                    if self.clashConsecutiveFailures >= 5 {
+                        // Controller went away (client quit / port changed): drop the
+                        // evidence and fall back to discovery.
+                        self.clashClient = nil
+                        self.clashObservedRoute = [:]
+                        self.publish(\.clashEvidence, nil)
+                        self.clashConsecutiveFailures = 0
+                    }
+                }
+            }
+        }
+    }
+
+    /// Aggregate per-executable Clash counts into per-app definite routes.
+    ///
+    /// Counts merge across an app's processes first (helper + main), and only a
+    /// one-sided result yields a route — a mixed app stays undecided rather than
+    /// being rounded to the bigger side.
+    nonisolated private static func clashRoutes(
+        from evidence: ClashRouteEvidence
+    ) -> [String: RouteAction] {
+        var perApp: [String: ClashRouteEvidence.Counts] = [:]
+        for (processKey, counts) in evidence.byProcess {
+            // Bare names (no path) are too weak to bind to an app identity.
+            guard processKey.hasPrefix("/"),
+                  let resolved = ProcessAppIdentity.resolve(executablePath: processKey) else {
+                continue
+            }
+            // Same canonicalization as the socket census, so the keys line up.
+            let key = AppIdentityKey(
+                teamIdentifier: nil,
+                signingIdentifier: ProcessAppIdentity.canonicalSigningID(resolved.signingIdentifier)
+            ).storageKey
+            perApp[key, default: .init()].proxied += counts.proxied
+            perApp[key, default: .init()].direct += counts.direct
+        }
+        var routes: [String: RouteAction] = [:]
+        for (key, counts) in perApp {
+            switch counts.definiteRoute {
+            case .proxied: routes[key] = .systemProxy
+            case .direct: routes[key] = .direct
+            case .rejected, nil: break
+            }
+        }
+        return routes
     }
 
     // MARK: - Socket fallback (app identity without Network Extension)

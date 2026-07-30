@@ -213,27 +213,66 @@ struct MainDashboardView: View {
 
     private var systemProxyStatusControl: some View {
         let state = model.systemProxy.configurationState
-        let tint: Color = {
+        let deployment = model.proxyDeployment
+        // The deployment mode is more truthful than the raw on/off state: a TUN
+        // tunnel captures everything with the "system proxy" nominally off, and a
+        // VPN-provided proxy is not the same thing as a settings-layer one.
+        let title: String
+        let tint: Color
+        switch deployment?.mode {
+        case .vpnProvidedProxy:
+            title = l10n.t("proxyMode.vpnProxy")
+            tint = EyesOnYouTheme.accentGreen
+        case .tunnelOnly:
+            title = l10n.t("proxyMode.tunnelOnly")
+            tint = EyesOnYouTheme.accentAmber
+        case .pac:
+            title = l10n.t("proxyMode.pac")
+            tint = EyesOnYouTheme.accentAmber
+        default:
+            // .systemProxy / .none / not yet sampled: the classic on/off chip is
+            // already the truthful label.
             switch state {
-            case .enabled: return EyesOnYouTheme.accentGreen
-            case .invalid: return EyesOnYouTheme.accentAmber
-            case .disabled, .unavailable: return EyesOnYouTheme.textSecondary
+            case .enabled:
+                title = l10n.t("systemProxy.state.enabled")
+                tint = EyesOnYouTheme.accentGreen
+            case .invalid:
+                title = l10n.t("systemProxy.state.invalid")
+                tint = EyesOnYouTheme.accentAmber
+            case .disabled:
+                title = l10n.t("systemProxy.state.disabled")
+                tint = EyesOnYouTheme.textSecondary
+            case .unavailable:
+                title = l10n.t("systemProxy.state.unavailable")
+                tint = EyesOnYouTheme.textSecondary
             }
-        }()
-        let key: String = {
-            switch state {
-            case .enabled: return "systemProxy.state.enabled"
-            case .disabled: return "systemProxy.state.disabled"
-            case .invalid: return "systemProxy.state.invalid"
-            case .unavailable: return "systemProxy.state.unavailable"
+        }
+        var helpLines: [String] = [l10n.t("systemProxy.help")]
+        if let deployment {
+            switch deployment.mode {
+            case .vpnProvidedProxy: helpLines.append(l10n.t("proxyMode.help.vpnProxy"))
+            case .tunnelOnly: helpLines.append(l10n.t("proxyMode.help.tunnelOnly"))
+            case .pac: helpLines.append(l10n.t("proxyMode.help.pac"))
+            case .systemProxy: helpLines.append(l10n.t("proxyMode.help.systemProxy"))
+            case .none: break
             }
-        }()
-        let detail = model.systemProxy.primaryEndpointLabel
+            if let endpoint = deployment.endpoint { helpLines.append(endpoint) }
+            if deployment.fakeIPDNS { helpLines.append(l10n.t("proxyMode.fakeIP")) }
+        } else if let endpoint = model.systemProxy.primaryEndpointLabel {
+            helpLines.append(endpoint)
+        }
+        if let clash = model.clashEvidence {
+            helpLines.append(l10n.t(
+                "clash.evidence",
+                clash.totalConnections, clash.proxiedConnections, clash.directConnections
+            ))
+        }
+        let detail = helpLines.dropFirst().joined(separator: "\n")
         return HStack(spacing: 5) {
             Circle()
                 .fill(tint)
                 .frame(width: 6, height: 6)
-            Text(l10n.t(key))
+            Text(title)
                 .font(.system(size: 10, weight: .semibold))
                 .lineLimit(1)
         }
@@ -248,13 +287,9 @@ struct MainDashboardView: View {
                         .strokeBorder(tint.opacity(0.28), lineWidth: 0.7)
                 )
         }
-        .help(
-            [l10n.t("systemProxy.help"), detail]
-                .compactMap { $0 }
-                .joined(separator: "\n")
-        )
-        .accessibilityLabel(l10n.t(key))
-        .accessibilityValue(detail ?? "")
+        .help(helpLines.joined(separator: "\n"))
+        .accessibilityLabel(title)
+        .accessibilityValue(detail)
     }
 
     // MARK: - Update banner (only top chrome)

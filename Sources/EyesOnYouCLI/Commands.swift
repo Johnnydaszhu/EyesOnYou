@@ -904,19 +904,30 @@ func cmdEnforce(opts: GlobalOptions) throws -> ExitCode {
            ) {
             shadowedBy = observed ?? "unknown proxy"
         }
+        let deployment = ProxyDeploymentReader.current(merged: merged)
         var payload: [String: Any] = [
             "ok": true,
             "takeover_active": controller.hasPendingBackup,
             "backup_file": EyesOnYouPaths.systemProxyBackup.path,
             "services": live,
             "merged_proxy": merged.primaryEndpointLabel as Any,
-            "shadowed_by_vpn": shadowedBy as Any
+            "shadowed_by_vpn": shadowedBy as Any,
+            "deployment": [
+                "mode": deployment.mode.rawValue,
+                "endpoint": deployment.endpoint as Any,
+                "tunnel_active": deployment.tunnelActive,
+                "fake_ip_dns": deployment.fakeIPDNS
+            ]
         ]
         if let upstream = backup?.upstream {
             payload["saved_upstream"] = ["host": upstream.host, "port": Int(upstream.port)]
         }
         emit(payload, json: opts.json) {
             print("takeover active: \(controller.hasPendingBackup ? "yes" : "no")")
+            print("deployment: \(deployment.mode.rawValue)" +
+                  (deployment.endpoint.map { " (\($0))" } ?? "") +
+                  (deployment.tunnelActive ? " tunnel=up" : "") +
+                  (deployment.fakeIPDNS ? " fake-ip-dns" : ""))
             for entry in live {
                 let on = (entry["secure_enabled"] as? Bool == true) ? "on" : "off"
                 print("\(entry["service"] as? String ?? "?")\t\(on)\t\(entry["secure_host"] as? String ?? "")" +
@@ -1133,6 +1144,127 @@ private func resolveUpstream(
     // actually resolve, so chain inherit-flows to it. Read before takeover — after
     // takeover it would point at ourselves.
     return SystemProxyReader.current().fixedUpstream
+}
+
+// MARK: - Clash controller (measured per-app routes)
+
+/// `clash` — query a local Clash/mihomo external controller for live connections
+/// and report the measured proxied-vs-direct mix per process.
+///
+/// This is the "from estimate to measurement" path for Clash users: the controller
+/// pairs each connection with its owning process AND its exit (node or DIRECT),
+/// which socket census cannot do. When no controller exists (e.g. Shadowrocket),
+/// the command says so instead of guessing.
+func cmdClash(opts: GlobalOptions) throws -> ExitCode {
+    let endpoint: ClashControllerEndpoint
+    if let raw = opts.flag("controller") {
+        guard let (host, port) = splitHostPortArgument(raw),
+              let url = URL(string: "http://\(host):\(port)") else {
+            throw CLIError.usage("--controller must be host:port")
+        }
+        endpoint = ClashControllerEndpoint(baseURL: url, secret: opts.flag("secret"))
+    } else if let discovered = ClashConfigParser.discover() {
+        endpoint = ClashControllerEndpoint(
+            baseURL: discovered.baseURL,
+            secret: opts.flag("secret") ?? discovered.secret
+        )
+    } else {
+        emit([
+            "ok": true,
+            "available": false,
+            "reason": "no Clash external-controller config found; Shadowrocket exposes no connections API"
+        ], json: opts.json) {
+            print("no Clash controller available (Shadowrocket has no connections API)")
+        }
+        return .ok
+    }
+
+    let explicitController = opts.flag("controller") != nil
+    let client = ClashControllerClient(endpoint: endpoint)
+    let snapshot: ClashConnectionsSnapshot
+    do {
+        snapshot = try awaitBlocking { try await client.connections() }
+    } catch {
+        // A configured-but-not-running Clash is a normal state, not a failure —
+        // unless the user pointed at a controller explicitly.
+        guard explicitController else {
+            emit([
+                "ok": true,
+                "available": false,
+                "controller": endpoint.baseURL.absoluteString,
+                "reason": "controller configured but unreachable (Clash not running?)"
+            ], json: opts.json) {
+                print("Clash controller \(endpoint.baseURL.absoluteString) configured but unreachable " +
+                      "(Clash not running?)")
+            }
+            return .ok
+        }
+        throw CLIError.runtime(
+            "Clash controller \(endpoint.baseURL.absoluteString) unreachable: " +
+            error.localizedDescription
+        )
+    }
+    let evidence = ClashRouteEvidence.build(from: snapshot)
+    let limit = opts.flagInt("limit", default: 20)
+    let processes = evidence.byProcess
+        .sorted { ($0.value.proxied + $0.value.direct) > ($1.value.proxied + $1.value.direct) }
+        .prefix(max(1, limit))
+        .map { key, counts -> [String: Any] in
+            [
+                "process": key,
+                "proxied": counts.proxied,
+                "direct": counts.direct
+            ]
+        }
+    emit([
+        "ok": true,
+        "available": true,
+        "controller": endpoint.baseURL.absoluteString,
+        "connections": evidence.totalConnections,
+        "proxied": evidence.proxiedConnections,
+        "direct": evidence.directConnections,
+        "rejected": evidence.rejectedConnections,
+        "processes": Array(processes)
+    ], json: opts.json) {
+        print("controller: \(endpoint.baseURL.absoluteString)")
+        print("connections=\(evidence.totalConnections) proxied=\(evidence.proxiedConnections) " +
+              "direct=\(evidence.directConnections) rejected=\(evidence.rejectedConnections)")
+        for entry in processes {
+            let name = (entry["process"] as? String ?? "?").split(separator: "/").last.map(String.init)
+                ?? "?"
+            print("\(name)\tproxied=\(entry["proxied"] as? Int ?? 0)\tdirect=\(entry["direct"] as? Int ?? 0)")
+        }
+    }
+    return .ok
+}
+
+/// Bridge one async call into the synchronous CLI without blocking its executor:
+/// the task runs detached; the calling thread just waits.
+private final class AsyncResultBox<V>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var result: Result<V, Error>?
+    func set(_ value: Result<V, Error>) { lock.lock(); result = value; lock.unlock() }
+    func take() throws -> V {
+        lock.lock(); defer { lock.unlock() }
+        switch result {
+        case .success(let value): return value
+        case .failure(let error): throw error
+        case nil: throw CLIError.runtime("async task returned no result")
+        }
+    }
+}
+
+private func awaitBlocking<T: Sendable>(
+    _ body: @escaping @Sendable () async throws -> T
+) throws -> T {
+    let box = AsyncResultBox<T>()
+    let semaphore = DispatchSemaphore(value: 0)
+    Task.detached {
+        do { box.set(.success(try await body())) } catch { box.set(.failure(error)) }
+        semaphore.signal()
+    }
+    semaphore.wait()
+    return try box.take()
 }
 
 private func splitHostPortArgument(_ value: String) -> (String, UInt16)? {

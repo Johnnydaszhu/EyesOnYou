@@ -72,6 +72,8 @@ enum CLIRunner {
             return try cmdRoute(opts: opts)
         case "enforce":
             return try cmdEnforce(opts: opts)
+        case "clash":
+            return try cmdClash(opts: opts)
         default:
             throw CLIError.usage("unknown command: \(command)\nRun `eyesonyou help` for usage.")
         }
@@ -250,6 +252,7 @@ func helpText(json: Bool) -> String {
       attribution         Live per-process owner app + project for open sockets
       route               list | set | clear | block | allow  (per-app routing policy)
       enforce             status | serve | restore  (local enforcement proxy)
+      clash               Measured per-app routes from a local Clash controller API
       paths               Print data directories used by CLI
       agent-manifest      Full command schema as JSON (for agent tool registration)
       help                This help
@@ -388,6 +391,15 @@ func agentManifest() -> [String: Any] {
                 "flags": [
                     ["name": "limit", "type": "int", "default": 25],
                     ["name": "all", "type": "bool", "description": "include local proxy client processes"]
+                ]
+            ],
+            [
+                "name": "clash",
+                "summary": "Measured per-connection routes from a local Clash/mihomo external controller (exact proxied-vs-direct per process); reports unavailable when no controller exists (e.g. Shadowrocket)",
+                "flags": [
+                    ["name": "controller", "type": "string", "description": "host:port override; defaults to external-controller from the Clash config"],
+                    ["name": "secret", "type": "string", "description": "API secret; defaults to the one in the Clash config"],
+                    ["name": "limit", "type": "int", "default": 20]
                 ]
             ]
         ],
