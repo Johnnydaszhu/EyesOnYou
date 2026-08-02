@@ -17,15 +17,13 @@
 	<key>CFBundlePackageType</key>
 	<string>SYSX</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.2.5</string>
+	<string>0.3.0</string>
 	<key>CFBundleVersion</key>
-	<string>11</string>
+	<string>12</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>NetworkExtension</key>
 	<dict>
-		<!-- Follows the real bundle ID automatically; must carry the Team ID
-		     prefix or the provider cannot be reached. -->
 		<key>NEMachServiceName</key>
 		<string>$(TeamIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 		<key>NEProviderClasses</key>

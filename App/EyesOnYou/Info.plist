@@ -17,9 +17,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.2.5</string>
+	<string>0.3.0</string>
 	<key>CFBundleVersion</key>
-	<string>11</string>
+	<string>12</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>LSUIElement</key>
@@ -28,8 +28,6 @@
 	<true/>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
-	<!-- Shown in the approval prompt when precise mode installs the transparent
-	     proxy system extension. Required, or the request fails silently. -->
 	<key>NSSystemExtensionUsageDescription</key>
 	<string>EyesOnYou 使用系统网络扩展按应用规则路由连接，并精确统计每个应用的流量。</string>
 </dict>
