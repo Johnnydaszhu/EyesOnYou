@@ -314,11 +314,11 @@
 				TargetAttributes = {
 					0F1C0EBB500E8F99F19395B9 = {
 						DevelopmentTeam = "";
-						ProvisioningStyle = Manual;
+						ProvisioningStyle = "$(EYESONYOU_CODE_SIGN_STYLE:default=Manual)";
 					};
 					345C62488F4A0D9A146332F2 = {
 						DevelopmentTeam = "";
-						ProvisioningStyle = Manual;
+						ProvisioningStyle = "$(EYESONYOU_CODE_SIGN_STYLE:default=Manual)";
 					};
 				};
 			};
@@ -417,9 +417,9 @@
 			buildSettings = {
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGNING_REQUIRED = NO;
-				CODE_SIGN_ENTITLEMENTS = NetworkExtension/EyesOnYouNetworkExtension.entitlements;
+				CODE_SIGN_ENTITLEMENTS = "$(EYESONYOU_EXTENSION_ENTITLEMENTS:default=NetworkExtension/EyesOnYouNetworkExtension.entitlements)";
 				CODE_SIGN_IDENTITY = "$(EYESONYOU_CODE_SIGN_IDENTITY:default=-)";
-				CODE_SIGN_STYLE = Manual;
+				CODE_SIGN_STYLE = "$(EYESONYOU_CODE_SIGN_STYLE:default=Manual)";
 				COMBINE_HIDPI_IMAGES = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NetworkExtension/Info.plist;
@@ -501,9 +501,9 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGNING_REQUIRED = NO;
-				CODE_SIGN_ENTITLEMENTS = App/EyesOnYou/EyesOnYou.entitlements;
+				CODE_SIGN_ENTITLEMENTS = "$(EYESONYOU_APP_ENTITLEMENTS:default=App/EyesOnYou/EyesOnYou.entitlements)";
 				CODE_SIGN_IDENTITY = "$(EYESONYOU_CODE_SIGN_IDENTITY:default=-)";
-				CODE_SIGN_STYLE = Manual;
+				CODE_SIGN_STYLE = "$(EYESONYOU_CODE_SIGN_STYLE:default=Manual)";
 				COMBINE_HIDPI_IMAGES = YES;
 				ENABLE_DEBUG_DYLIB = NO;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -525,9 +525,9 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGNING_REQUIRED = NO;
-				CODE_SIGN_ENTITLEMENTS = App/EyesOnYou/EyesOnYou.entitlements;
+				CODE_SIGN_ENTITLEMENTS = "$(EYESONYOU_APP_ENTITLEMENTS:default=App/EyesOnYou/EyesOnYou.entitlements)";
 				CODE_SIGN_IDENTITY = "$(EYESONYOU_CODE_SIGN_IDENTITY:default=-)";
-				CODE_SIGN_STYLE = Manual;
+				CODE_SIGN_STYLE = "$(EYESONYOU_CODE_SIGN_STYLE:default=Manual)";
 				COMBINE_HIDPI_IMAGES = YES;
 				ENABLE_DEBUG_DYLIB = NO;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -616,9 +616,9 @@
 			buildSettings = {
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGNING_REQUIRED = NO;
-				CODE_SIGN_ENTITLEMENTS = NetworkExtension/EyesOnYouNetworkExtension.entitlements;
+				CODE_SIGN_ENTITLEMENTS = "$(EYESONYOU_EXTENSION_ENTITLEMENTS:default=NetworkExtension/EyesOnYouNetworkExtension.entitlements)";
 				CODE_SIGN_IDENTITY = "$(EYESONYOU_CODE_SIGN_IDENTITY:default=-)";
-				CODE_SIGN_STYLE = Manual;
+				CODE_SIGN_STYLE = "$(EYESONYOU_CODE_SIGN_STYLE:default=Manual)";
 				COMBINE_HIDPI_IMAGES = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NetworkExtension/Info.plist;

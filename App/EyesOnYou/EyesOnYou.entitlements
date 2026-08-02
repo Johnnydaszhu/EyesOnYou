@@ -2,8 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Ad-hoc / local Debug: no restricted entitlements.
-	     For system-extension install use config/HostApp.Development.entitlements
-	     (or DeveloperID variants) with a paid Apple Developer Team. -->
+	<!-- Intentionally empty, and it must stay that way.
+
+	     Xcode demands a matching provisioning profile as soon as a restricted
+	     entitlement appears here — even for an ad-hoc build with no team — so
+	     putting the Network Extension keys in this tracked file breaks `git
+	     clone && xcodebuild` for everyone without a signed setup.
+
+	     Precise mode therefore points CODE_SIGN_ENTITLEMENTS at a git-ignored
+	     file instead: set EYESONYOU_APP_ENTITLEMENTS in config/Local.xcconfig.
+	     See docs/NE-SIGNING.md. -->
 </dict>
 </plist>

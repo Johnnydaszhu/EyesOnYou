@@ -14,8 +14,10 @@ path, the CLI) works with the default ad-hoc build and needs none of this.
 
 ## What happens without it
 
-The app builds and runs. Turning on precise mode reports
-`precise.state.notEntitled` — a named state, not a crash:
+The app builds and runs — the tracked project deliberately stays on ad-hoc
+signing with empty entitlements so a plain clone needs no Apple account at all.
+Turning on precise mode reports `precise.state.notEntitled` — a named state, not
+a crash:
 
 > This build cannot load the system extension: its signature carries no Network
 > Extension entitlement.
@@ -68,12 +70,30 @@ credentials out of any shared environment.
    your Team ID (`$(TeamIdentifierPrefix)com.yourname.EyesOnYou`, which is what
    `config/EyesOnYou.xcconfig.example` already does) — the `group.` prefix is the
    iOS convention and does not apply here.
-3. **Network Extension entitlement for self-distribution.** Development signing
-   works immediately. For a Developer ID build distributed outside the App Store,
-   Apple additionally requires an approved request for the
-   `com.apple.developer.networking.networkextension` entitlement — submit the
-   Network Extension (Developer ID) request form describing the use case.
-   Turnaround is typically a few business days.
+3. **Network Extension entitlement — required before *any* signed build, not just
+   distribution.** Submit the Network Extension request form
+   (`developer.apple.com/contact/request/` → Network Extension; the page requires
+   an Apple ID sign-in) describing the use case. Turnaround is typically a few
+   business days.
+
+   > Measured on 2026-07-30 with team `6F3658M83Q` and both App IDs registered
+   > with the Network Extensions capability enabled: the auto-generated
+   > "Mac Team Provisioning Profile" grants only the **app-extension** variants —
+   > `app-proxy-provider`, `content-filter-provider`, `packet-tunnel-provider` —
+   > and none of the `-systemextension` variants a system extension needs. The
+   > build then fails with *"provisioning profile doesn't match the entitlements
+   > file's value for com.apple.developer.networking.networkextension"*.
+   > `com.apple.developer.system-extension.install` **is** granted, so the host's
+   > ability to install extensions is not the blocker — only the provider
+   > entitlement is.
+   >
+   > So enabling the capability in the portal is necessary but not sufficient;
+   > plan for the request-form wait before any local end-to-end testing.
+
+   The only way around the wait is disabling SIP on a test machine, which lets
+   the system skip the entitlement check. That is a real reduction in the
+   machine's security posture (recovery mode, `csrutil`) and is a deliberate
+   choice, not a shortcut to take casually.
 4. **Local config** (gitignored):
 
    ```bash
@@ -88,16 +108,27 @@ credentials out of any shared environment.
    EYESONYOU_CODE_SIGN_IDENTITY = Apple Development: you@example.com (XXXXXXXXXX)
    ```
 
-5. **Entitlements**: copy the tracked templates into place (they are `.example`
-   files precisely so the real ones stay untracked):
+5. **Entitlements — never edit the tracked files.** Xcode demands a matching
+   provisioning profile the moment a restricted entitlement appears in
+   `CODE_SIGN_ENTITLEMENTS`, *even for an ad-hoc build with no team*. Putting the
+   Network Extension keys into the tracked `.entitlements` files therefore breaks
+   `git clone && xcodebuild` for everyone without a signed setup (verified — it
+   fails with "requires a provisioning profile").
 
-   ```bash
-   cp config/HostApp.Development.entitlements.example         App/EyesOnYou/EyesOnYou.entitlements
-   cp config/NetworkExtension.Development.entitlements.example NetworkExtension/EyesOnYouNetworkExtension.entitlements
+   Signed builds point at git-ignored copies instead, via
+   `config/Local.xcconfig`:
+
+   ```
+   EYESONYOU_APP_ENTITLEMENTS       = config/Local.HostApp.entitlements
+   EYESONYOU_EXTENSION_ENTITLEMENTS = config/Local.NetworkExtension.entitlements
    ```
 
-   Use the `DeveloperID` variants for a distributable build. Do **not** commit
-   the results.
+   `config/Local.*.entitlements` is git-ignored. Both files must use the
+   **`-systemextension`** entitlement variants
+   (`app-proxy-provider-systemextension`,
+   `content-filter-provider-systemextension`) — the `.example` templates in
+   `config/` predate precise mode and list the plain app-extension names, which a
+   system extension cannot use.
 
 6. **Info.plist**: the tracked `NetworkExtension/Info.plist` already maps
    `com.apple.networkextension.app-proxy` → `FlowTransparentProxyProvider` and

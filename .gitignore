@@ -39,6 +39,9 @@ private.xcconfig
 **/*.xcconfig.local
 **/*.entitlements.local
 config/Local.xcconfig
+# Real entitlements for signed (Network Extension) builds — never committed;
+# the tracked .entitlements files stay empty so a plain clone needs no profile.
+config/Local.*.entitlements
 config/private.xcconfig
 DEVELOPMENT_TEAM.xcconfig
 

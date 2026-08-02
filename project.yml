@@ -38,7 +38,9 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: "$(EYESONYOU_APP_BUNDLE_ID:default=com.example.EyesOnYou)"
         PRODUCT_NAME: EyesOnYou
         INFOPLIST_FILE: App/EyesOnYou/Info.plist
-        CODE_SIGN_ENTITLEMENTS: App/EyesOnYou/EyesOnYou.entitlements
+        # Git-ignored override for signed builds; tracked default is empty so a
+        # plain clone needs no provisioning profile. See docs/NE-SIGNING.md.
+        CODE_SIGN_ENTITLEMENTS: "$(EYESONYOU_APP_ENTITLEMENTS:default=App/EyesOnYou/EyesOnYou.entitlements)"
         LD_RUNPATH_SEARCH_PATHS: ["$(inherited)", "@executable_path/../Frameworks"]
         GENERATE_INFOPLIST_FILE: NO
         COMBINE_HIDPI_IMAGES: YES
@@ -51,7 +53,11 @@ targets:
         CODE_SIGN_IDENTITY: "$(EYESONYOU_CODE_SIGN_IDENTITY:default=-)"
         # Manual: automatic signing demands a development team as soon as the
         # identity is not ad-hoc, which a local self-signed certificate is not.
-        CODE_SIGN_STYLE: Manual
+        # Manual by default so an ad-hoc / self-signed local certificate works
+        # with no team. Set EYESONYOU_CODE_SIGN_STYLE = Automatic in the
+        # git-ignored config/Local.xcconfig for a real signed build — Xcode then
+        # provisions the Network Extension profiles itself.
+        CODE_SIGN_STYLE: "$(EYESONYOU_CODE_SIGN_STYLE:default=Manual)"
         # Xcode 16 otherwise splits Debug builds into a stub executable plus
         # EyesOnYou.debug.dylib, and signs the two with different identities —
         # dyld then refuses to load the dylib ("different Team IDs") and the app
@@ -96,12 +102,12 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: "$(EYESONYOU_EXTENSION_BUNDLE_ID:default=com.example.EyesOnYou.NetworkExtension)"
         PRODUCT_NAME: EyesOnYouNetworkExtension
         INFOPLIST_FILE: NetworkExtension/Info.plist
-        CODE_SIGN_ENTITLEMENTS: NetworkExtension/EyesOnYouNetworkExtension.entitlements
+        CODE_SIGN_ENTITLEMENTS: "$(EYESONYOU_EXTENSION_ENTITLEMENTS:default=NetworkExtension/EyesOnYouNetworkExtension.entitlements)"
         GENERATE_INFOPLIST_FILE: NO
         SKIP_INSTALL: YES
         CODE_SIGN_IDENTITY: "$(EYESONYOU_CODE_SIGN_IDENTITY:default=-)"
         # Must match the host app's certificate, or embedding fails.
-        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_STYLE: "$(EYESONYOU_CODE_SIGN_STYLE:default=Manual)"
         CODE_SIGNING_ALLOWED: YES
         CODE_SIGNING_REQUIRED: NO
         LD_RUNPATH_SEARCH_PATHS: ["$(inherited)", "@executable_path/../Frameworks"]
