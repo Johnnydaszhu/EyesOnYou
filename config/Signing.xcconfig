@@ -12,3 +12,7 @@
 EYESONYOU_CODE_SIGN_IDENTITY = -
 
 #include? "LocalSigning.xcconfig"
+
+// Real bundle IDs / Team ID for a signed (Network Extension capable) build.
+// Git-ignored; absent for a plain clone, which then builds ad-hoc on com.example.
+#include? "Local.xcconfig"

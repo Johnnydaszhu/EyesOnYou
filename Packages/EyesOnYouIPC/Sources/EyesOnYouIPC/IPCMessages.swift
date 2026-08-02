@@ -120,7 +120,33 @@ public enum EyesOnYouConstants {
     /// one — note macOS app groups must be Team-ID-prefixed, not `group.`-prefixed
     /// (see docs/NE-SIGNING.md).
     public static let appGroupIdentifier = "group.com.example.EyesOnYou"
-    public static let machServiceName = "com.example.EyesOnYou.xpc"
-    public static let hostBundleID = "com.example.EyesOnYou"
-    public static let extensionBundleID = "com.example.EyesOnYou.NetworkExtension"
+    /// Suffix the extension target's bundle ID adds to the host's.
+    public static let extensionBundleIDSuffix = ".NetworkExtension"
+
+    /// Derived from the running bundle, never hardcoded: the bundle ID changes
+    /// with the signing team (`com.example.…` ad-hoc vs the maintainer's real
+    /// prefix), and a stale literal would make `OSSystemExtensionRequest` target
+    /// an extension that does not exist — failing with no obvious cause.
+    ///
+    /// This type is linked into both processes, so the extension's own ID is
+    /// normalized back to the host's.
+    public static var hostBundleID: String {
+        normalizedHostBundleID(Bundle.main.bundleIdentifier)
+    }
+
+    /// Pure form of the above, so the normalization is testable without caring
+    /// which bundle the test runner happens to be.
+    public static func normalizedHostBundleID(_ runningBundleID: String?) -> String {
+        let id = runningBundleID.flatMap { $0.isEmpty ? nil : $0 } ?? "com.example.EyesOnYou"
+        guard id.hasSuffix(extensionBundleIDSuffix) else { return id }
+        return String(id.dropLast(extensionBundleIDSuffix.count))
+    }
+
+    public static var extensionBundleID: String {
+        hostBundleID + extensionBundleIDSuffix
+    }
+
+    /// Unused today (see `appGroupIdentifier`); the extension's Info.plist
+    /// declares the real `NEMachServiceName`, Team-ID-prefixed.
+    public static var machServiceName: String { extensionBundleID }
 }

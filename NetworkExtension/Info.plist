@@ -24,8 +24,10 @@
 	<string>13.0</string>
 	<key>NetworkExtension</key>
 	<dict>
+		<!-- Follows the real bundle ID automatically; must carry the Team ID
+		     prefix or the provider cannot be reached. -->
 		<key>NEMachServiceName</key>
-		<string>$(TeamIdentifierPrefix)com.example.EyesOnYou.NetworkExtension</string>
+		<string>$(TeamIdentifierPrefix)$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 		<key>NEProviderClasses</key>
 		<dict>
 			<key>com.apple.networkextension.app-proxy</key>

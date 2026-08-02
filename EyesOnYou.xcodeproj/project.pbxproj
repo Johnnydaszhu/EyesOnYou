@@ -427,7 +427,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.EyesOnYou.NetworkExtension;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(EYESONYOU_EXTENSION_BUNDLE_ID:default=com.example.EyesOnYou.NetworkExtension)";
 				PRODUCT_NAME = EyesOnYouNetworkExtension;
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;
@@ -512,7 +512,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.EyesOnYou;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(EYESONYOU_APP_BUNDLE_ID:default=com.example.EyesOnYou)";
 				PRODUCT_NAME = EyesOnYou;
 				SDKROOT = macosx;
 			};
@@ -536,7 +536,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.EyesOnYou;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(EYESONYOU_APP_BUNDLE_ID:default=com.example.EyesOnYou)";
 				PRODUCT_NAME = EyesOnYou;
 				SDKROOT = macosx;
 			};
@@ -626,7 +626,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.example.EyesOnYou.NetworkExtension;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(EYESONYOU_EXTENSION_BUNDLE_ID:default=com.example.EyesOnYou.NetworkExtension)";
 				PRODUCT_NAME = EyesOnYouNetworkExtension;
 				SDKROOT = macosx;
 				SKIP_INSTALL = YES;
