@@ -97,4 +97,16 @@ public final class ShardedFlowRegistry: @unchecked Sendable {
     public func counters(for id: UUID) -> FlowCounters? {
         shard(for: id).withLock { $0[id] }
     }
+
+    public var count: Int {
+        shards.reduce(0) { total, shard in
+            total + shard.withLock { $0.count }
+        }
+    }
+
+    public func removeAll() {
+        for shard in shards {
+            shard.withLock { $0.removeAll(keepingCapacity: false) }
+        }
+    }
 }

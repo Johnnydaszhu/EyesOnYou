@@ -37,6 +37,7 @@ final class FlowFilterDataProvider: NEFilterDataProvider {
         with reason: NEProviderStopReason,
         completionHandler: @escaping () -> Void
     ) {
+        runtime.stopFilterAccounting()
         runtime.flush()
         log.info("Filter stopped reason=\(String(describing: reason), privacy: .public)")
         completionHandler()
@@ -49,20 +50,33 @@ final class FlowFilterDataProvider: NEFilterDataProvider {
             return .allow()
         }
 
-        let decision = runtime.rules.snapshot.evaluateFirewall(descriptor)
+        let snapshot = runtime.rules.snapshot
+        let decision = snapshot.evaluateFirewall(descriptor)
+        let route = snapshot.evaluateRoute(descriptor).action
         runtime.aggregator.recordOpen(
             descriptor,
             displayName: descriptor.app.signingIdentifier,
-            route: runtime.rules.snapshot.evaluateRoute(descriptor).action,
+            route: route,
             firewall: decision.action
         )
 
         switch decision.action {
         case .block:
+            // A dropped socket does not produce a later close report. Close its
+            // accounting lifecycle now instead of retaining its UUID forever.
+            runtime.aggregator.recordClose(
+                flowID: descriptor.id,
+                app: descriptor.app,
+                at: Date(),
+                route: route,
+                transport: descriptor.transport
+            )
             return .drop()
         case .inherit, .observe, .allow:
             let verdict = NEFilterNewFlowVerdict.allow()
-            // Prefer medium stats when available; property may differ by SDK.
+            // `shouldReport` guarantees a final flowClosed report for socket
+            // flows; periodic reports provide cumulative byte counters.
+            verdict.shouldReport = true
             if #available(macOS 11.0, *) {
                 verdict.statisticsReportFrequency = .medium
             }

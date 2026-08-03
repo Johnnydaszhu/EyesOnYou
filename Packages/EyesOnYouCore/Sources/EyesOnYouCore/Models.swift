@@ -391,6 +391,8 @@ public enum DrillableIdentity {
 /// Normalize a remote host into a stable destination key for bucketing.
 public enum DestinationKey {
     public static let unknown = "unknown"
+    /// Detailed destinations beyond the live-memory budget are merged here.
+    public static let other = "other"
 
     /// Aggregate path segments for traffic that went through a local proxy client.
     ///

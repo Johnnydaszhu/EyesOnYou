@@ -144,6 +144,11 @@ final class ExtensionRuntime: @unchecked Sendable {
         // Future: batch-write aggregator buckets to telemetry.sqlite via single writer.
     }
 
+    func stopFilterAccounting() {
+        flowRegistry.removeAll()
+        aggregator.discardActiveFlows()
+    }
+
     // MARK: - Flow identity
 
     func makeDescriptor(from flow: NEFilterFlow) -> FlowDescriptor? {
@@ -192,9 +197,43 @@ final class ExtensionRuntime: @unchecked Sendable {
     }
 
     func consume(report: NEFilterReport) {
-        // Wire cumulative bytes when flow identity is available from report.
-        // Phase 0 calibrates which fields are non-zero on each macOS version.
-        _ = report
+        guard let flow = report.flow,
+              let descriptor = makeDescriptor(from: flow) else {
+            return
+        }
+
+        let route = rules.snapshot.evaluateRoute(descriptor).action
+        let delta = flowRegistry.update(
+            id: descriptor.id,
+            cumulativeUp: UInt64(report.bytesOutboundCount),
+            cumulativeDown: UInt64(report.bytesInboundCount)
+        )
+
+        switch report.event {
+        case .statistics:
+            aggregator.recordDelta(
+                flowID: descriptor.id,
+                app: descriptor.app,
+                up: delta.up,
+                down: delta.down,
+                route: route,
+                transport: descriptor.transport
+            )
+        case .flowClosed:
+            aggregator.recordClose(
+                flowID: descriptor.id,
+                app: descriptor.app,
+                finalUp: delta.up,
+                finalDown: delta.down,
+                route: route,
+                transport: descriptor.transport
+            )
+            _ = flowRegistry.remove(id: descriptor.id)
+        case .newFlow, .dataDecision:
+            break
+        @unknown default:
+            break
+        }
     }
 }
 

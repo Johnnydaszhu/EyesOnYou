@@ -27,6 +27,187 @@ final class TelemetryAggregatorTests: XCTestCase {
         XCTAssertEqual(counters?.totalDown, 200 + 300 + 20)
     }
 
+    func testFlowRegistryCanReleaseEveryFlowAtProviderShutdown() {
+        let registry = ShardedFlowRegistry(shardCount: 8)
+        for _ in 0..<1_000 {
+            _ = registry.update(id: UUID(), cumulativeUp: 10, cumulativeDown: 20)
+        }
+
+        XCTAssertEqual(registry.count, 1_000)
+        registry.removeAll()
+        XCTAssertEqual(registry.count, 0)
+    }
+
+    func testAggregatorCanReleaseFlowsWhenProviderStopsWithoutCloseReports() {
+        let agg = TelemetryAggregator(retention: .live)
+        for _ in 0..<1_000 {
+            agg.recordOpen(FlowDescriptor(app: chrome, remoteHostname: "example.com"))
+        }
+
+        XCTAssertEqual(agg.activeConnectionCount(), 1_000)
+        XCTAssertEqual(agg.discardActiveFlows(), 1_000)
+        XCTAssertEqual(agg.activeConnectionCount(), 0)
+    }
+
+    func testLiveCardinalityBudgetPreservesTotalsForRandomDestinations() {
+        let retention = BucketRetention(
+            oneSecond: 300,
+            oneMinute: 10_800,
+            oneHour: 259_200,
+            oneDay: 34_560_000,
+            maximumDetailedKeysPerGranularity: 64
+        )
+        let agg = TelemetryAggregator(retention: retention)
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        for index in 0..<10_000 {
+            let route: RouteAction = index.isMultiple(of: 2) ? .direct : .systemProxy
+            agg.recordDelta(
+                flowID: UUID(),
+                app: chrome,
+                up: 1,
+                down: 2,
+                at: now,
+                route: route,
+                destinationKey: "\(index).random.example"
+            )
+        }
+
+        for granularity in BucketGranularity.allCases {
+            XCTAssertLessThanOrEqual(agg.bucketCount(granularity: granularity), 66)
+            XCTAssertLessThanOrEqual(agg.detailedBucketCount(granularity: granularity), 64)
+            let from = now.addingTimeInterval(-1)
+            let to = now.addingTimeInterval(Double(granularity.seconds))
+            let totals = agg.totals(
+                for: chrome,
+                from: from,
+                to: to,
+                preferredGranularity: granularity
+            )
+            XCTAssertEqual(totals.bytesUp, 10_000)
+            XCTAssertEqual(totals.bytesDown, 20_000)
+            let routes = agg.routeDirectionalTotals(
+                for: chrome,
+                from: from,
+                to: to,
+                preferredGranularity: granularity
+            )
+            XCTAssertEqual(routes.direct.bytesUp, 5_000)
+            XCTAssertEqual(routes.systemProxy.bytesUp, 5_000)
+            let top = agg.topApps(
+                from: from,
+                to: to,
+                preferredGranularity: granularity
+            )
+            XCTAssertEqual(top.first?.totals, totals)
+            let destinationTotal = agg.topDestinations(
+                for: chrome,
+                from: from,
+                to: to,
+                limit: 1_000,
+                preferredGranularity: granularity
+            ).reduce(into: TrafficTotals()) { $0.merge($1.totals) }
+            XCTAssertEqual(destinationTotal, totals)
+        }
+    }
+
+    func testCardinalityOverflowStaysScopedAcrossAppsRoutesAndBucketStarts() {
+        let retention = BucketRetention(
+            oneSecond: 300,
+            oneMinute: 10_800,
+            oneHour: 259_200,
+            oneDay: 34_560_000,
+            maximumDetailedKeysPerGranularity: 32,
+            maximumDestinationsPerGroup: 4
+        )
+        let agg = TelemetryAggregator(retention: retention)
+        let base = Date(timeIntervalSince1970: 1_700_000_000)
+        for index in 0..<32 {
+            agg.recordDelta(
+                flowID: UUID(),
+                app: chrome,
+                up: 1,
+                down: 2,
+                at: base,
+                route: .direct,
+                destinationKey: "seed-\(index).example"
+            )
+        }
+        for second in 0..<100 {
+            for app in [chrome, safari] {
+                for route in [RouteAction.direct, .systemProxy] {
+                    agg.recordDelta(
+                        flowID: UUID(),
+                        app: app,
+                        up: 1,
+                        down: 2,
+                        at: base.addingTimeInterval(Double(second)),
+                        route: route,
+                        destinationKey: "\(app.storageKey)-\(route.chipLabel)-\(second).example"
+                    )
+                }
+            }
+        }
+
+        XCTAssertLessThanOrEqual(agg.detailedBucketCount(granularity: .oneSecond), 32)
+        XCTAssertLessThanOrEqual(agg.bucketCount(granularity: .oneSecond), 32 + 400)
+        let from = base.addingTimeInterval(-1)
+        let to = base.addingTimeInterval(101)
+        let routes = agg.routeDirectionalTotals(
+            for: nil,
+            from: from,
+            to: to,
+            preferredGranularity: .oneSecond
+        )
+        XCTAssertEqual(routes.direct.bytesUp, 232)
+        XCTAssertEqual(routes.systemProxy.bytesUp, 200)
+        let rows = agg.topApps(
+            from: from,
+            to: to,
+            preferredGranularity: .oneSecond
+        )
+        XCTAssertEqual(rows.first { $0.app == chrome }?.totals.bytesUp, 232)
+        XCTAssertEqual(rows.first { $0.app == safari }?.totals.bytesUp, 200)
+    }
+
+    func testImportMergesExplicitOtherRowWithRowsCompactedIntoOther() {
+        let retention = BucketRetention(
+            oneSecond: nil,
+            oneMinute: nil,
+            oneHour: nil,
+            oneDay: nil,
+            maximumDetailedKeysPerGranularity: 1
+        )
+        let agg = TelemetryAggregator(retention: retention)
+        let start: Int64 = 1_700_000_000_000
+        let makeBucket: (String, UInt64) -> TrafficBucket = { destination, bytes in
+            TrafficBucket(
+                key: TrafficBucketKey(
+                    granularity: .oneMinute,
+                    bucketStartMs: start,
+                    app: self.chrome,
+                    destinationKey: destination
+                ),
+                totals: TrafficTotals(bytesUp: bytes)
+            )
+        }
+
+        // The explicit persisted overflow row deliberately comes last. Import
+        // order must not overwrite rows newly compacted into the same bucket.
+        agg.importBuckets([
+            makeBucket("kept.example", 10),
+            makeBucket("compacted.example", 20),
+            makeBucket(DestinationKey.other, 30)
+        ])
+
+        let restored = agg.exportBuckets(granularity: .oneMinute)
+        XCTAssertEqual(restored.count, 2)
+        XCTAssertEqual(restored.reduce(0) { $0 + $1.totals.bytesUp }, 60)
+        XCTAssertEqual(
+            restored.first { $0.key.destinationKey == DestinationKey.other }?.totals.bytesUp,
+            50
+        )
+    }
+
     func testAggregatorTotalsAndRatesFromFlowLifecycle() {
         let agg = TelemetryAggregator()
         let t0 = Date(timeIntervalSince1970: 1_700_000_000)
@@ -472,7 +653,7 @@ final class TelemetryAggregatorTests: XCTestCase {
         XCTAssertEqual(before.bytesDown + after.bytesDown, 300)
     }
 
-    func testLongSampleIntervalStaysConsistentAcrossMinuteAndHourViews() {
+    func testLongSampleIntervalPreservesHourTotalsAndBoundsMinuteHistory() {
         let agg = TelemetryAggregator(retention: .live)
         let end = Date(timeIntervalSince1970: 1_700_042_400)
         let start = end.addingTimeInterval(-10 * 3_600)
@@ -507,9 +688,12 @@ final class TelemetryAggregatorTests: XCTestCase {
             to: end,
             preferredGranularity: .oneHour
         )
-        XCTAssertEqual(fullMinute.bytesUp, 36_000)
-        XCTAssertEqual(fullMinute.bytesDown, 72_000)
-        XCTAssertEqual(fullHour, fullMinute)
+        // Minute data intentionally keeps only the three-hour live window; the
+        // hour granularity remains the source of truth for this ten-hour range.
+        XCTAssertEqual(fullMinute.bytesUp, 10_800)
+        XCTAssertEqual(fullMinute.bytesDown, 21_600)
+        XCTAssertEqual(fullHour.bytesUp, 36_000)
+        XCTAssertEqual(fullHour.bytesDown, 72_000)
     }
 
     func testChangedBucketSnapshotScalesWithNewTraffic() {
@@ -704,8 +888,8 @@ final class TelemetryAggregatorTests: XCTestCase {
     func testImportRespectsRetention() {
         let agg = TelemetryAggregator(retention: .live)
         let t0 = Date(timeIntervalSince1970: 1_700_000_000)
-        let imported = (0..<6).map { day -> TrafficBucket in
-            let at = t0.addingTimeInterval(Double(day) * 86_400)
+        let imported = (0..<6).map { hour -> TrafficBucket in
+            let at = t0.addingTimeInterval(Double(hour) * 3_600)
             return TrafficBucket(
                 key: TrafficBucketKey(
                     granularity: .oneMinute,
@@ -721,10 +905,10 @@ final class TelemetryAggregatorTests: XCTestCase {
         }
         agg.importBuckets(imported)
 
-        // `.live` keeps two days of minute buckets: days 3, 4 and 5 survive.
-        XCTAssertEqual(agg.bucketCount(granularity: .oneMinute), 3)
+        // `.live` keeps three hours of minute buckets: hours 2 through 5 survive.
+        XCTAssertEqual(agg.bucketCount(granularity: .oneMinute), 4)
         let latestBucketStart = Date(
-            timeIntervalSince1970: ((t0.timeIntervalSince1970 + 5 * 86_400.0) / 60).rounded(.down) * 60
+            timeIntervalSince1970: ((t0.timeIntervalSince1970 + 5 * 3_600.0) / 60).rounded(.down) * 60
         )
         XCTAssertEqual(
             agg.lastTrafficAt(for: chrome),

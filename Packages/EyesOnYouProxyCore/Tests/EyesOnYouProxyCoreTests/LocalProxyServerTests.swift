@@ -53,6 +53,7 @@ final class LocalProxyServerTests: XCTestCase {
     /// "unknown" app — which is what the rules under test are written against.
     private func makeServer(
         rules: LocalProxyRules,
+        requestHeadTimeout: TimeInterval = 30,
         onFlow: @escaping @Sendable (LocalProxyServer.FlowEvent) -> Void
     ) -> (server: LocalProxyServer, port: UInt16) {
         let boundPort = LockedBox<UInt16>(0)
@@ -60,6 +61,7 @@ final class LocalProxyServerTests: XCTestCase {
         let server = LocalProxyServer(
             rules: LocalProxyRulesBox(rules),
             ownerResolver: ConnectionOwnerResolver(refreshInterval: 0) { [] },
+            requestHeadTimeout: requestHeadTimeout,
             onFlow: onFlow,
             onState: { state in
                 if case .running(let p) = state { boundPort.set(p); ready.signal() }
@@ -226,6 +228,71 @@ final class LocalProxyServerTests: XCTestCase {
         let params = LocalProxyServer.directDialParameters(physicalInterface: nil)
         XCTAssertTrue(params.prohibitedInterfaceTypes?.contains(.other) ?? false)
         XCTAssertNil(params.requiredInterface)
+    }
+
+    func testStopCancelsAcceptedConnectionWaitingForRequestHead() {
+        let rules = LocalProxyRules(
+            snapshot: PolicyStore().compileSnapshot(),
+            systemUpstream: nil,
+            profiles: []
+        )
+        let (server, port) = makeServer(rules: rules) { _ in }
+        let client = NWConnection(
+            host: "127.0.0.1",
+            port: NWEndpoint.Port(rawValue: port)!,
+            using: .tcp
+        )
+        let ready = expectation(description: "client ready")
+        client.stateUpdateHandler = { state in
+            if case .ready = state { ready.fulfill() }
+        }
+        client.start(queue: DispatchQueue(label: "partial-client"))
+        wait(for: [ready], timeout: 2)
+        client.send(content: Data("CON".utf8), completion: .contentProcessed { _ in })
+
+        let deadline = Date().addingTimeInterval(2)
+        while server.activeConnectionCount == 0, Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertEqual(server.activeConnectionCount, 1)
+
+        server.stop()
+        XCTAssertEqual(server.activeConnectionCount, 0)
+        client.cancel()
+    }
+
+    func testIncompleteRequestHeadExpiresWithoutGrowingForever() {
+        let rules = LocalProxyRules(
+            snapshot: PolicyStore().compileSnapshot(),
+            systemUpstream: nil,
+            profiles: []
+        )
+        let (server, port) = makeServer(rules: rules, requestHeadTimeout: 0.1) { _ in }
+        defer { server.stop() }
+        let client = NWConnection(
+            host: "127.0.0.1",
+            port: NWEndpoint.Port(rawValue: port)!,
+            using: .tcp
+        )
+        let ready = expectation(description: "client ready")
+        client.stateUpdateHandler = { state in
+            if case .ready = state { ready.fulfill() }
+        }
+        client.start(queue: DispatchQueue(label: "expiring-partial-client"))
+        wait(for: [ready], timeout: 2)
+        client.send(content: Data("CON".utf8), completion: .contentProcessed { _ in })
+
+        var sawTrackedConnection = false
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline {
+            let count = server.activeConnectionCount
+            if count > 0 { sawTrackedConnection = true }
+            if sawTrackedConnection && count == 0 { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+        }
+        XCTAssertTrue(sawTrackedConnection)
+        XCTAssertEqual(server.activeConnectionCount, 0)
+        client.cancel()
     }
 }
 

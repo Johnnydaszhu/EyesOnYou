@@ -157,17 +157,39 @@ public struct BucketRetention: Sendable, Equatable {
     public var oneMinute: TimeInterval?
     public var oneHour: TimeInterval?
     public var oneDay: TimeInterval?
+    private var detailedKeyLimits: [Int?]
+    private var destinationsPerGroupLimits: [Int?]
 
     public init(
         oneSecond: TimeInterval?,
         oneMinute: TimeInterval?,
         oneHour: TimeInterval?,
-        oneDay: TimeInterval?
+        oneDay: TimeInterval?,
+        maximumDetailedKeysPerGranularity: Int? = nil,
+        maximumDestinationsPerGroup: Int? = nil
     ) {
         self.oneSecond = oneSecond
         self.oneMinute = oneMinute
         self.oneHour = oneHour
         self.oneDay = oneDay
+        self.detailedKeyLimits = Array(repeating: maximumDetailedKeysPerGranularity, count: 4)
+        self.destinationsPerGroupLimits = Array(repeating: maximumDestinationsPerGroup, count: 4)
+    }
+
+    private init(
+        oneSecond: TimeInterval?,
+        oneMinute: TimeInterval?,
+        oneHour: TimeInterval?,
+        oneDay: TimeInterval?,
+        detailedKeyLimits: [Int?],
+        destinationsPerGroupLimits: [Int?]
+    ) {
+        self.oneSecond = oneSecond
+        self.oneMinute = oneMinute
+        self.oneHour = oneHour
+        self.oneDay = oneDay
+        self.detailedKeyLimits = detailedKeyLimits
+        self.destinationsPerGroupLimits = destinationsPerGroupLimits
     }
 
     /// Keep everything — the default, and what one-shot readers (CLI, tests) want
@@ -186,17 +208,41 @@ public struct BucketRetention: Sendable, Equatable {
     /// limit covers at least the widest matching dashboard query.
     public static let live = BucketRetention(
         oneSecond: 300,
-        oneMinute: 2 * 86_400,
+        // Minute buckets only answer ranges shorter than two hours. Keeping two
+        // full days here made the host restore tens of thousands of destination
+        // rows into both the aggregator and the persistence watermark table.
+        oneMinute: 3 * 3_600,
         oneHour: 3 * 86_400,
-        oneDay: 3 * 365 * 86_400
+        // Preserve the existing three-year custom-history range; the destination
+        // budgets below bound its detailed rows without discarding old totals.
+        oneDay: 3 * 365 * 86_400,
+        detailedKeyLimits: [2_000, 5_000, 8_000, 5_000],
+        destinationsPerGroupLimits: [8, 32, 64, 64]
     )
 
-    func seconds(for granularity: BucketGranularity) -> TimeInterval? {
+    public func seconds(for granularity: BucketGranularity) -> TimeInterval? {
         switch granularity {
         case .oneSecond: return oneSecond
         case .oneMinute: return oneMinute
         case .oneHour: return oneHour
         case .oneDay: return oneDay
+        }
+    }
+
+    public func maximumDetailedKeys(for granularity: BucketGranularity) -> Int? {
+        detailedKeyLimits[Self.index(granularity)]
+    }
+
+    public func maximumDestinationsPerGroup(for granularity: BucketGranularity) -> Int? {
+        destinationsPerGroupLimits[Self.index(granularity)]
+    }
+
+    private static func index(_ granularity: BucketGranularity) -> Int {
+        switch granularity {
+        case .oneSecond: return 0
+        case .oneMinute: return 1
+        case .oneHour: return 2
+        case .oneDay: return 3
         }
     }
 }
@@ -256,11 +302,24 @@ public final class TelemetryAggregator: @unchecked Sendable {
         let totals: TrafficTotals
     }
 
+    private struct DestinationGroupKey: Hashable {
+        let bucketStartMs: Int64
+        let app: AppIdentityKey
+        let routeKind: RouteKind
+        let transport: TransportProtocol
+    }
+
     private typealias Slot = [SlotKey: TrafficTotals]
 
     private let lock = NSLock()
     /// `timeline[granularityIndex][bucketStartMs][slotKey]`.
     private var timeline: [[Int64: Slot]] = Array(repeating: [:], count: 4)
+    private var retainedKeyCounts: [Int] = Array(repeating: 0, count: 4)
+    private var retainedDetailedKeyCounts: [Int] = Array(repeating: 0, count: 4)
+    private var detailedKeyCountsByGroup: [[DestinationGroupKey: Int]] = Array(
+        repeating: [:],
+        count: 4
+    )
     /// Newest and oldest bucket start seen per granularity, so eviction can skip
     /// the scan when nothing has aged out.
     private var newestSlotStart: [Int64] = [.min, .min, .min, .min]
@@ -766,6 +825,7 @@ public final class TelemetryAggregator: @unchecked Sendable {
                     timeline[index][start] = kept
                 }
             }
+            rebuildRetentionCounts(index: index)
             resetBoundsIfEmpty(index)
         }
         liveRates.removeValue(forKey: app)
@@ -922,6 +982,17 @@ public final class TelemetryAggregator: @unchecked Sendable {
         return counts.values.reduce(0, +)
     }
 
+    /// Forget synthetic flows when their provider stops. Provider processes can
+    /// be torn down without receiving a final close callback for every socket.
+    @discardableResult
+    public func discardActiveFlows() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        let count = activeFlows.count
+        activeFlows.removeAll(keepingCapacity: false)
+        return count
+    }
+
     /// Replace the current OS socket census used for app-level active counts.
     public func setObservedActiveConnectionCounts(_ counts: [AppIdentityKey: Int]) {
         lock.lock()
@@ -1054,6 +1125,7 @@ public final class TelemetryAggregator: @unchecked Sendable {
     public func importBuckets(_ imported: [TrafficBucket]) {
         lock.lock()
         defer { lock.unlock() }
+        var assignedInThisImport: Set<BucketLocator> = []
         for bucket in imported {
             let index = Self.index(bucket.key.granularity)
             let start = bucket.key.bucketStartMs
@@ -1063,7 +1135,16 @@ public final class TelemetryAggregator: @unchecked Sendable {
                 routeKind: bucket.key.routeKind,
                 transport: bucket.key.transport
             )
-            timeline[index][start, default: [:]][slotKey] = bucket.totals
+            let effectiveKey = boundedSlotKey(index: index, start: start, requested: slotKey)
+            let isNew = timeline[index][start]?[effectiveKey] == nil
+            let locator = BucketLocator(index: index, bucketStartMs: start, slotKey: effectiveKey)
+            if assignedInThisImport.insert(locator).inserted {
+                timeline[index][start, default: [:]][effectiveKey] = bucket.totals
+            } else {
+                timeline[index][start, default: [:]][effectiveKey, default: TrafficTotals()]
+                    .merge(bucket.totals)
+            }
+            if isNew { noteInsertedKey(index: index, start: start, key: effectiveKey) }
             if bucket.totals.bytesUp > 0 || bucket.totals.bytesDown > 0 {
                 noteTraffic(
                     app: bucket.key.app,
@@ -1100,6 +1181,9 @@ public final class TelemetryAggregator: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         timeline = Array(repeating: [:], count: 4)
+        retainedKeyCounts = Array(repeating: 0, count: 4)
+        retainedDetailedKeyCounts = Array(repeating: 0, count: 4)
+        detailedKeyCountsByGroup = Array(repeating: [:], count: 4)
         newestSlotStart = [.min, .min, .min, .min]
         oldestSlotStart = [.max, .max, .max, .max]
         liveRates.removeAll()
@@ -1116,7 +1200,13 @@ public final class TelemetryAggregator: @unchecked Sendable {
     public func bucketCount(granularity: BucketGranularity) -> Int {
         lock.lock()
         defer { lock.unlock() }
-        return timeline[Self.index(granularity)].values.reduce(0) { $0 + $1.count }
+        return retainedKeyCounts[Self.index(granularity)]
+    }
+
+    public func detailedBucketCount(granularity: BucketGranularity) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return retainedDetailedKeyCounts[Self.index(granularity)]
     }
 
     // MARK: - Helpers
@@ -1141,6 +1231,7 @@ public final class TelemetryAggregator: @unchecked Sendable {
         // layer localizes.
         if dest == DestinationKey.viaProxyNode { return "Via proxy node" }
         if dest == DestinationKey.directByRule { return "Direct by rule" }
+        if dest == DestinationKey.other { return "Other" }
         let prefixes = ["project:", "session:", "chat:", "workspace:", "window:"]
         for p in prefixes {
             if dest.lowercased().hasPrefix(p) {
@@ -1182,8 +1273,11 @@ public final class TelemetryAggregator: @unchecked Sendable {
     ) {
         let index = Self.index(granularity)
         let start = Self.bucketStartMs(atMs: atMs, granularity: granularity)
-        body(&timeline[index][start, default: [:]][slotKey, default: TrafficTotals()])
-        markChanged(index: index, start: start, slotKey: slotKey)
+        let effectiveKey = boundedSlotKey(index: index, start: start, requested: slotKey)
+        let isNew = timeline[index][start]?[effectiveKey] == nil
+        body(&timeline[index][start, default: [:]][effectiveKey, default: TrafficTotals()])
+        if isNew { noteInsertedKey(index: index, start: start, key: effectiveKey) }
+        markChanged(index: index, start: start, slotKey: effectiveKey)
         if noteBounds(index: index, start: start) {
             evictIfNeeded(index)
         }
@@ -1197,8 +1291,11 @@ public final class TelemetryAggregator: @unchecked Sendable {
         _ body: (inout TrafficTotals) -> Void
     ) {
         let index = Self.index(granularity)
-        body(&timeline[index][bucketStartMs, default: [:]][slotKey, default: TrafficTotals()])
-        markChanged(index: index, start: bucketStartMs, slotKey: slotKey)
+        let effectiveKey = boundedSlotKey(index: index, start: bucketStartMs, requested: slotKey)
+        let isNew = timeline[index][bucketStartMs]?[effectiveKey] == nil
+        body(&timeline[index][bucketStartMs, default: [:]][effectiveKey, default: TrafficTotals()])
+        if isNew { noteInsertedKey(index: index, start: bucketStartMs, key: effectiveKey) }
+        markChanged(index: index, start: bucketStartMs, slotKey: effectiveKey)
         if noteBounds(index: index, start: bucketStartMs) {
             evictIfNeeded(index)
         }
@@ -1210,6 +1307,58 @@ public final class TelemetryAggregator: @unchecked Sendable {
         let locator = BucketLocator(index: index, bucketStartMs: start, slotKey: slotKey)
         bucketRevisions[locator] = currentRevision
         dirtyBuckets[index].insert(locator)
+    }
+
+    /// Preserve exact app/route/transport totals after the detailed destination
+    /// budget is full. Existing keys continue updating; only unseen destinations
+    /// are coalesced.
+    private func boundedSlotKey(index: Int, start: Int64, requested: SlotKey) -> SlotKey {
+        guard timeline[index][start]?[requested] == nil,
+              requested.destinationKey != DestinationKey.other else {
+            return requested
+        }
+        let granularity = Self.granularity(atIndex: index)
+        let group = destinationGroup(start: start, key: requested)
+        let exceedsGlobalLimit = retention.maximumDetailedKeys(for: granularity).map {
+            retainedDetailedKeyCounts[index] >= $0
+        } ?? false
+        let exceedsGroupLimit = retention.maximumDestinationsPerGroup(for: granularity).map {
+            detailedKeyCountsByGroup[index][group, default: 0] >= $0
+        } ?? false
+        guard exceedsGlobalLimit || exceedsGroupLimit else { return requested }
+        return SlotKey(
+            app: requested.app,
+            destinationKey: DestinationKey.other,
+            routeKind: requested.routeKind,
+            transport: requested.transport
+        )
+    }
+
+    private func destinationGroup(start: Int64, key: SlotKey) -> DestinationGroupKey {
+        DestinationGroupKey(
+            bucketStartMs: start,
+            app: key.app,
+            routeKind: key.routeKind,
+            transport: key.transport
+        )
+    }
+
+    private func noteInsertedKey(index: Int, start: Int64, key: SlotKey) {
+        retainedKeyCounts[index] += 1
+        guard key.destinationKey != DestinationKey.other else { return }
+        retainedDetailedKeyCounts[index] += 1
+        detailedKeyCountsByGroup[index][destinationGroup(start: start, key: key), default: 0] += 1
+    }
+
+    private func rebuildRetentionCounts(index: Int) {
+        retainedKeyCounts[index] = 0
+        retainedDetailedKeyCounts[index] = 0
+        detailedKeyCountsByGroup[index] = [:]
+        for (start, slot) in timeline[index] {
+            for key in slot.keys {
+                noteInsertedKey(index: index, start: start, key: key)
+            }
+        }
     }
 
     /// Spread a sampled counter delta across every time bucket it actually covered.
@@ -1349,6 +1498,7 @@ public final class TelemetryAggregator: @unchecked Sendable {
             if start < oldest { oldest = start }
             return true
         }
+        rebuildRetentionCounts(index: index)
         if !removedStarts.isEmpty {
             bucketRevisions = bucketRevisions.filter {
                 $0.key.index != index || !removedStarts.contains($0.key.bucketStartMs)

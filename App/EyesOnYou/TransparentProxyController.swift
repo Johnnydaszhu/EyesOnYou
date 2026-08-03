@@ -44,6 +44,7 @@ final class TransparentProxyController: NSObject, ObservableObject {
     private var pendingRules: ProxyRulesPayload?
     private var generation: UInt64 = 0
     private var pollTimer: Timer?
+    private var flowDrainInFlight = false
 
     var isActive: Bool {
         if case .active = status { return true }
@@ -76,6 +77,7 @@ final class TransparentProxyController: NSObject, ObservableObject {
     func disable() {
         pollTimer?.invalidate()
         pollTimer = nil
+        flowDrainInFlight = false
         Task { @MainActor in
             do {
                 let manager = try await loadManager()
@@ -156,7 +158,7 @@ final class TransparentProxyController: NSObject, ObservableObject {
     private func pushRules() {
         guard let rules = pendingRules else { return }
         send(.pushRules(rules)) { [weak self] reply in
-            guard let self else { return }
+            guard let self, let reply else { return }
             switch reply {
             case .status(let status):
                 self.generation = status.ruleGeneration
@@ -174,6 +176,7 @@ final class TransparentProxyController: NSObject, ObservableObject {
     /// accumulates if the app is closed.
     private func startPolling() {
         pollTimer?.invalidate()
+        flowDrainInFlight = false
         let timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.drainFlowEvents() }
         }
@@ -181,33 +184,40 @@ final class TransparentProxyController: NSObject, ObservableObject {
     }
 
     private func drainFlowEvents() {
-        send(.requestFlowEvents) { [weak self] reply in
-            guard let self, case .flowEvents(let samples, let status) = reply else { return }
+        guard !flowDrainInFlight else { return }
+        flowDrainInFlight = true
+        let sent = send(.requestFlowEvents) { [weak self] reply in
+            guard let self else { return }
+            self.flowDrainInFlight = false
+            guard let reply, case .flowEvents(let samples, let status) = reply else { return }
             self.generation = status.ruleGeneration
             if !samples.isEmpty {
                 self.onFlowSamples?(samples)
             }
         }
+        if !sent { flowDrainInFlight = false }
     }
 
+    @discardableResult
     private func send(
         _ message: HostToExtensionMessage,
-        _ completion: @escaping (ExtensionToHostMessage) -> Void
-    ) {
+        _ completion: @escaping (ExtensionToHostMessage?) -> Void
+    ) -> Bool {
         guard let session = manager?.connection as? NETunnelProviderSession,
               let data = try? IPCCoding.encode(message) else {
-            return
+            return false
         }
         do {
             try session.sendProviderMessage(data) { reply in
-                guard let reply,
-                      let decoded = try? IPCCoding.decode(ExtensionToHostMessage.self, from: reply) else {
-                    return
+                let decoded = reply.flatMap {
+                    try? IPCCoding.decode(ExtensionToHostMessage.self, from: $0)
                 }
                 Task { @MainActor in completion(decoded) }
             }
+            return true
         } catch {
             // Provider not running yet (or just stopped): the next tick retries.
+            return false
         }
     }
 

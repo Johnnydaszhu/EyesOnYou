@@ -75,6 +75,7 @@ final class FlowTransparentProxyProvider: NETransparentProxyProvider {
     ) {
         pathMonitor?.cancel()
         pathMonitor = nil
+        PumpRegistry.shared.cancelAll()
         log.info("Proxy stopped reason=\(String(describing: reason), privacy: .public)")
         completionHandler()
     }

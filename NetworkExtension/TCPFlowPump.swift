@@ -14,6 +14,8 @@ import EyesOnYouIPC
 /// both ends and reports the measured sample to the runtime — so a flow can never
 /// leak or double-report.
 final class TCPFlowPump: @unchecked Sendable {
+    private static let startupTimeout: TimeInterval = 30
+
     private let flow: NEAppProxyTCPFlow
     private let app: AppIdentityKey
     private let host: String
@@ -25,6 +27,7 @@ final class TCPFlowPump: @unchecked Sendable {
     private var bytesUp: UInt64 = 0
     private var bytesDown: UInt64 = 0
     private var finished = false
+    private var copying = false
     private var connection: NWConnection?
 
     init(flow: NEAppProxyTCPFlow, app: AppIdentityKey, host: String, port: UInt16, runtime: ExtensionRuntime) {
@@ -39,12 +42,16 @@ final class TCPFlowPump: @unchecked Sendable {
     /// so "direct" cannot re-enter a TUN-mode proxy.
     func start(plan: TransparentFlowPlan, physicalInterface: NWInterface?) {
         runtime.flowStarted()
+        queue.asyncAfter(deadline: .now() + Self.startupTimeout) { [weak self] in
+            self?.finishIfStillStarting()
+        }
         flow.open(withLocalEndpoint: nil) { [weak self] error in
             guard let self else { return }
             guard error == nil else {
                 self.finish(action: "refused")
                 return
             }
+            guard !self.isFinished else { return }
             switch plan {
             case .dialDirect:
                 self.dialDirect(physicalInterface: physicalInterface)
@@ -72,7 +79,7 @@ final class TCPFlowPump: @unchecked Sendable {
         let params: NWParameters = SocketTable.isLoopback(host)
             ? .tcp
             : LocalProxyServer.directDialParameters(physicalInterface: physicalInterface)
-        open(NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: params)) { [weak self] in
+        open(NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: params)) { [weak self] _ in
             self?.pump(action: "direct")
         }
     }
@@ -89,7 +96,7 @@ final class TCPFlowPump: @unchecked Sendable {
             port: upstreamPort,
             using: .tcp
         )
-        open(connection) { [weak self] in
+        open(connection) { [weak self] connection in
             guard let self else { return }
             switch upstream.kind {
             case .http:
@@ -119,16 +126,37 @@ final class TCPFlowPump: @unchecked Sendable {
         }
     }
 
-    private func open(_ connection: NWConnection, ready: @escaping @Sendable () -> Void) {
+    private func open(
+        _ connection: NWConnection,
+        ready: @escaping @Sendable (NWConnection) -> Void
+    ) {
         lock.lock()
+        guard !finished else {
+            lock.unlock()
+            connection.cancel()
+            return
+        }
         self.connection = connection
         lock.unlock()
-        connection.stateUpdateHandler = { [weak self] state in
+        connection.stateUpdateHandler = { [weak self, weak connection] state in
+            guard let self else { return }
             switch state {
             case .ready:
-                ready()
+                guard let connection else {
+                    self.finish(action: "refused")
+                    return
+                }
+                // Break the connection → handler → ready closure chain as soon as
+                // the dial completes. Handshake callbacks own only what they need.
+                connection.stateUpdateHandler = nil
+                guard !self.isFinished else {
+                    connection.cancel()
+                    return
+                }
+                ready(connection)
             case .failed, .cancelled:
-                self?.finish(action: "refused")
+                connection?.stateUpdateHandler = nil
+                self.finish(action: "refused")
             default:
                 break
             }
@@ -139,6 +167,10 @@ final class TCPFlowPump: @unchecked Sendable {
     // MARK: - Copy loops
 
     private func pump(action: String) {
+        lock.lock()
+        guard !finished else { lock.unlock(); return }
+        copying = true
+        lock.unlock()
         readFromApp(action: action)
         readFromDestination(action: action)
     }
@@ -146,7 +178,11 @@ final class TCPFlowPump: @unchecked Sendable {
     private func readFromApp(action: String) {
         flow.readData { [weak self] data, error in
             guard let self, let connection = self.currentConnection() else { return }
-            guard error == nil, let data, !data.isEmpty else {
+            if error != nil {
+                self.finish(action: action)
+                return
+            }
+            guard let data, !data.isEmpty else {
                 // App finished sending — half-close toward the destination.
                 connection.send(content: nil, contentContext: .finalMessage, isComplete: true,
                                 completion: .contentProcessed { _ in })
@@ -200,6 +236,26 @@ final class TCPFlowPump: @unchecked Sendable {
         return connection
     }
 
+    private var isFinished: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return finished
+    }
+
+    /// A provider can otherwise retain a pump forever while flow opening, dialing,
+    /// or an upstream handshake waits for a callback that never arrives.
+    private func finishIfStillStarting() {
+        lock.lock()
+        let shouldFinish = !finished && !copying
+        lock.unlock()
+        if shouldFinish {
+            finish(action: "refused")
+        }
+    }
+
+    func cancel() {
+        finish(action: "refused")
+    }
+
     private func add(up: UInt64 = 0, down: UInt64 = 0) {
         lock.lock()
         bytesUp &+= up
@@ -223,6 +279,7 @@ final class TCPFlowPump: @unchecked Sendable {
         self.connection = nil
         lock.unlock()
 
+        connection?.stateUpdateHandler = nil
         connection?.cancel()
         flow.closeReadWithError(nil)
         flow.closeWriteWithError(nil)
@@ -247,5 +304,15 @@ final class PumpRegistry: @unchecked Sendable {
         lock.lock()
         storage[ObjectIdentifier(pump)] = nil
         lock.unlock()
+    }
+
+    func cancelAll() {
+        lock.lock()
+        let pumps = Array(storage.values)
+        storage.removeAll(keepingCapacity: false)
+        lock.unlock()
+        for pump in pumps {
+            pump.cancel()
+        }
     }
 }

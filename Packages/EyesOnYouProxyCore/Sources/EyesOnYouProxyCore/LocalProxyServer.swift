@@ -15,6 +15,8 @@ import EyesOnYouCore
 /// is what makes "Chrome must use the proxy / bilibili stays direct" actually happen,
 /// rather than only labeling traffic.
 public final class LocalProxyServer: @unchecked Sendable {
+    private static let maximumActiveConnections = 2_048
+
     public struct FlowEvent: Sendable {
         public let app: AppIdentityKey
         public let displayName: String
@@ -37,24 +39,31 @@ public final class LocalProxyServer: @unchecked Sendable {
     private let ownerResolver: ConnectionOwnerResolver
     private let queue = DispatchQueue(label: "com.eyesonyou.localproxy", attributes: .concurrent)
     private let stateLock = NSLock()
+    private let connectionsLock = NSLock()
     private var listener: NWListener?
     private var pathMonitor: NWPathMonitor?
+    private var activeConnections: [ObjectIdentifier: NWConnection] = [:]
+    private var pendingRequestHeads: [ObjectIdentifier: Date] = [:]
+    private var requestHeadSweepGeneration: UInt64 = 0
     private var _physicalInterface: NWInterface?
     private var _state: State = .stopped
     private let onFlow: @Sendable (FlowEvent) -> Void
     private let onState: @Sendable (State) -> Void
     private let nowProvider: @Sendable () -> Date
+    private let requestHeadTimeout: TimeInterval
 
     public init(
         rules: LocalProxyRulesBox,
         ownerResolver: ConnectionOwnerResolver = ConnectionOwnerResolver(),
         now: @escaping @Sendable () -> Date = { Date() },
+        requestHeadTimeout: TimeInterval = 30,
         onFlow: @escaping @Sendable (FlowEvent) -> Void = { _ in },
         onState: @escaping @Sendable (State) -> Void = { _ in }
     ) {
         self.rulesBox = rules
         self.ownerResolver = ownerResolver
         self.nowProvider = now
+        self.requestHeadTimeout = max(0.1, requestHeadTimeout)
         self.onFlow = onFlow
         self.onState = onState
     }
@@ -62,6 +71,12 @@ public final class LocalProxyServer: @unchecked Sendable {
     public var state: State {
         stateLock.lock(); defer { stateLock.unlock() }
         return _state
+    }
+
+    var activeConnectionCount: Int {
+        connectionsLock.lock()
+        defer { connectionsLock.unlock() }
+        return activeConnections.count
     }
 
     private func setState(_ new: State) {
@@ -91,16 +106,27 @@ public final class LocalProxyServer: @unchecked Sendable {
             return
         }
 
-        listener.stateUpdateHandler = { [weak self] state in
-            guard let self else { return }
+        listener.stateUpdateHandler = { [weak self, weak listener] state in
+            guard let self, let listener else { return }
+            guard self.listener === listener else { return }
             switch state {
             case .ready:
                 if let port = listener.port?.rawValue {
                     self.setState(.running(port: port))
                 }
             case .failed(let error):
+                self.listener = nil
+                self.pathMonitor?.cancel()
+                self.pathMonitor = nil
+                self.setPhysicalInterface(nil)
+                self.cancelAllConnections()
                 self.setState(.failed("\(error)"))
             case .cancelled:
+                self.listener = nil
+                self.pathMonitor?.cancel()
+                self.pathMonitor = nil
+                self.setPhysicalInterface(nil)
+                self.cancelAllConnections()
                 self.setState(.stopped)
             default:
                 break
@@ -111,6 +137,7 @@ public final class LocalProxyServer: @unchecked Sendable {
         }
         self.listener = listener
         listener.start(queue: queue)
+        beginRequestHeadSweeper()
 
         // Track the physical (non-tunnel) interface for rule-DIRECT dials. A cancelled
         // NWPathMonitor cannot be restarted, so each start() gets a fresh one.
@@ -128,6 +155,8 @@ public final class LocalProxyServer: @unchecked Sendable {
         pathMonitor?.cancel()
         pathMonitor = nil
         setPhysicalInterface(nil)
+        cancelAllConnections()
+        setState(.stopped)
     }
 
     private func setPhysicalInterface(_ interface: NWInterface?) {
@@ -149,6 +178,14 @@ public final class LocalProxyServer: @unchecked Sendable {
             if case let .hostPort(_, port) = connection.endpoint { return port.rawValue }
             return nil
         }()
+        guard track(connection) else {
+            connection.cancel()
+            return
+        }
+        let identifier = ObjectIdentifier(connection)
+        connectionsLock.lock()
+        pendingRequestHeads[identifier] = nowProvider().addingTimeInterval(requestHeadTimeout)
+        connectionsLock.unlock()
         connection.start(queue: queue)
         readHead(connection, buffer: Data(), clientPort: clientPort)
     }
@@ -159,7 +196,7 @@ public final class LocalProxyServer: @unchecked Sendable {
             guard let self else { return }
             if let error {
                 _ = error
-                client.cancel()
+                self.close(client)
                 return
             }
             var buffer = buffer
@@ -167,17 +204,19 @@ public final class LocalProxyServer: @unchecked Sendable {
 
             // Guard against an unbounded head from a hostile / non-HTTP client.
             if buffer.count > 128 * 1024 {
-                client.cancel()
+                self.close(client)
                 return
             }
 
             switch ProxyRequestHead.parse(buffer: buffer) {
             case nil:
-                if isComplete { client.cancel(); return }
+                if isComplete { self.close(client); return }
                 self.readHead(client, buffer: buffer, clientPort: clientPort)
             case .failure:
+                self.markRequestHeadComplete(client)
                 self.respondAndClose(client, "HTTP/1.1 400 Bad Request\r\n\r\n")
             case .success(let head):
+                self.markRequestHeadComplete(client)
                 self.route(client: client, head: head, clientPort: clientPort)
             }
         }
@@ -256,7 +295,11 @@ public final class LocalProxyServer: @unchecked Sendable {
         accounting: ByteAccounting,
         onClose: @escaping @Sendable () -> Void
     ) {
-        guard let port = NWEndpoint.Port(rawValue: head.port) else { onClose(); return }
+        guard let port = NWEndpoint.Port(rawValue: head.port) else {
+            onClose()
+            close(client)
+            return
+        }
         // Loopback origins stay unscoped: pinning them to the physical interface
         // would make every localhost dial unroutable.
         let params: NWParameters = SocketTable.isLoopback(head.host)
@@ -267,6 +310,12 @@ public final class LocalProxyServer: @unchecked Sendable {
             port: port,
             using: params
         )
+        guard track(target) else {
+            onClose()
+            close(client)
+            target.cancel()
+            return
+        }
         target.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
@@ -286,8 +335,8 @@ public final class LocalProxyServer: @unchecked Sendable {
                 }
             case .failed, .cancelled:
                 onClose()
-                client.cancel()
-                target.cancel()
+                self.close(client)
+                self.close(target)
             default:
                 break
             }
@@ -304,8 +353,18 @@ public final class LocalProxyServer: @unchecked Sendable {
         accounting: ByteAccounting,
         onClose: @escaping @Sendable () -> Void
     ) {
-        guard let port = NWEndpoint.Port(rawValue: upstream.port) else { onClose(); return }
+        guard let port = NWEndpoint.Port(rawValue: upstream.port) else {
+            onClose()
+            close(client)
+            return
+        }
         let up = NWConnection(host: NWEndpoint.Host(upstream.host), port: port, using: .tcp)
+        guard track(up) else {
+            onClose()
+            close(client)
+            up.cancel()
+            return
+        }
         up.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
@@ -316,8 +375,8 @@ public final class LocalProxyServer: @unchecked Sendable {
                 self.splice(client, up, accounting: accounting, onClose: onClose)
             case .failed, .cancelled:
                 onClose()
-                client.cancel()
-                up.cancel()
+                self.close(client)
+                self.close(up)
             default:
                 break
             }
@@ -334,15 +393,25 @@ public final class LocalProxyServer: @unchecked Sendable {
         accounting: ByteAccounting,
         onClose: @escaping @Sendable () -> Void
     ) {
-        guard let port = NWEndpoint.Port(rawValue: upstream.port) else { onClose(); return }
+        guard let port = NWEndpoint.Port(rawValue: upstream.port) else {
+            onClose()
+            close(client)
+            return
+        }
         let up = NWConnection(host: NWEndpoint.Host(upstream.host), port: port, using: .tcp)
+        guard track(up) else {
+            onClose()
+            close(client)
+            up.cancel()
+            return
+        }
         up.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             if case .ready = state {
                 SOCKS5Handshake.perform(on: up, host: head.host, port: head.port, queue: self.queue) {
                     success in
                     guard success else {
-                        onClose(); client.cancel(); up.cancel(); return
+                        onClose(); self.close(client); self.close(up); return
                     }
                     switch head.kind {
                     case .connect:
@@ -358,7 +427,7 @@ public final class LocalProxyServer: @unchecked Sendable {
                     }
                 }
             } else if case .failed = state {
-                onClose(); client.cancel(); up.cancel()
+                onClose(); self.close(client); self.close(up)
             }
         }
         up.start(queue: queue)
@@ -385,12 +454,12 @@ public final class LocalProxyServer: @unchecked Sendable {
         onClose: @escaping @Sendable () -> Void
     ) {
         let closed = OnceFlag()
-        let shutdown: @Sendable () -> Void = {
+        let shutdown: @Sendable () -> Void = { [weak self] in
             guard closed.tryset() else { return }
             // Let the peer drain what is already queued before tearing down, so a
             // response that arrived with the FIN is not lost.
-            a.cancel()
-            b.cancel()
+            self?.close(a)
+            self?.close(b)
             onClose()
         }
         // a→b is client→origin (upload); b→a is origin→client (download).
@@ -408,7 +477,17 @@ public final class LocalProxyServer: @unchecked Sendable {
             data, _, isComplete, error in
             if let data, !data.isEmpty {
                 record(data.count)
-                to.send(content: data, completion: .contentProcessed { _ in })
+                // Read the next chunk only after Network.framework has consumed
+                // this send. Otherwise a fast client and slow destination queues
+                // an unbounded number of Data buffers in memory.
+                to.send(content: data, completion: .contentProcessed { sendError in
+                    if sendError != nil || isComplete || error != nil {
+                        onEnd()
+                    } else {
+                        self.pump(from: from, to: to, record: record, onEnd: onEnd)
+                    }
+                })
+                return
             }
             if isComplete || error != nil {
                 onEnd()
@@ -419,9 +498,87 @@ public final class LocalProxyServer: @unchecked Sendable {
     }
 
     private func respondAndClose(_ client: NWConnection, _ response: String) {
-        client.send(content: Data(response.utf8), completion: .contentProcessed { _ in
-            client.cancel()
+        client.send(content: Data(response.utf8), completion: .contentProcessed { [weak self] _ in
+            self?.close(client)
         })
+    }
+
+    @discardableResult
+    private func track(_ connection: NWConnection) -> Bool {
+        connectionsLock.lock()
+        guard activeConnections.count < Self.maximumActiveConnections else {
+            connectionsLock.unlock()
+            return false
+        }
+        activeConnections[ObjectIdentifier(connection)] = connection
+        connectionsLock.unlock()
+        return true
+    }
+
+    private func markRequestHeadComplete(_ connection: NWConnection) {
+        connectionsLock.lock()
+        pendingRequestHeads.removeValue(forKey: ObjectIdentifier(connection))
+        connectionsLock.unlock()
+    }
+
+    private func close(_ connection: NWConnection) {
+        connectionsLock.lock()
+        let identifier = ObjectIdentifier(connection)
+        pendingRequestHeads.removeValue(forKey: identifier)
+        activeConnections.removeValue(forKey: identifier)
+        connectionsLock.unlock()
+        connection.stateUpdateHandler = nil
+        connection.cancel()
+    }
+
+    private func cancelAllConnections() {
+        connectionsLock.lock()
+        let connections = Array(activeConnections.values)
+        activeConnections.removeAll(keepingCapacity: false)
+        pendingRequestHeads.removeAll(keepingCapacity: false)
+        requestHeadSweepGeneration &+= 1
+        connectionsLock.unlock()
+        for connection in connections {
+            connection.stateUpdateHandler = nil
+            connection.cancel()
+        }
+    }
+
+    /// One shared sweep bounds incomplete request heads without scheduling one
+    /// retained closure per accepted connection.
+    private func beginRequestHeadSweeper() {
+        connectionsLock.lock()
+        requestHeadSweepGeneration &+= 1
+        let generation = requestHeadSweepGeneration
+        connectionsLock.unlock()
+        scheduleRequestHeadSweep(generation: generation)
+    }
+
+    private func scheduleRequestHeadSweep(generation: UInt64) {
+        let interval = min(1, max(0.05, requestHeadTimeout / 2))
+        queue.asyncAfter(deadline: .now() + interval) { [weak self] in
+            guard let self else { return }
+            let expired: [NWConnection]
+            self.connectionsLock.lock()
+            guard self.requestHeadSweepGeneration == generation else {
+                self.connectionsLock.unlock()
+                return
+            }
+            let now = self.nowProvider()
+            let identifiers = self.pendingRequestHeads.compactMap { identifier, deadline in
+                deadline <= now ? identifier : nil
+            }
+            expired = identifiers.compactMap { self.activeConnections[$0] }
+            for identifier in identifiers {
+                self.pendingRequestHeads.removeValue(forKey: identifier)
+            }
+            self.connectionsLock.unlock()
+
+            for connection in expired {
+                self.close(connection)
+            }
+            self.scheduleRequestHeadSweep(generation: generation)
+        }
     }
 }
 

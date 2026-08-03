@@ -1292,27 +1292,29 @@ private func actionName(_ action: ProxyFlowAction) -> String {
 /// Collects flow events from the proxy's queue for the end-of-run summary.
 private final class FlowLog: @unchecked Sendable {
     private let lock = NSLock()
-    private var events: [LocalProxyServer.FlowEvent] = []
+    private var count = 0
+    private var blocked = 0
+    private var direct = 0
+    private var proxied = 0
+    private var up: UInt64 = 0
+    private var down: UInt64 = 0
 
     func append(_ event: LocalProxyServer.FlowEvent) {
-        lock.lock(); events.append(event); lock.unlock()
+        lock.lock()
+        count += 1
+        switch event.action {
+        case .block, .unavailable: blocked += 1
+        case .direct: direct += 1
+        case .upstream: proxied += 1
+        }
+        up &+= event.bytesUp
+        down &+= event.bytesDown
+        lock.unlock()
     }
 
     func summary() -> (count: Int, blocked: Int, direct: Int, proxied: Int, up: UInt64, down: UInt64) {
         lock.lock(); defer { lock.unlock() }
-        var blocked = 0, direct = 0, proxied = 0
-        var up: UInt64 = 0, down: UInt64 = 0
-        for event in events {
-            switch event.action {
-            case .block: blocked += 1
-            case .unavailable: blocked += 1
-            case .direct: direct += 1
-            case .upstream: proxied += 1
-            }
-            up &+= event.bytesUp
-            down &+= event.bytesDown
-        }
-        return (events.count, blocked, direct, proxied, up, down)
+        return (count, blocked, direct, proxied, up, down)
     }
 }
 

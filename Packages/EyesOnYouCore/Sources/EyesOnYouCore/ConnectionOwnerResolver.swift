@@ -107,9 +107,14 @@ public final class ConnectionOwnerResolver: @unchecked Sendable {
         for sample in samples {
             map[sample.localPort] = sample.pid
         }
+        let livePIDs = Set(map.values)
 
         lock.lock()
         portToPID = map
+        // PID identities only serve currently visible proxy clients. Keeping every
+        // short-lived command's resolved bundle forever caused slow process-lifetime
+        // growth and could reuse stale identity after PID recycling.
+        ownerCache = ownerCache.filter { livePIDs.contains($0.key) }
         builtAt = now
         // Only a miss-triggered rebuild arms the rate limiter. A scheduled refresh
         // must not suppress the very retry that resolves a brand-new connection —

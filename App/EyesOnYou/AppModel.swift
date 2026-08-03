@@ -1290,10 +1290,14 @@ final class AppModel: ObservableObject {
             }
             aggregator.importBuckets(restored)
             aggregator.importDisplayNames(try store.displayNames())
+            let retained = TelemetryFlusher.persistedGranularities.flatMap {
+                aggregator.exportBuckets(granularity: $0)
+            }
             // The flusher must know these bytes are already on disk, or the next
-            // flush would write the restored history a second time.
-            telemetryFlusher?.seed(with: restored)
-            restoredBucketCount = restored.count
+            // flush would write the restored history a second time. Seed from the
+            // retained snapshot because high-cardinality rows may have been merged.
+            telemetryFlusher?.seed(with: retained)
+            restoredBucketCount = retained.count
         } catch {
             storageError = "\(error)"
         }
@@ -1308,9 +1312,8 @@ final class AppModel: ObservableObject {
     private static func restoreWindow(for granularity: BucketGranularity) -> TimeInterval {
         switch granularity {
         case .oneSecond: return 0
-        case .oneMinute: return 2 * 86_400
-        case .oneHour: return 3 * 86_400
-        case .oneDay: return 3 * 365 * 86_400
+        case .oneMinute, .oneHour, .oneDay:
+            return BucketRetention.live.seconds(for: granularity) ?? 0
         }
     }
 
@@ -4000,7 +4003,11 @@ final class AppModel: ObservableObject {
             }
             let dest = DestinationKey.make(hostname: host, address: nil)
             aggregator.recordDelta(
-                flowID: socketFlowID(for: app, route: route),
+                // Unknown-route samples have no matching synthetic open/close
+                // lifecycle, so they must not leave a permanent cached UUID.
+                flowID: routeKindOverride == nil
+                    ? socketFlowID(for: app, route: route)
+                    : UUID(),
                 app: app,
                 up: partUp,
                 down: partDown,

@@ -204,6 +204,55 @@ final class TelemetryFlusherTests: XCTestCase {
         XCTAssertEqual(try storedTotals(around: now).bytesUp, 201)
     }
 
+    func testCompressedRestoreSeedsEffectiveBucketsWithoutRewritingHistory() throws {
+        let now = Date()
+        let first = TelemetryAggregator()
+        for index in 0..<3 {
+            first.recordDelta(
+                flowID: UUID(),
+                app: app,
+                up: 10,
+                down: 100,
+                at: now,
+                destinationKey: "\(index).random.example"
+            )
+        }
+        try TelemetryFlusher(store: store, granularities: [.oneMinute]).flush(first)
+
+        let restored = try store.loadBuckets(
+            granularity: .oneMinute,
+            from: now.addingTimeInterval(-3_600),
+            to: now.addingTimeInterval(3_600)
+        )
+        let bounded = TelemetryAggregator(retention: BucketRetention(
+            oneSecond: 300,
+            oneMinute: 10_800,
+            oneHour: 259_200,
+            oneDay: 34_560_000,
+            maximumDetailedKeysPerGranularity: 1
+        ))
+        bounded.importBuckets(restored)
+        let retained = bounded.exportBuckets(granularity: .oneMinute)
+        XCTAssertEqual(retained.count, 2)
+        XCTAssertTrue(retained.contains { $0.key.destinationKey == DestinationKey.other })
+
+        let flusher = TelemetryFlusher(store: store, granularities: [.oneMinute])
+        flusher.seed(with: retained)
+        bounded.recordDelta(
+            flowID: UUID(),
+            app: app,
+            up: 1,
+            down: 2,
+            at: now,
+            destinationKey: "new.random.example"
+        )
+        try flusher.flush(bounded)
+
+        let totals = try storedTotals(around: now)
+        XCTAssertEqual(totals.bytesUp, 31)
+        XCTAssertEqual(totals.bytesDown, 302)
+    }
+
     func testFlushPersistsProductNamesNotJustIdentifiers() throws {
         let now = Date()
         let flusher = TelemetryFlusher(store: store)
